@@ -37,3 +37,4 @@
 - **2026-07-11 R1**：任务启动。multica 已克隆到 `D:\baibu-agent\repos\multica`（3201 files）；两个探索代理并行盘点（现有看板全景 + multica 风格）；项目目录已建 + git init；工具链确认 Node v22.13.0 / npm 10.9.2 / claude CLI 就绪。
 - **2026-07-11 R1（续）**：G1/G2 完成并落档 spec 两份；electron 43.1.0 + electron-builder 26.15.3 装毕；G3 壳代码就绪（commit 89750f7）；看板源码已复制到 `platform/`（去 aggregate.js/psexec.js，21 文件）。定下 D5（UI 不换栈移植风格）/ D6（洞察去除范围）。进入 G4 平台核配置化改造。
 - **2026-07-11 R2**：G4 迁移完成并首轮实跑验证通过（matrix C01–C11 全 PASS，见 round-1.md）。关键适配：ELECTRON_RUN_AS_NODE fork 修正、代码资产路径与数据根解耦（否则会加载旧看板代码）、Electron 二进制镜像补装。旧看板 8788 全程未受影响。进入 G5 UI 重构（multica 风格）。
+- **2026-07-11 R3**：C13（12 个写端点，sandbox 全生命周期）+ C14（Electron 宿主调度器实跑，桩派发器逐 tick 独立 fork）PASS，见 round-2.md。第三处 execPath 隐患（validateScript --check）同款修复并被"坏脚本拦截"用例反证。G5 UI 重构由实现代理并行进行中。

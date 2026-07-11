@@ -125,7 +125,8 @@ async function validateScript(content) {
   fs.writeFileSync(tmp, content, 'utf8');
   try {
     const r = await new Promise((resolve) => {
-      execFile(process.execPath, ['--check', tmp], { encoding: 'utf8', windowsHide: true, timeout: 15000 },
+      // ELECTRON_RUN_AS_NODE：Electron 宿主下 execPath 是 electron.exe，置此变量按纯 Node 跑 --check
+      execFile(process.execPath, ['--check', tmp], { encoding: 'utf8', windowsHide: true, timeout: 15000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } },
         (err, stdout, stderr) => resolve({ code: err ? 1 : 0, msg: `${stderr || ''}${stdout || ''}`.trim() }));
     });
     if (r.code !== 0) return { ok: false, error: `语法校验未通过：${r.msg.replaceAll(tmp, '<脚本>').slice(0, 800)}` };

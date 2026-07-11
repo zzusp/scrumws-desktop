@@ -1,17 +1,17 @@
-case,desc,round-1
-C01,standalone 起服务(8799 只读模式),PASS
-C02,/api/state 键结构与旧版一致,PASS
-C03,lifecycle 桶计数与旧版一致,PASS
-C04,/api/logs 条数与旧版一致,PASS
-C05,/api/worker-log 正常返回多轮内容,PASS
-C06,/api/insights 已移除(404),PASS
-C07,静态页 index.html 200,PASS
-C08,Electron 壳启动+内嵌 server(<2s),PASS
-C09,Electron 下调度器只读(disabled-env)不抢锁,PASS
-C10,Electron 退出无残留进程,PASS
-C11,窗口加载真实看板页(标题核验),PASS
-C12,托盘常驻交互(关窗=隐藏/托盘菜单退出),
-C13,写端点回归(task create/reply/archive 等 sandbox),
-C14,调度器实跑(schedulerEnabled+sandbox runtime),
-C15,G5 新 UI 各视图功能与旧版对齐,
-C16,打包安装包实装实跑+自启,
+case,desc,round-1,round-2
+C01,standalone 起服务(8799 只读模式),PASS,
+C02,/api/state 键结构与旧版一致,PASS,
+C03,lifecycle 桶计数与旧版一致,PASS,
+C04,/api/logs 条数与旧版一致,PASS,
+C05,/api/worker-log 正常返回多轮内容,PASS,
+C06,/api/insights 已移除(404),PASS,
+C07,静态页 index.html 200,PASS,
+C08,Electron 壳启动+内嵌 server(<2s),PASS,
+C09,Electron 下调度器只读(disabled-env)不抢锁,PASS,
+C10,Electron 退出无残留进程,PASS,PASS
+C11,窗口加载真实看板页(标题核验),PASS,
+C12,托盘常驻交互(关窗=隐藏/托盘菜单退出),,
+C13,写端点回归(任务链6+派发器5+平台开关4 sandbox),,PASS
+C14,调度器实跑(Electron宿主+SCRUMWS_SCHEDULER=1+sandbox),,PASS
+C15,G5 新 UI 各视图功能与旧版对齐,,
+C16,打包安装包实装实跑+自启,,
