@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude 活儿总览 · 分身 + 本机 CLI</title>
+<script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') || localStorage.getItem('dash-theme') || 'dark';</script>
+<style>
+/* 深色设计系统 —— 对齐 claude-cloud-team（#0d1117 GitHub 风暗底 + #d97757 橙 accent）；亮色主题按 data-theme 覆盖 */
+:root{
+  --bg:#0d1117; --card:#161c26; --card2:#1b2230; --raise:#212b3c;
+  --ink:#e8edf4; --ink2:#c4cfdd; --mut:#9aa7ba; --dim:#64718a;
+  --hair:#1d2532; --hair2:#242e3e;
+  --jade:#43c98a; --amber:#e8b34b; --coral:#ef6a6a; --cyan:#4f9cf9;
+  --jadeS:rgba(67,201,138,.13); --amberS:rgba(232,179,75,.13); --coralS:rgba(239,106,106,.13); --cyanS:rgba(79,156,249,.13);
+  --accent:#d97757; --accentS:rgba(217,119,87,.14);
+  --coralT:#f08a8a; --cyanT:#7cb5fa;
+  --code-bg:#0a0e14; --soft:rgba(255,255,255,.016); --soft2:rgba(255,255,255,.03);
+  --glass:rgba(13,17,23,.75); --glass2:rgba(13,17,23,.6); --mask:rgba(5,8,12,.66);
+  --scroll:#2a3444; --scroll-h:#38455a; --slider-knob:#9aa7ba;
+  --gap:16px; --cardpad:20px 22px;
+  --sans:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --display:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"Cascadia Code",Consolas,"SF Mono",Menlo,monospace;
+  --shadow:0 8px 28px rgba(0,0,0,.45);
+  --shadow-sm:0 6px 18px rgba(0,0,0,.35);
+}
+:root[data-theme="light"]{
+  --bg:#f4f1ea; --card:#fffdf9; --card2:#f5f1e8; --raise:#eee8db;
+  --ink:#2a251d; --ink2:#484134; --mut:#827563; --dim:#a39682;
+  --hair:rgba(70,55,30,.12); --hair2:rgba(70,55,30,.2);
+  --jade:#178f63; --amber:#9c6a15; --coral:#c94f3e; --cyan:#1c7fbf;
+  --jadeS:rgba(23,143,99,.1); --amberS:rgba(156,106,21,.1); --coralS:rgba(201,79,62,.1); --cyanS:rgba(28,127,191,.1);
+  --accentS:rgba(217,119,87,.13);
+  --coralT:#b04434; --cyanT:#17618c;
+  --code-bg:#f1ece1; --soft:rgba(70,55,30,.025); --soft2:rgba(70,55,30,.05);
+  --glass:rgba(244,241,234,.85); --glass2:rgba(244,241,234,.75); --mask:rgba(40,32,22,.4);
+  --scroll:#d3cabb; --scroll-h:#c2b7a4; --slider-knob:#fff;
+  --shadow:0 8px 28px rgba(90,70,40,.2);
+  --shadow-sm:0 6px 18px rgba(90,70,40,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.6;
+  background:radial-gradient(1100px 480px at 18% -12%,rgba(217,119,87,.09),transparent 60%),radial-gradient(900px 420px at 85% -15%,rgba(79,156,249,.07),transparent 60%),var(--bg);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2{font-weight:600;letter-spacing:-.01em}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.65)}}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.card{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:var(--cardpad)}
+.kv{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--hair);font-size:13px}
+.kv:last-child{border-bottom:none}
+.kv .k{color:var(--mut)}
+.kv .v{font-weight:600;color:var(--ink2);font-family:var(--mono);font-size:11.5px}
+.switch{position:relative;display:inline-block;width:38px;height:21px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:var(--scroll);border-radius:21px;transition:.2s;cursor:pointer}
+.slider:before{content:"";position:absolute;height:15px;width:15px;left:3px;top:3px;background:var(--slider-knob);border-radius:50%;transition:.2s}
+.switch input:checked+.slider{background:var(--jade)}
+.switch input:checked+.slider:before{transform:translateX(17px);background:#fff}
+.btn{font-family:var(--sans);font-size:11.5px;color:var(--ink2);background:var(--card);border:1px solid var(--hair2);padding:5px 11px;border-radius:8px;cursor:pointer;transition:all .15s;white-space:nowrap}
+.btn:hover{background:var(--card2);border-color:var(--hair2);color:var(--ink)}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover{background:#e2865f;border-color:#e2865f;box-shadow:0 4px 14px rgba(217,119,87,.35);color:#fff}
+.taskcard{border:1px solid var(--hair);border-radius:10px;padding:11px 12px;background:var(--card2);cursor:pointer;transition:all .15s}
+.taskcard:hover{border-color:rgba(217,119,87,.5);transform:translateY(-1px);box-shadow:var(--shadow-sm)}
+/* 卡片底栏：taskKey 短码在左、ghost 操作按钮在右（hover 卡片时提亮） */
+.card-foot{display:flex;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--hair)}
+.card-key{font-family:var(--mono);font-size:10.5px;color:var(--dim);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cardbtns{display:flex;gap:2px;flex:none;opacity:.6;transition:opacity .15s}
+.taskcard:hover .cardbtns{opacity:1}
+.cardbtns .btn{background:transparent;border-color:transparent;color:var(--dim);font-size:10px;padding:2px 7px}
+.cardbtns .btn:hover{background:var(--card);border-color:var(--hair2);color:var(--ink2)}
+/* 描述编辑等文本弹窗的输入框 */
+.prompt-input{width:100%;font-family:var(--sans);font-size:13px;padding:10px 12px;border:1px solid var(--hair2);border-radius:9px;background:var(--card);color:var(--ink);resize:vertical;outline:none;line-height:1.65;transition:border-color .15s,box-shadow .15s}
+.prompt-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accentS)}
+.prompt-input::placeholder{color:var(--dim)}
+.tag{font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;flex:none;font-family:var(--sans);letter-spacing:.2px}
+.tag-jade{background:var(--jadeS);color:var(--jade)}
+.tag-amber{background:var(--amberS);color:var(--amber)}
+.tag-coral{background:var(--coralS);color:var(--coralT)}
+.tag-cyan{background:var(--cyanS);color:var(--cyanT)}
+.tag-mut{background:var(--card2);color:var(--mut);border:1px solid var(--hair2)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--scroll-h);background-clip:content-box;border:2px solid transparent}
+::-webkit-scrollbar-track{background:transparent}
+.logrow{display:flex;gap:10px;align-items:baseline;padding:5px 8px;border-radius:7px}
+.logrow:hover{background:var(--soft2)}
+.md-body{font-size:14px;line-height:1.7}
+.md-body h1,.md-body h2,.md-body h3{font-family:var(--display);font-weight:700;margin:.9em 0 .4em;line-height:1.3}
+.md-body h1{font-size:16px}.md-body h2{font-size:15px}.md-body h3{font-size:14px}
+.md-body p{margin:.5em 0}
+.md-body ul,.md-body ol{margin:.5em 0;padding-left:1.4em}
+.md-body code{font-family:var(--mono);font-size:12px;background:var(--card2);border:1px solid var(--hair);padding:1px 5px;border-radius:4px}
+.md-body pre{background:var(--code-bg);border:1px solid var(--hair);border-radius:8px;padding:10px 13px;overflow-x:auto;margin:.5em 0}
+.md-body pre code{background:none;border:none;padding:0;font-size:12px}
+.md-body a{color:var(--cyan);text-decoration:underline;word-break:break-all}
+.md-body strong{font-weight:700;color:var(--ink)}
+
+/* ---------- 任务看板：每个状态一张独立列卡（对齐参考 .col） ---------- */
+.col-card{background:var(--soft);border:1px solid var(--hair);border-radius:12px;padding:0;overflow:hidden;display:flex;flex-direction:column}
+.col-head{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--hair);flex:none}
+.col-head h3{font-family:var(--display);font-size:13.5px;color:var(--ink);font-weight:600}
+.col-head .col-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.col-head .col-hint{font-size:10.5px;color:var(--dim);margin-left:auto}
+.col-body{flex:1;padding:10px;display:flex;flex-direction:column;gap:9px;max-height:calc(100vh - 210px);overflow-y:auto;min-height:calc(100vh - 340px)}
+
+/* ---------- 顶栏（分页导航，毛玻璃暗底） ---------- */
+.topbar{position:sticky;top:0;z-index:100;display:flex;align-items:center;gap:22px;height:58px;padding:0 40px;
+  background:var(--glass);backdrop-filter:blur(10px);border-bottom:1px solid var(--hair)}
+.brand{display:flex;align-items:center;gap:10px;flex:none;text-decoration:none;color:var(--ink)}
+.brand .logo{width:30px;height:30px;border-radius:8px;background:var(--accent);display:grid;place-items:center;font-size:15px}
+.brand .name{font-family:var(--display);font-weight:700;font-size:15.5px;letter-spacing:.2px}
+.topnav{display:flex;gap:4px}
+.topnav a{padding:7px 14px;border-radius:8px;color:var(--mut);font-size:13.5px;font-weight:500;text-decoration:none;transition:all .15s}
+.topnav a:hover{color:var(--ink);background:var(--card)}
+.topnav a.active{color:var(--ink);background:var(--card2);font-weight:600}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.view{animation:rise .35s both}
+
+/* ---------- 任务详情页：左右布局（对齐参考 .detail），左侧上中下、底部固定 ---------- */
+#view-task{height:calc(100vh - 58px);display:flex;overflow:hidden}
+.detail-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--hair)}
+.detail-head{padding:16px 24px 12px;flex:none;border-bottom:1px solid var(--hair)}
+.detail-cwd{font-family:var(--mono);font-size:11.5px;color:var(--dim);word-break:break-all}
+.detail-cwd .k{color:var(--mut);margin-right:6px}
+.detail-main #modalBody{flex:1;overflow-y:auto;padding:16px 24px 24px}
+.detail-side{width:330px;flex:none;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+.side-block{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:13px 15px}
+.side-block h3{font-size:11.5px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.side-kv{display:flex;margin-bottom:7px;font-size:12.5px;align-items:baseline}
+.side-kv:last-child{margin-bottom:0}
+.side-kv .k{width:70px;color:var(--dim);flex:none}
+.side-kv .v{flex:1;color:var(--ink2);font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.side-actions{display:flex;flex-wrap:wrap;gap:8px}
+/* 底部固定回复条（参考 console-actions）：去卡片圆角，改为满宽 border-top 条 */
+.reply-box{flex:none;margin-top:0;padding:12px 24px;background:var(--glass2);border:none;border-top:1px solid var(--hair);border-radius:0}
+
+/* 消息时间线（模仿 claude.ai：assistant 全宽 prose、user 右对齐软气泡、tool_result 淡内嵌容器） */
+.msg-assistant,.msg-user,.msg-tool{padding:12px 0}
+.msg-user{display:flex;flex-direction:column;align-items:flex-end}
+.msg-meta{display:flex;align-items:baseline;gap:8px;font-size:11px;color:var(--dim);margin-bottom:4px}
+.msg-user .msg-meta{flex-direction:row-reverse}
+.msg-meta .role{font-weight:500;color:var(--mut)}
+.msg-meta .model{color:var(--dim);font-family:var(--mono);font-size:10.5px}
+.msg-meta time{color:var(--dim);font-family:var(--mono);font-size:10.5px;font-variant-numeric:tabular-nums}
+.msg-user-bubble{max-width:82%;background:var(--raise);border:none;border-radius:16px;padding:10px 18px;line-height:1.7;white-space:pre-wrap;word-break:break-word;font-size:14px;color:var(--ink)}
+/* fork-rewind 按钮：默认隐身，hover user 消息时浮现（右对齐贴气泡下方） */
+.msg-rewind{opacity:0;transition:opacity .15s;margin-top:3px}
+.msg-user:hover .msg-rewind{opacity:1}
+.msg-tool-container{background:var(--soft);border:1px solid var(--hair);border-radius:10px;padding:10px 14px;margin-top:2px}
+.msg-body{margin-top:2px}
+.msg-body>*+*{margin-top:10px}
+
+/* 折叠块（thinking / tool_use / tool_result）—— 对齐参考 tool-block */
+.block details{border:1px solid var(--hair);border-radius:9px;background:var(--soft);overflow:hidden}
+.block details[open]{background:var(--soft)}
+.block summary{cursor:pointer;list-style:none;padding:7px 12px;font-size:12px;color:var(--mut);user-select:none;display:flex;align-items:center;gap:8px}
+.block summary::-webkit-details-marker{display:none}
+.block summary::before{content:"▸";color:var(--dim);font-size:10px;transition:transform .12s}
+.block details[open]>summary::before{transform:rotate(90deg)}
+.block summary:hover{background:var(--soft2)}
+.block .body{padding:2px 12px 10px;border-top:1px solid var(--hair)}
+.block-thinking .body{color:var(--dim);font-style:italic;font-size:12.5px;line-height:1.65;white-space:pre-wrap;border-top:none;padding-top:6px}
+.block-tool-use summary .name{color:var(--cyan);font-weight:600;font-family:var(--mono)}
+.block-tool-use summary .args{color:var(--dim);font-family:var(--mono);font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.block-tool-use .body pre{font-family:var(--mono);font-size:11.5px;color:var(--ink2);white-space:pre-wrap;background:var(--code-bg);padding:8px 10px;border-radius:6px;max-height:400px;overflow:auto;margin:8px 0 0}
+.block-tool-result summary .from{color:var(--dim);font-family:var(--mono);font-size:10.5px}
+.block-tool-result summary .err-tag{background:var(--coralS);color:var(--coralT);font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:20px}
+.block-tool-result .body pre{font-family:var(--mono);font-size:11.5px;color:var(--ink2);white-space:pre-wrap;background:var(--code-bg);padding:8px 10px;border-radius:6px;max-height:400px;overflow:auto;margin:8px 0 0}
+
+/* ---------- 详情流：Claude Code 终端风格（⏺ 工具行 + ⎿ 结果缩进配对） ---------- */
+.cc-line{display:flex;gap:9px;align-items:flex-start;padding:4px 0}
+.cc-dot{color:var(--jade);flex:none;font-size:12px;line-height:2}
+.cc-dot.err{color:var(--coral)}
+.cc-text{padding:7px 0}
+.cc-text .md-body{font-size:13.5px}
+.cc-tool{margin:1px 0 5px}
+.cc-head{flex:1;min-width:0}
+.cc-head>summary{font-family:var(--mono);font-size:12.5px;cursor:pointer;list-style:none;line-height:2;word-break:break-all}
+.cc-head>summary:hover .cc-args{color:var(--ink2)}
+.cc-name{color:var(--ink);font-weight:600}
+.cc-args{color:var(--mut);transition:color .15s}
+.cc-res{display:flex;gap:8px;margin:0 0 2px 21px;align-items:flex-start}
+.cc-elbow{color:var(--dim);font-family:var(--mono);font-size:12px;flex:none;line-height:1.9}
+.cc-res-body{flex:1;min-width:0;font-family:var(--mono);font-size:12px;color:var(--mut);line-height:1.9}
+.cc-exp>summary{cursor:pointer;list-style:none;word-break:break-all}
+.cc-exp>summary::-webkit-details-marker{display:none}
+.cc-exp>summary:hover{color:var(--ink2)}
+.cc-exp.err>summary{color:var(--coralT)}
+.cc-more{color:var(--dim)}
+.cc-pre{font-family:var(--mono);font-size:11.5px;color:var(--ink2);white-space:pre-wrap;word-break:break-word;background:var(--code-bg);border:1px solid var(--hair);padding:8px 10px;border-radius:6px;max-height:420px;overflow:auto;margin:6px 0 4px}
+/* 工作块折叠：⏺ 汇总行（可展开成组内工具平铺，展开区左侧细线缩进） */
+.cc-group{margin:2px 0}
+.cc-group>summary{cursor:pointer;list-style:none;display:flex;gap:9px;align-items:baseline;padding:5px 0;font-size:13px;line-height:1.8}
+.cc-group>summary::-webkit-details-marker{display:none}
+.cc-group>summary .cc-gsum{color:var(--ink2)}
+.cc-group>summary:hover .cc-gsum{color:var(--ink)}
+.cc-gbody{margin:2px 0 8px 21px;border-left:1px solid var(--hair);padding-left:12px}
+/* 段耗时独立行（✻ Churned for 7m 34s，显示在工作段下方）；整轮总耗时行加重显示在轮末 */
+.cc-dur{display:flex;gap:9px;align-items:baseline;color:var(--dim);font-size:12px;font-family:var(--mono);font-style:italic;padding:1px 0 7px}
+.cc-dur-total{color:var(--mut);font-weight:600;margin-top:6px}
+.cc-think{margin:1px 0 3px 21px}
+.cc-think summary{color:var(--dim);font-style:italic;font-size:12px;font-family:var(--mono)}
+.cc-think-body{color:var(--dim);font-style:italic;font-size:12.5px;line-height:1.65;white-space:pre-wrap;border-left:2px solid var(--hair2);padding:4px 0 4px 10px;margin-top:6px}
+.cc-todo{font-family:var(--mono);font-size:12px;line-height:1.85}
+.cc-todo-item{color:var(--mut)}
+.cc-todo-item.done{color:var(--jade)}
+.cc-todo-item.doing{color:var(--cyan)}
+pre.diff-old,pre.diff-new{white-space:pre-wrap;word-break:break-word;border-radius:6px;padding:7px 10px;margin:6px 0 0;font-size:12px;font-family:var(--mono);line-height:1.5}
+pre.diff-old{background:rgba(239,106,106,.09);border-left:3px solid rgba(239,106,106,.55);color:var(--coralT)}
+pre.diff-new{background:rgba(67,201,138,.08);border-left:3px solid rgba(67,201,138,.5);color:var(--jade)}
+
+/* 右栏「动态」时间线（对齐参考 .timeline：竖线 + 彩点） */
+.timeline{display:flex;flex-direction:column}
+.tl-item{display:flex;gap:10px;position:relative;padding-bottom:13px}
+.tl-item:last-child{padding-bottom:0}
+.tl-item::before{content:"";position:absolute;left:4.5px;top:14px;bottom:0;width:1px;background:var(--hair)}
+.tl-item:last-child::before{display:none}
+.tl-dot{width:10px;height:10px;border-radius:50%;background:var(--card2);border:2px solid var(--hair2);flex:none;margin-top:4px;z-index:1}
+.tl-body{flex:1;min-width:0}
+.tl-text{font-size:12.5px;color:var(--ink2);word-break:break-word}
+.tl-meta{font-size:11px;color:var(--dim);margin-top:1px;font-family:var(--mono)}
+
+/* 继续对话区（三态：可对话 / 处理中 / 需重发）—— 容器样式见上方 .reply-box 底部固定条定义 */
+.reply-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.reply-header #modalReplyHint{font-size:12px;color:var(--mut);line-height:1.5;flex:1;min-width:160px}
+.reply-header #modalReplyHint b{color:var(--ink2);font-weight:600}
+/* 输入卡片：textarea + 底部 toolbar 一体化，聚焦时整卡描边发光；不用 overflow:hidden 以便下拉菜单能溢出弹出 */
+.reply-composer{display:flex;flex-direction:column;margin-top:12px;background:var(--card);border:1px solid var(--hair2);border-radius:11px;transition:border-color .15s,box-shadow .15s}
+.reply-composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accentS)}
+.reply-composer textarea{font-family:var(--sans);font-size:13.5px;padding:12px 14px 8px;border:none;background:transparent;color:var(--ink);resize:vertical;outline:none;line-height:1.65;min-height:72px;border-radius:11px 11px 0 0}
+.reply-composer textarea::placeholder{color:var(--dim)}
+.reply-composer textarea:disabled{background:var(--card2);color:var(--dim);cursor:not-allowed}
+/* toolbar 单独加底圆角 —— 替代 composer 的 overflow:hidden，避免 menu 被剪 */
+.reply-toolbar{display:flex;align-items:center;gap:10px;padding:7px 10px 7px 12px;background:var(--card2);border-top:1px solid var(--hair);border-radius:0 0 10px 10px;flex-wrap:wrap}
+/* 自定义 model 下拉（原生 <option> 样式受浏览器控制，改不了）*/
+.reply-model-wrap{position:relative;flex:none}
+.reply-model-btn{font-family:var(--sans);font-size:11px;padding:5px 9px 5px 10px;border:1px solid var(--hair);border-radius:7px;background:var(--card);color:var(--ink2);outline:none;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:border-color .15s,background .15s;min-width:140px}
+/* 表单场景（如新建任务）：按普通表单控件高度走，别用回复框工具栏的小尺寸 */
+.reply-model-btn.form-size{font-size:13px;padding:8px 12px;border-radius:8px;border-color:var(--hair2);background:var(--card2);min-width:0}
+.reply-model-btn:hover{background:var(--raise);border-color:var(--hair2)}
+.reply-model-btn.open{border-color:var(--accent);box-shadow:0 0 0 3px var(--accentS)}
+.reply-model-btn-icon{color:var(--accent);font-size:11px;flex:none;line-height:1}
+.reply-model-btn-label{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.reply-model-btn-caret{color:var(--mut);font-size:9px;flex:none;transition:transform .15s}
+.reply-model-btn.open .reply-model-btn-caret{transform:rotate(180deg)}
+.reply-model-menu{position:absolute;bottom:calc(100% + 6px);left:0;min-width:260px;background:var(--card2);border:1px solid var(--hair2);border-radius:10px;box-shadow:var(--shadow);padding:5px;z-index:1050;animation:rise .15s;max-height:340px;overflow-y:auto;display:none}
+.reply-model-menu.open{display:block}
+.reply-model-item{width:100%;display:flex;align-items:center;gap:10px;padding:8px 10px;background:none;border:none;border-radius:7px;cursor:pointer;text-align:left;font-family:var(--sans);color:var(--ink2);transition:background .1s}
+.reply-model-item:hover,.reply-model-item:focus-visible{background:var(--card2);outline:none}
+.reply-model-item.active{background:var(--jadeS)}
+.reply-model-item.active:hover{background:rgba(67,201,138,.18)}
+.reply-model-item .item-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.reply-model-item .item-name{font-size:12.5px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:7px;line-height:1.3}
+.reply-model-item .item-desc{font-size:10.5px;color:var(--mut);line-height:1.45}
+.reply-model-item .item-tier{font-size:9px;font-weight:700;padding:1px 6px;border-radius:9px;font-family:var(--sans);letter-spacing:.02em;flex:none}
+.reply-model-item .item-tier.tier-jade{background:var(--jadeS);color:var(--jade)}
+.reply-model-item .item-tier.tier-amber{background:var(--amberS);color:var(--amber)}
+.reply-model-item .item-tier.tier-cyan{background:var(--cyanS);color:var(--cyanT)}
+.reply-model-item .item-tier.tier-coral{background:var(--coralS);color:var(--coralT)}
+.reply-model-item .item-tier.tier-mut{background:var(--card);color:var(--mut);border:1px solid var(--hair2)}
+.reply-model-item .item-check{color:var(--jade);font-size:13px;font-weight:700;flex:none;opacity:0}
+.reply-model-item.active .item-check{opacity:1}
+.reply-model-menu-hair{height:1px;background:var(--hair);margin:4px 6px}
+.reply-toolbar .reply-count{font-family:var(--mono);font-size:10.5px;color:var(--dim);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.reply-toolbar .reply-count.warn{color:var(--amber)}
+.reply-toolbar .reply-kbd{font-size:10.5px;color:var(--dim);display:inline-flex;align-items:center;gap:3px}
+.reply-toolbar .reply-kbd kbd{font-family:var(--mono);font-size:10px;background:var(--card);border:1px solid var(--hair);border-bottom-width:2px;border-radius:4px;padding:1px 5px;color:var(--ink2);line-height:1}
+.reply-toolbar .reply-send{margin-left:auto;font-size:12px;padding:6px 18px;flex:none;font-weight:600;letter-spacing:.02em}
+.reply-toolbar .reply-send:disabled{opacity:.5;cursor:not-allowed}
+.reply-restart{display:flex;align-items:center;gap:14px;margin-top:12px;padding:12px 14px;background:rgba(232,179,75,.07);border:1px dashed rgba(232,179,75,.4);border-radius:10px}
+.reply-restart-btn{font-size:13px;padding:9px 18px;background:var(--amber);color:#20180a;border-color:var(--amber);font-weight:600;letter-spacing:.02em;flex:none}
+.reply-restart-btn:hover{background:#f0c165;border-color:#f0c165}
+.reply-restart-btn:disabled{opacity:.55;cursor:not-allowed}
+.reply-restart-hint{font-size:11.5px;color:var(--amber);line-height:1.5;flex:1;min-width:0}
+.reply-toast{margin-top:10px;padding:8px 12px;border-radius:8px;font-size:11.5px;font-family:var(--mono);line-height:1.5}
+.reply-toast.err{background:var(--coralS);border:1px solid rgba(239,106,106,.3);color:var(--coral)}
+.reply-toast.ok{background:var(--jadeS);border:1px solid rgba(67,201,138,.3);color:var(--jade)}
+
+/* 自定义 confirm modal（替代原生 confirm）*/
+.confirm-card{background:var(--card2);border:1px solid var(--hair2);border-radius:14px;padding:22px 26px;width:94%;max-width:480px;box-shadow:var(--shadow);animation:rise .25s}
+.confirm-title{font-family:var(--display);font-size:15.5px;font-weight:600;color:var(--ink);margin-bottom:10px;line-height:1.4}
+.confirm-body{font-size:12.5px;color:var(--mut);line-height:1.7;margin-bottom:20px;white-space:pre-wrap;word-break:break-word}
+.confirm-body code,.confirm-body b{font-family:var(--mono);font-size:11.5px;color:var(--ink2);background:var(--card);border:1px solid var(--hair);padding:1px 6px;border-radius:4px;font-weight:500}
+.confirm-actions{display:flex;justify-content:flex-end;gap:8px}
+.confirm-actions .btn{padding:8px 18px;font-size:12.5px;font-weight:500}
+.btn-danger{background:transparent;color:var(--coral);border-color:rgba(239,106,106,.4)}
+.btn-danger:hover{background:rgba(239,106,106,.12);border-color:var(--coral);color:var(--coral)}
+.btn-danger:focus-visible{outline:3px solid rgba(239,106,106,.3);outline-offset:2px}
+.btn-primary:focus-visible{outline:3px solid var(--accentS);outline-offset:2px}
+
+/* Round 折叠：details/summary 样式（覆盖 block 样式，用于 round 顶层） */
+.round-fold{border:1px solid var(--hair);border-radius:10px;background:var(--card2);margin-bottom:14px;overflow:hidden}
+.round-fold[open]{background:var(--card2)}
+.round-fold>summary{cursor:pointer;list-style:none;padding:12px 16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.round-fold>summary::-webkit-details-marker{display:none}
+.round-fold>summary::before{content:"▸";color:var(--dim);font-size:11px;transition:transform .15s;flex:none;margin-right:4px}
+.round-fold[open]>summary::before{transform:rotate(90deg)}
+.round-fold>summary:hover{background:var(--raise)}
+.round-fold[open]>summary{border-bottom:1px solid var(--hair)}
+.round-fold>.round-body{padding:14px 16px}
+.round-fold>summary .summary-cc{color:var(--ink2);font-size:12px;line-height:1.5;font-weight:400;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style>
+</head>
+<body>
+<div style="min-height:100vh">
+
+  <!-- ===== 顶栏：品牌 + 三页导航 + 全局操作 ===== -->
+  <header class="topbar">
+    <a class="brand" href="#/board">
+      <span class="logo">🥷</span>
+      <span class="name">claude 活儿总览</span>
+      <span style="font-size:11px;color:var(--dim);margin-left:4px">· 分身 + 本机 CLI</span>
+    </a>
+    <nav class="topnav">
+      <a href="#/dispatcher" data-nav="dispatcher">派发器</a>
+      <a href="#/board" data-nav="board">任务看板</a>
+      <a href="#/dashboard" data-nav="dashboard">数据看板</a>
+    </nav>
+    <div class="top-right">
+      <span id="clock" style="font-family:var(--mono);font-size:12px;color:var(--ink2)">—</span>
+      <button class="btn" id="themeBtn" style="font-size:13px;padding:4px 10px" title="切换明暗主题">☀️</button>
+      <button class="btn" id="addCliBtn" style="font-size:11.5px;padding:6px 14px" title="把本机跑的 claude CLI session 添加到看板（只读展示，不发起交互）">+ CLI 会话</button>
+      <button class="btn btn-primary" id="newTaskBtn" style="font-size:11.5px;padding:6px 14px" title="手动创建 manual 任务">+ 新建任务</button>
+      <label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer" title="暂停派发（dispatcher 仍建 queued 但不 spawn；runner-checker 兜底孤儿不受影响）">
+        <span id="pauseLabel" style="font-size:11.5px;color:var(--mut)">派发中</span>
+        <span class="switch"><input type="checkbox" id="pauseSwitch"><span class="slider"></span></span>
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer" title="自动刷新（关闭则暂停轮询）">
+        <span style="font-size:11.5px;color:var(--mut)">自动刷新</span>
+        <span class="switch"><input type="checkbox" id="autoRefreshSwitch" checked><span class="slider"></span></span>
+      </label>
+    </div>
+  </header>
+
+  <div id="pageWrap" style="max-width:1720px;margin:0 auto;padding:20px 40px 40px">
+
+  <!-- ===== dws 授权失效红条（全局，sentinel 存在时显示）===== -->
+  <div id="authBanner" style="display:none;background:var(--coralS);border:1px solid rgba(239,106,106,.4);border-radius:12px;padding:14px 18px;margin-bottom:var(--gap);animation:rise .4s">
+    <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <span style="font-size:20px;line-height:1;flex:none">⚠️</span>
+      <div style="flex:1;min-width:220px;line-height:1.55">
+        <div style="font-weight:700;font-size:13.5px;color:var(--coral);margin-bottom:4px">钉钉 dws 授权失效 · 派发链熔断中</div>
+        <div id="authBannerReason" style="font-size:12px;color:var(--coralT);margin-bottom:4px">—</div>
+        <div id="authBannerMeta" style="font-size:11px;color:var(--mut);font-family:var(--mono)">—</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex:none">
+        <code id="authBannerCmd" style="font-family:var(--mono);font-size:12px;background:var(--card);border:1px solid var(--hair2);padding:6px 10px;border-radius:7px;color:var(--ink2)">dws auth login</code>
+        <button class="btn" id="authBannerCopy" title="复制命令 → 到本机 PowerShell 里跑一次">复制</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 页面 1：派发器（注册表驱动 + 运行日志）============ -->
+  <div id="view-dispatcher" class="view" style="display:none">
+    <section class="card" style="margin-bottom:var(--gap)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <h2 style="font-family:var(--display);font-size:15px">派发器</h2>
+        <span style="font-size:11px;color:var(--mut)">Node 脚本 · 看板进程内调度 · 注册表 runtime/dispatchers.json + 脚本 runtime/dispatchers/&lt;id&gt;.mjs</span>
+        <span id="schedulerModeTag" style="display:none;font-size:10.5px" class="tag tag-amber">只读实例</span>
+        <button class="btn btn-primary" id="newDispatcherBtn" style="margin-left:auto;font-size:11.5px;padding:5px 13px" title="按场景来源新建派发器（脚本内容按模板预填、可编辑）">+ 新建派发器</button>
+      </div>
+      <div id="tasksGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+        <div style="color:var(--dim);font-size:13px">加载中…</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+        <div>
+          <h2 style="font-family:var(--display);font-size:15px">运行日志</h2>
+          <div id="logsStats" style="font-size:11px;color:var(--mut);margin-top:2px">dispatch-chat.log + dispatch-issue.log + runner-checker.log · 近 8h</div>
+        </div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);cursor:pointer"><input type="checkbox" id="logsActionOnly">仅有动作</label>
+          <button class="btn" id="logsRefreshBtn">刷新</button>
+        </div>
+      </div>
+      <div id="logsList" style="max-height:560px;overflow:auto;display:flex;flex-direction:column;gap:1px;font-family:var(--mono);font-size:11.5px">
+        <div style="color:var(--dim);padding:8px 0">加载中…</div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ 页面 2：任务看板（每个状态一张独立列卡 + 归档卡）============ -->
+  <div id="view-board" class="view" style="display:none">
+    <div id="lifecycleGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:14px">
+      <section class="col-card" id="section-plan">
+        <div class="col-head">
+          <span class="col-dot" style="background:var(--dim)"></span>
+          <h3>plan</h3>
+          <span id="count-plan" class="tag tag-mut">0</span>
+          <span class="col-hint">待确认后排队</span>
+        </div>
+        <div id="list-plan" class="col-body"></div>
+      </section>
+      <section class="col-card" id="section-queued">
+        <div class="col-head">
+          <span class="col-dot" style="background:var(--cyan)"></span>
+          <h3>queued</h3>
+          <span id="count-queued" class="tag tag-cyan">0</span>
+          <span class="col-hint">待认领</span>
+        </div>
+        <div id="list-queued" class="col-body"></div>
+      </section>
+      <section class="col-card" id="section-processing">
+        <div class="col-head">
+          <span class="col-dot" style="background:var(--jade)"></span>
+          <h3>processing</h3>
+          <span id="count-processing" class="tag tag-jade">0</span>
+          <span class="col-hint">在跑</span>
+        </div>
+        <div id="list-processing" class="col-body"></div>
+      </section>
+      <section class="col-card" id="section-awaiting-human">
+        <div class="col-head">
+          <span class="col-dot" style="background:var(--coral)"></span>
+          <h3>awaiting-human</h3>
+          <span id="count-awaiting-human" class="tag tag-coral">0</span>
+          <span class="col-hint">等人工</span>
+        </div>
+        <div id="list-awaiting-human" class="col-body"></div>
+      </section>
+      <section class="col-card" id="section-done">
+        <div class="col-head">
+          <span class="col-dot" style="background:var(--accent)"></span>
+          <h3>done</h3>
+          <span id="count-done" class="tag tag-mut">0</span>
+          <span class="col-hint">完成 · 可归档</span>
+        </div>
+        <div id="list-done" class="col-body"></div>
+      </section>
+    </div>
+
+    <!-- 归档卡（默认收起） -->
+    <section class="card" id="archivedSection" style="margin-top:var(--gap);padding:14px 22px">
+      <div id="archivedHeader" style="display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none">
+        <span id="archivedCaret" style="font-family:var(--mono);color:var(--dim);font-size:11px;width:10px">▸</span>
+        <h3 style="font-family:var(--display);font-size:13px;color:var(--ink2)">已归档</h3>
+        <span id="count-archived" class="tag tag-mut">0</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--dim)">runner-archive/ · 按结束时间倒序</span>
+      </div>
+      <div id="list-archived" style="display:none;flex-direction:column;gap:8px;margin-top:12px"></div>
+    </section>
+  </div>
+
+  <!-- ============ 页面 3：数据看板（平台守护）============ -->
+  <div id="view-dashboard" class="view" style="display:none">
+    <section class="card" style="margin-bottom:var(--gap)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <h2 style="font-family:var(--display);font-size:15px">平台守护</h2>
+        <span style="font-size:11px;color:var(--mut)">看板平台自身的守护组件（不是派发器）· 孤儿任务收纳</span>
+      </div>
+      <div id="checkerGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+        <div style="color:var(--dim);font-size:13px">加载中…</div>
+      </div>
+    </section>
+  </div>
+
+  <footer style="color:var(--dim);font-size:11px;text-align:center;margin-top:24px;line-height:1.8">
+    runner 通用抽取 · scripts/lib/claude-runner.ps1 + 平台内置 runner-checker（Node）<br>
+    数据红线：密码 / PII / 源码原文一律不外露、不入库
+  </footer>
+
+  </div>
+
+  <!-- ============ 页面 4：任务详情（#/task/<taskKey>）：左右布局，左侧上中下、回复条底部固定（在 pageWrap 外满宽满高）============ -->
+  <div id="view-task" class="view" style="display:none">
+    <div class="detail-main">
+      <div class="detail-head">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+          <h2 id="modalTitle" style="font-family:var(--display);font-size:17px;flex:1;min-width:0">—</h2>
+        </div>
+        <div id="modalCwd" class="detail-cwd" style="display:none"></div>
+      </div>
+      <div id="modalBody"></div>
+      <!-- 继续对话（底部固定条；三态自适应：可对话 / 正在处理 / 需重发）-->
+      <div id="modalReplyBox" class="reply-box" style="display:none">
+        <!-- header：状态徽章 + 说明（可对话态里 model/字数/快捷键都下沉到 composer 底部工具栏，header 保持极简）-->
+        <div class="reply-header">
+          <span id="modalReplyState" class="tag tag-mut">—</span>
+          <span id="modalReplyHint">—</span>
+        </div>
+        <!-- body A：可对话时的输入卡片（textarea + 底部 toolbar 一体化）-->
+        <div id="modalReplyBody" class="reply-composer" style="display:none">
+          <textarea id="modalReplyText" rows="3" placeholder="继续输入消息…（Ctrl+Enter 快速发送）"></textarea>
+          <div class="reply-toolbar">
+            <!-- 自定义 model 下拉：隐藏 native select 只作 value 载体，UI 走自定义 button + menu 才能定制选项样式 -->
+            <select id="modalReplyModel" style="display:none">
+              <option value="">继承任务 model</option>
+              <option value="claude-opus-4-7">Opus 4.7</option>
+              <option value="claude-opus-4-8">Opus 4.8</option>
+              <option value="claude-sonnet-5">Sonnet 5</option>
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+              <option value="claude-fable-5">Fable 5</option>
+            </select>
+            <div class="reply-model-wrap" id="modalReplyModelWrap">
+              <button type="button" class="reply-model-btn" id="modalReplyModelBtn" title="切换 model（不选=继承任务 model）">
+                <span class="reply-model-btn-icon">✦</span>
+                <span class="reply-model-btn-label">继承任务 model</span>
+                <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="reply-model-menu" id="modalReplyModelMenu" role="listbox"></div>
+            </div>
+            <span class="reply-count" id="modalReplyCount">0 字</span>
+            <span class="reply-kbd" title="Ctrl+Enter 发送"><kbd>Ctrl</kbd>+<kbd>⏎</kbd></span>
+            <button class="btn btn-primary reply-send" id="modalReplySend">发送</button>
+          </div>
+        </div>
+        <!-- body B：需要重新发起时的 CTA（awaiting-human/queued 且无 sessionId、lease 已死；plan 待确认复用此按钮）-->
+        <div id="modalRestartBody" class="reply-restart" style="display:none">
+          <button class="btn reply-restart-btn" id="modalRestartBtn" title="把任务归零到 queued 并立即 spawn worker">↻ 重新发起</button>
+          <div class="reply-restart-hint">state 归零到 queued · 立即 spawn 对应 source 的 worker（原任务包保留）</div>
+        </div>
+        <!-- 错误/成功浮层（sendReply/restartTaskAction 共用）-->
+        <div id="modalReplyErr" class="reply-toast" style="display:none"></div>
+      </div>
+    </div>
+    <!-- 右侧信息栏（任务信息 / 描述 / 操作，app.js renderTaskSide 渲染）-->
+    <aside class="detail-side" id="taskSide"></aside>
+  </div>
+</div>
+
+  <!-- ===== 新建任务 Modal ===== -->
+  <div id="newTaskModal" style="display:none;position:fixed;inset:0;background:var(--mask);backdrop-filter:blur(3px);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)closeNewTaskModal()">
+    <div style="background:var(--card);border:1px solid var(--hair2);border-radius:16px;padding:22px 26px;width:94%;max-width:720px;max-height:88vh;box-shadow:var(--shadow);animation:rise .3s;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <h2 style="font-family:var(--display);font-size:16px">新建 manual 任务</h2>
+        <span style="margin-left:auto;cursor:pointer;color:var(--mut);font-size:22px" onclick="closeNewTaskModal()">×</span>
+      </div>
+      <div style="font-size:11.5px;color:var(--mut);margin-bottom:14px;font-family:var(--mono)">source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 提交即 spawn（除非派发暂停或达并发上限）</div>
+      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0">
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11.5px;color:var(--mut);font-weight:600">Title（任务标题）</span>
+          <input type="text" id="newTaskTitle" maxlength="200" placeholder="比如：帮我总结 issue #56 的处理进度" style="font-family:var(--sans);font-size:13px;padding:8px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);outline:none">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11.5px;color:var(--mut);font-weight:600">Prompt（发给 claude 的内容）</span>
+          <textarea id="newTaskPrompt" rows="10" placeholder="任务说明、上下文、期望产出..." style="font-family:var(--sans);font-size:13px;padding:10px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);resize:vertical;outline:none;line-height:1.6"></textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11.5px;color:var(--mut);font-weight:600">描述（可选 · 自己看的备注，不会发给 claude）</span>
+          <textarea id="newTaskDesc" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…" style="font-family:var(--sans);font-size:13px;padding:8px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);resize:vertical;outline:none;line-height:1.6"></textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11.5px;color:var(--mut);font-weight:600">Model</span>
+          <!-- 自定义 model 下拉：与详情页「继承任务 model」同款组件，隐藏 native select 只作 value 载体 -->
+          <select id="newTaskModel" style="display:none">
+            <option value="claude-opus-4-8" selected>Opus 4.8</option>
+            <option value="claude-fable-5">Fable 5</option>
+            <option value="claude-opus-4-7">Opus 4.7</option>
+            <option value="claude-sonnet-5">Sonnet 5</option>
+            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+          </select>
+          <div class="reply-model-wrap" id="newTaskModelWrap">
+            <button type="button" class="reply-model-btn form-size" id="newTaskModelBtn" title="选择 model" style="width:100%">
+              <span class="reply-model-btn-icon">✦</span>
+              <span class="reply-model-btn-label">Opus 4.8</span>
+              <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="reply-model-menu" id="newTaskModelMenu" role="listbox"></div>
+          </div>
+        </label>
+      </div>
+      <div id="newTaskErr" style="display:none;margin-top:10px;padding:8px 12px;background:var(--coralS);border:1px solid rgba(239,106,106,.3);border-radius:8px;font-size:11.5px;color:var(--coralT);font-family:var(--mono)"></div>
+      <div id="newTaskWarn" style="display:none;margin-top:10px;padding:8px 12px;background:var(--amberS);border:1px solid rgba(232,179,75,.3);border-radius:8px;font-size:11.5px;color:var(--amber);font-family:var(--mono)"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex:none">
+        <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);cursor:pointer;user-select:none" title="勾选后任务存为 plan 态，在看板确认排队后才执行">
+          <input type="checkbox" id="newTaskPlanFirst" style="accent-color:var(--accent)">先计划（确认后再执行）
+        </label>
+        <span style="font-size:11px;color:var(--dim);flex:1">不勾选则提交后立即 spawn 独立 worker</span>
+        <button class="btn" onclick="closeNewTaskModal()">取消</button>
+        <button class="btn btn-primary" id="newTaskSubmit">提交</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 新建 / 编辑派发器 Modal（派发链 Node 化 2026-07-10：脚本内容直接在表单里写）===== -->
+  <div id="newDispatcherModal" style="display:none;position:fixed;inset:0;background:var(--mask);backdrop-filter:blur(3px);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)closeNewDispatcherModal()">
+    <div style="background:var(--card);border:1px solid var(--hair2);border-radius:16px;padding:22px 26px;width:94%;max-width:860px;max-height:90vh;box-shadow:var(--shadow);animation:rise .3s;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <h2 id="newDispTitle" style="font-family:var(--display);font-size:16px">新建派发器</h2>
+        <span style="margin-left:auto;cursor:pointer;color:var(--mut);font-size:22px" onclick="closeNewDispatcherModal()">×</span>
+      </div>
+      <div style="font-size:11.5px;color:var(--mut);margin-bottom:14px;font-family:var(--mono)">Node 脚本 · export default async function tick(ctx) · 看板进程内调度（上一轮未结束自动跳过）</div>
+      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:180px">
+            <span style="font-size:11.5px;color:var(--mut);font-weight:600">场景来源</span>
+            <select id="newDispType" style="font-family:var(--sans);font-size:13px;padding:8px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);outline:none"></select>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:180px">
+            <span style="font-size:11.5px;color:var(--mut);font-weight:600">名称（看板显示）</span>
+            <input type="text" id="newDispLabel" maxlength="40" style="font-family:var(--sans);font-size:13px;padding:8px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);outline:none">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;width:130px">
+            <span style="font-size:11.5px;color:var(--mut);font-weight:600">间隔（秒）</span>
+            <input type="number" id="newDispInterval" min="5" max="86400" style="font-family:var(--mono);font-size:13px;padding:8px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);outline:none">
+          </label>
+        </div>
+        <span id="newDispTypeHint" style="font-size:11px;color:var(--dim);font-family:var(--mono)">—</span>
+        <label style="display:flex;flex-direction:column;gap:4px;flex:1;min-height:0">
+          <span style="font-size:11.5px;color:var(--mut);font-weight:600">脚本内容（按场景模板预填，可改；保存即生效）</span>
+          <textarea id="newDispScript" rows="16" spellcheck="false" style="font-family:var(--mono);font-size:11.5px;line-height:1.55;padding:10px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);resize:vertical;outline:none;white-space:pre;overflow-x:auto"></textarea>
+        </label>
+      </div>
+      <div id="newDispErr" style="display:none;margin-top:10px;padding:8px 12px;background:var(--coralS);border:1px solid rgba(239,106,106,.3);border-radius:8px;font-size:11.5px;color:var(--coralT);font-family:var(--mono);max-height:120px;overflow:auto"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex:none">
+        <span id="newDispTaskName" style="font-size:11px;color:var(--dim);font-family:var(--mono);flex:1">—</span>
+        <button class="btn" onclick="closeNewDispatcherModal()">取消</button>
+        <button class="btn btn-primary" id="newDispSubmit">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 添加本机 CLI 会话 Modal ===== -->
+  <div id="addCliModal" style="display:none;position:fixed;inset:0;background:var(--mask);backdrop-filter:blur(3px);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:var(--card);border:1px solid var(--hair2);border-radius:16px;padding:22px 26px;width:94%;max-width:820px;max-height:88vh;box-shadow:var(--shadow);animation:rise .3s;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <h2 style="font-family:var(--display);font-size:16px">添加本机 CLI 会话</h2>
+        <span style="margin-left:auto;cursor:pointer;color:var(--mut);font-size:22px" onclick="closeAddCliModal()">×</span>
+      </div>
+      <div style="font-size:11.5px;color:var(--mut);margin-bottom:14px;line-height:1.6">
+        输入 <b>session id 前缀</b>（6+ hex）或 <b>会话关键字</b> 搜索本机 <code style="font-family:var(--mono);background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11px">~/.claude/projects/</code> 下的 jsonl。
+        添加后卡片自动出现在看板对应桶（活跃 5min 内=processing / 5–30min=awaiting-human / &gt;30min=已归档）。
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex:none">
+        <input type="text" id="addCliSearch" placeholder="04689bb1 · 或关键字（近 30 天 jsonl 内匹配头 32KB）" style="flex:1;font-family:var(--sans);font-size:13px;padding:9px 12px;border:1px solid var(--hair2);border-radius:8px;background:var(--card2);color:var(--ink);outline:none">
+        <button class="btn btn-primary" id="addCliSearchBtn" style="font-size:12px;padding:8px 18px">搜索</button>
+      </div>
+      <div id="addCliResults" style="flex:1 1 auto;overflow-y:auto;min-height:200px;border:1px solid var(--hair);border-radius:10px;padding:6px;background:var(--soft)">
+        <div style="color:var(--dim);font-size:12.5px;padding:14px;text-align:center">输入关键字或 sid 前缀，回车搜索</div>
+      </div>
+      <div id="addCliErr" style="display:none;margin-top:10px;padding:8px 12px;background:var(--coralS);border:1px solid rgba(239,106,106,.3);border-radius:8px;font-size:11.5px;color:var(--coralT);font-family:var(--mono)"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex:none">
+        <span style="font-size:11px;color:var(--dim);flex:1">CLI 会话为只读展示，回复请在终端里继续；从看板移除不影响 CLI 本体</span>
+        <button class="btn" onclick="closeAddCliModal()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 自定义 confirm modal（替代原生 confirm()：Esc=取消 / Enter=确认 / 点遮罩=取消）===== -->
+  <div id="confirmModal" style="display:none;position:fixed;inset:0;background:var(--mask);backdrop-filter:blur(3px);z-index:1100;align-items:center;justify-content:center">
+    <div class="confirm-card">
+      <div id="confirmTitle" class="confirm-title">—</div>
+      <div id="confirmBody" class="confirm-body">—</div>
+      <div class="confirm-actions">
+        <button class="btn" id="confirmCancel">取消</button>
+        <button class="btn btn-primary" id="confirmOk">确认</button>
+      </div>
+    </div>
+  </div>
+
+<script src="./marked.min.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

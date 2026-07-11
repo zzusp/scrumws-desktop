@@ -1,4 +1,4 @@
-const { Tray, Menu, nativeImage } = require('electron');
+import { Tray, Menu, nativeImage } from 'electron';
 
 // 纯色占位图标，UI 风格定稿（G5）后替换为正式 icon
 function placeholderIcon() {
@@ -13,7 +13,7 @@ function placeholderIcon() {
   return nativeImage.createFromBitmap(buf, { width: size, height: size });
 }
 
-function createTray({ onShow, onQuit, port }) {
+export function createTray({ onShow, onQuit, port }) {
   const tray = new Tray(placeholderIcon());
   tray.setToolTip(`scrumws-desktop · 127.0.0.1:${port}`);
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -24,5 +24,3 @@ function createTray({ onShow, onQuit, port }) {
   tray.on('double-click', onShow);
   return tray;
 }
-
-module.exports = { createTray };

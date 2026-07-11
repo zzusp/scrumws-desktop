@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "description": "小小鹏分身运行看板 · 桌面端（Electron）",
+  "type": "module",
   "main": "electron/main.js",
+  "engines": { "node": ">=20.11" },
   "scripts": {
     "start": "electron .",
+    "start:web": "node platform/standalone.js",
     "dist": "electron-builder --win"
   },
   "devDependencies": {

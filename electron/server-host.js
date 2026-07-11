@@ -1,18 +1,9 @@
-const http = require('http');
-
-// G4 平台核迁移前的占位 server：只证明「壳生命周期 + 端口链路」通。
-// 迁移后此文件改为装载 platform/ 下的平台核（server + 调度器 + checker）。
-function startServer(config) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<!doctype html><meta charset="utf-8"><title>scrumws</title>'
-        + '<body style="background:#111;color:#eee;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">'
-        + '<div>scrumws-desktop 骨架已启动（G3 占位页，平台核迁移中）</div>');
-    });
-    server.listen(config.port, '127.0.0.1', () => resolve({ port: config.port, server }));
-    server.on('error', reject);
-  });
+// 平台核宿主：配置 → 环境注入（platform 模块在 import 时读取 SCRUMWS_*），再动态加载。
+// 必须先注env后 import——paths.js 的 ROOT 在模块加载期定值。
+export async function startServer(config) {
+  process.env.SCRUMWS_DATA_ROOT = config.dataRoot;
+  process.env.SCRUMWS_PORT = String(config.port);
+  if (!config.schedulerEnabled) process.env.DASHBOARD_NO_SCHEDULER = '1';
+  const { start } = await import('../platform/server.js');
+  return start();
 }
-
-module.exports = { startServer };

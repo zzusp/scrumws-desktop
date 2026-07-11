@@ -1,7 +1,7 @@
-const { app, BrowserWindow } = require('electron');
-const { loadConfig } = require('./config');
-const { startServer } = require('./server-host');
-const { createTray } = require('./tray');
+import { app, BrowserWindow, dialog } from 'electron';
+import { loadConfig } from './config.js';
+import { startServer } from './server-host.js';
+import { createTray } from './tray.js';
 
 let mainWindow = null;
 let tray = null;
@@ -9,7 +9,7 @@ let quitting = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  // 已有实例在跑：把任务交给它（second-instance 事件），自己退出，防双派发
+  // 已有实例在跑：把焦点交给它（second-instance 事件），自己退出，防双派发
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -18,7 +18,15 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     const config = loadConfig();
-    const { port } = await startServer(config);
+    let port;
+    try {
+      ({ port } = await startServer(config));
+    } catch (e) {
+      dialog.showErrorBox('scrumws-desktop 启动失败',
+        e.code === 'EADDRINUSE' ? `端口 ${config.port} 已被占用（另一实例在跑？）` : String(e.stack || e));
+      app.exit(1);
+      return;
+    }
 
     mainWindow = new BrowserWindow({
       width: 1440,
