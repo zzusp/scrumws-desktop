@@ -293,7 +293,7 @@ function taskCardHtml(t, section) {
     : t.source === 'issue'
       ? '<span class="tag tag-amber">issue</span>'
       : t.source === 'cli'
-        ? '<span class="tag" style="background:rgba(217,119,87,.16);color:var(--accent)">CLI</span>'
+        ? '<span class="tag" style="background:var(--brandS);color:var(--brand)">CLI</span>'
         : '<span class="tag tag-mut">' + (t.source || '?') + '</span>';
 
   // 按钮（底部 ghost 化，卡片 hover 提亮）：✎ 描述常驻；plan=确认排队+归档；processing/queued=中断；done/awaiting-human=归档
@@ -851,8 +851,8 @@ function updateReplyBoxAvailability(taskKey) {
   // CLI 会话三态：终端占用 → 只读；正在算 → 等；空闲无进程 → 可从看板回复（headless --resume）
   if (isCli) {
     stateTag.className = 'tag';
-    stateTag.style.background = 'rgba(217,119,87,.16)';
-    stateTag.style.color = 'var(--accent)';
+    stateTag.style.background = 'var(--brandS)';
+    stateTag.style.color = 'var(--brand)';
     const attachedPid = t.cli?.attachedPid;
     if (attachedPid) {
       stateTag.textContent = 'CLI · 终端占用';
@@ -1026,7 +1026,7 @@ function renderTaskSide(taskKey) {
     r?.hasInflight ? '<span class="tag tag-amber" style="animation:pulse 1.6s infinite">● 实时</span>' : '',
   ].filter(Boolean).join(' ');
   const failureHtml = t.outcomeDetail?.failureReason
-    ? `<div style="margin-top:10px;padding:8px 10px;border:1px solid rgba(239,106,106,.35);border-radius:8px;background:rgba(239,106,106,.08);color:var(--coralT);font-size:11.5px;line-height:1.6">${escapeHtml(t.outcomeDetail.failureReason)}</div>`
+    ? `<div style="margin-top:10px;padding:8px 10px;border:1px solid color-mix(in oklab, var(--destructive) 35%, transparent);border-radius:8px;background:color-mix(in oklab, var(--destructive) 8%, transparent);color:var(--coralT);font-size:11.5px;line-height:1.6">${escapeHtml(t.outcomeDetail.failureReason)}</div>`
     : '';
   const commentHtml = t.business?.commentUrl
     ? `<div style="margin-top:10px;font-size:12px"><a href="${escapeAttr(t.business.commentUrl)}" target="_blank" style="color:var(--cyan)">↗ 已发 issue 评论</a></div>`
@@ -1041,7 +1041,7 @@ function renderTaskSide(taskKey) {
     }
     btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
   } else {
-    if (t.state === 'plan' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:rgba(67,201,138,.4)" onclick="approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button>`);
+    if (t.state === 'plan' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button>`);
     if (['queued', 'processing'].includes(t.state) && !t.isArchive) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${escapeAttr(t.taskKey)}')">中断</button>`);
     if ((t.resolvedAt || t.state === 'plan') && !t.isArchive) btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
   }
@@ -1061,7 +1061,7 @@ function renderTaskSide(taskKey) {
     });
   }
   // 动态：state 流转时间线（参考 cloud-team 右侧 timeline：竖线 + 彩点 + 间隔耗时）
-  const TL_DOT = { plan: 'var(--dim)', queued: 'var(--cyan)', processing: 'var(--jade)', done: 'var(--accent)', 'awaiting-human': 'var(--coral)', cancelled: 'var(--coral)' };
+  const TL_DOT = { plan: 'var(--dim)', queued: 'var(--mut)', processing: 'var(--amber)', done: 'var(--cyan)', 'awaiting-human': 'var(--coral)', cancelled: 'var(--coral)' };
   const history = Array.isArray(t.history) ? t.history : [];
   const tlHtml = history.map((h, i) => {
     let deltaTxt = '';
@@ -1451,7 +1451,7 @@ function renderUserTurn(m) {
   let escaped = escapeHtml(text);
   for (const ccText of humanCcTexts) {
     const esc = escapeHtml(ccText).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    escaped = escaped.replace(new RegExp(esc, 'g'), (m0) => `<mark style="background:rgba(67,201,138,.25);color:var(--ink);padding:1px 4px;border-radius:3px">${m0}</mark>`);
+    escaped = escaped.replace(new RegExp(esc, 'g'), (m0) => `<mark style="background:color-mix(in oklab, var(--success) 25%, transparent);color:var(--ink);padding:1px 4px;border-radius:3px">${m0}</mark>`);
   }
   const bubble = text.length > 800
     ? `<details><summary style="cursor:pointer;list-style:none;white-space:pre-wrap;word-break:break-word;line-height:1.7"><span style="color:var(--amber);font-size:10.5px;font-family:var(--mono);margin-right:6px;background:var(--amberS);padding:1px 6px;border-radius:4px">▸ prompt 模板 · ${text.length}c</span></summary><div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--hair);white-space:pre-wrap;word-break:break-word">${escaped}</div></details>`
@@ -1621,7 +1621,7 @@ function renderCliCandidateRow(c) {
   return `
     <div style="padding:10px 12px;border-bottom:1px solid var(--hair);display:flex;flex-direction:column;gap:4px">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-family:var(--mono);font-size:11.5px;color:var(--accent);font-weight:600">${short}</span>
+        <span style="font-family:var(--mono);font-size:11.5px;color:var(--brand);font-weight:600">${short}</span>
         <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">${escapeHtml(c.cwd || c.projectDir || '—')}</span>
         <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-left:auto">${c.mtime} · ${c.sizeMb} MB</span>
       </div>
