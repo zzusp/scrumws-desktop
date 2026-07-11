@@ -24,7 +24,7 @@ if (!gotLock) {
     try {
       ({ port } = await startServer(config));
     } catch (e) {
-      dialog.showErrorBox('scrumws-desktop 启动失败',
+      dialog.showErrorBox('ScrumWS 启动失败',
         e.code === 'EADDRINUSE' ? `端口 ${config.port} 已被占用（另一实例在跑？）` : String(e.stack || e));
       app.exit(1);
       return;

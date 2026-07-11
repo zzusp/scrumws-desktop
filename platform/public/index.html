@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>小小鹏 · 运行看板</title>
+<title>ScrumWS</title>
 <script>document.documentElement.dataset.theme = 'light';</script>
 <style>
 /* ==========================================================================
@@ -118,7 +118,7 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 
 /* 侧边栏：主操作 */
 .sb-actions{display:flex;flex-direction:column;gap:6px}
-.sb-actions .btn{width:100%;justify-content:flex-start;gap:8px;padding:7px 10px;font-size:12px}
+.sb-actions .btn{width:100%;justify-content:flex-start;gap:8px;padding:7px 10px;font-size:12px;background:var(--background)}
 .shell.collapsed .sb-actions .btn{justify-content:center;padding:7px 0}
 .sidebar .btn:not(.btn-primary):hover{background:var(--sidebar-accent);border-color:var(--sidebar-border);color:var(--sidebar-accent-foreground)}
 
@@ -145,6 +145,8 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 .topbar{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 22px 0 8px}
 .sb-toggle{width:30px;height:26px;padding:0;border-color:transparent;background:transparent;color:var(--mut)}
 .sb-toggle:hover{background:var(--sidebar-accent);border-color:transparent;color:var(--sidebar-accent-foreground)}
+.crumb-app{font-size:12.5px;font-weight:500;color:var(--mut)}
+.crumb-sep{font-size:12px;color:var(--dim);margin:0 -2px}
 .view-title{font-size:13.5px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
 .top-right{margin-left:auto;display:flex;align-items:center;gap:12px}
 #clock{font-family:var(--mono);font-size:11.5px;color:var(--mut);font-variant-numeric:tabular-nums}
@@ -240,6 +242,17 @@ select.field-input{background:var(--card)}
 .modal-x{margin-left:auto;cursor:pointer;color:var(--mut);font-size:21px;line-height:1}
 .modal-x:hover{color:var(--ink)}
 .modal-hint{font-size:11px;color:var(--mut);margin-bottom:14px;font-family:var(--mono);line-height:1.6}
+
+/* ---------- 任务看板：筛选工具行（参考 landing-hero 顶部 toolbar 的 outline 按钮风）---------- */
+.board-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+.board-toolbar .bt-label{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--mut);margin-right:2px}
+.filter-chip{padding:4px 10px;font-size:11.5px}
+.filter-chip.active{background:var(--accent);color:var(--accent-foreground);border-color:transparent;font-weight:600}
+/* 来源过滤：属性打在 #view-board 上、卡片带 data-source，app.js 周期重渲染不冲掉筛选态 */
+#view-board[data-filter="chat"] .taskcard:not([data-source="chat"]),
+#view-board[data-filter="issue"] .taskcard:not([data-source="issue"]),
+#view-board[data-filter="manual"] .taskcard:not([data-source="manual"]),
+#view-board[data-filter="cli"] .taskcard:not([data-source="cli"]){display:none}
 
 /* ---------- 任务看板：状态列（multica board 范式，参考 landing-hero：状态色浅底列 + 实心状态胶囊 + 白底计数）---------- */
 .col-card{background:color-mix(in oklab, var(--muted) 40%, transparent);border-radius:var(--r-xl);padding:8px;overflow:hidden;display:flex;flex-direction:column}
@@ -418,13 +431,13 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <svg class="ic" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
       </span>
       <span class="brand-text">
-        <span class="name">小小鹏 · 运行看板</span>
+        <span class="name">ScrumWS</span>
         <span class="sub">分身 + 本机 CLI</span>
       </span>
     </a>
 
     <div class="sb-actions">
-      <button class="btn btn-primary" id="newTaskBtn" title="手动创建 manual 任务">
+      <button class="btn" id="newTaskBtn" title="手动创建 manual 任务">
         <svg class="ic" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
         <span class="sb-label">新建任务</span>
       </button>
@@ -439,6 +452,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
       <a href="#/board" data-nav="board">
         <svg class="ic" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/></svg>
         <span class="sb-label">任务看板</span>
+      </a>
+      <a href="#/archive" data-nav="archive">
+        <svg class="ic" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
+        <span class="sb-label">归档</span>
       </a>
       <div class="sb-group">编排</div>
       <a href="#/dispatcher" data-nav="dispatcher">
@@ -471,6 +488,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
       <button class="btn sb-toggle" id="sbToggle" title="折叠 / 展开侧边栏">
         <svg class="ic" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
       </button>
+      <span class="crumb-app">ScrumWS</span>
+      <span class="crumb-sep">›</span>
       <span class="view-title" id="viewTitle">任务看板</span>
       <span id="schedulerModeTag" class="tag tag-amber" style="display:none">只读实例</span>
       <div class="top-right">
@@ -525,9 +544,17 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </section>
         </div>
 
-        <!-- ============ 页面 2：任务看板（状态列 + 归档卡）============ -->
+        <!-- ============ 页面 2：任务看板（筛选工具行 + 状态列）============ -->
         <!-- 状态色语义：processing→warning · done→info · awaiting-human→destructive · queued→muted -->
         <div id="view-board" class="view" style="display:none">
+          <div class="board-toolbar" id="boardToolbar">
+            <span class="bt-label"><svg class="ic" viewBox="0 0 24 24" style="width:13px;height:13px"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>来源</span>
+            <button class="btn filter-chip active" data-filter="">全部</button>
+            <button class="btn filter-chip" data-filter="chat">dws</button>
+            <button class="btn filter-chip" data-filter="issue">issue</button>
+            <button class="btn filter-chip" data-filter="manual">manual</button>
+            <button class="btn filter-chip" data-filter="cli">CLI</button>
+          </div>
           <div id="lifecycleGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px">
             <section class="col-card" id="section-plan">
               <div class="col-head">
@@ -571,15 +598,18 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             </section>
           </div>
 
-          <!-- 归档卡（默认收起） -->
-          <section class="card" id="archivedSection" style="margin-top:var(--gap);padding:12px 18px">
+        </div>
+
+        <!-- ============ 页面 2b：归档（从看板拆出的独立菜单，默认展开）============ -->
+        <div id="view-archive" class="view" style="display:none">
+          <section class="card" id="archivedSection" style="padding:12px 18px">
             <div id="archivedHeader" style="display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none">
-              <span id="archivedCaret" style="font-family:var(--mono);color:var(--dim);font-size:11px;width:10px">▸</span>
+              <span id="archivedCaret" style="font-family:var(--mono);color:var(--dim);font-size:11px;width:10px">▾</span>
               <h3 style="font-family:var(--display);font-size:12.5px;color:var(--ink2)">已归档</h3>
               <span id="count-archived" class="tag tag-mut">0</span>
               <span style="margin-left:auto;font-size:11px;color:var(--dim)">runner-archive/ · 按结束时间倒序</span>
             </div>
-            <div id="list-archived" style="display:none;flex-direction:column;gap:8px;margin-top:12px"></div>
+            <div id="list-archived" style="display:flex;flex-direction:column;gap:8px;margin-top:12px"></div>
           </section>
         </div>
 
@@ -806,6 +836,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
     var name = h.indexOf('#/task/') === 0 ? '任务详情'
       : h.indexOf('#/dispatcher') === 0 ? '派发器'
       : h.indexOf('#/dashboard') === 0 ? '数据看板'
+      : h.indexOf('#/archive') === 0 ? '归档'
       : '任务看板';
     var el = document.getElementById('viewTitle');
     if (el) el.textContent = name;
@@ -814,6 +845,16 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
   }
   window.addEventListener('hashchange', syncTop);
   syncTop();
+  // 看板来源筛选（视图层：筛选态挂 #view-board 属性 + CSS 匹配卡片 data-source，独立于 app.js 数据刷新）
+  var tb = document.getElementById('boardToolbar');
+  if (tb) tb.addEventListener('click', function (e) {
+    var chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    tb.querySelectorAll('.filter-chip').forEach(function (c) { c.classList.toggle('active', c === chip); });
+    var vb = document.getElementById('view-board');
+    if (chip.dataset.filter) vb.dataset.filter = chip.dataset.filter;
+    else vb.removeAttribute('data-filter');
+  });
 })();
 </script>
 <script src="./marked.min.js"></script>

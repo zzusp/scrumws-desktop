@@ -325,7 +325,7 @@ function taskCardHtml(t, section) {
   const titleBadge = t.hasCustomTitle ? '<span title="已重命名" style="color:var(--amber);font-size:10px;margin-right:4px">★</span>' : '';
 
   return `
-    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" onclick="openTaskModal('${escapeAttr(t.taskKey)}')">
+    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="openTaskModal('${escapeAttr(t.taskKey)}')">
       <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${titleBadge}${escapeHtml(titleShort)}</div>
       ${statusLine}
       ${descLine}
@@ -779,7 +779,7 @@ function renderModalBody(keepScroll = false) {
 }
 
 // ---- hash 路由：#/dispatcher · #/board · #/dashboard · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
-const ROUTE_VIEWS = ['dispatcher', 'board', 'dashboard', 'task'];
+const ROUTE_VIEWS = ['dispatcher', 'board', 'archive', 'dashboard', 'task'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
@@ -789,6 +789,7 @@ function router() {
     view = 'task';
     taskKey = decodeURIComponent(mTask[1]);
   } else if (h.startsWith('#/dispatcher')) view = 'dispatcher';
+  else if (h.startsWith('#/archive')) view = 'archive';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
 
   for (const v of ROUTE_VIEWS) { const el = $(`view-${v}`); if (el) el.style.display = v === view ? (v === 'task' ? 'flex' : '') : 'none'; }

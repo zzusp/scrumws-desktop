@@ -15,7 +15,7 @@ function placeholderIcon() {
 
 export function createTray({ onShow, onQuit, port }) {
   const tray = new Tray(placeholderIcon());
-  tray.setToolTip(`scrumws-desktop · 127.0.0.1:${port}`);
+  tray.setToolTip(`ScrumWS · 127.0.0.1:${port}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开看板', click: onShow },
     { type: 'separator' },
