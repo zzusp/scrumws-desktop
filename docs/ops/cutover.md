@@ -43,7 +43,7 @@ $s.dispatchers.Count     # 期望 2（chat-watch / issue-watch）
 
 ## 3. 常驻（开机自启）
 
-app 内开启「开机自启」（`app.setLoginItemSettings`，G7 交付项）。
+`config.json` 置 `"autoStart": true` 后重启 app（打包版启动时按此调用 `app.setLoginItemSettings` 注册登录自启）。
 不再需要任何 Windows 计划任务——「看板进程 = 调度平台」的语义不变，宿主从 schtasks+node 换成托盘常驻 app。
 
 ## 4. 回滚（任一步不符合预期）

@@ -27,10 +27,10 @@
 | G2 | multica 风格研究：设计 token / 布局 / 组件风格 / 桌面集成模式 | `docs/spec/multica-style-guide.md` 落档 | ✅ 完成 |
 | G3 | Electron 骨架：窗口/托盘/单实例/配置体系/独立端口起占位 server | `npm start` 实跑，窗口+托盘出现，占位页可见 | ✅ 完成（托盘交互项留 C12） |
 | G4 | 平台核迁移：server + 进程内调度器 + runner-checker + 全部 API，路径配置化 | 新 app 独立端口实跑，API 逐条与旧版 8788 对拍一致 | ✅ 读端点全对拍通过（写端点/调度实跑留 C13/C14） |
-| G5 | UI 重构：multica 风格实现全部页面，去掉运营洞察 | 各功能分区与旧版对齐（运营洞察除外），实操可用 | 待启动 |
-| G6 | 功能验收：全用例过 matrix | `matrix.csv` 全绿（调度链用 sandbox runtime 验证，不碰生产 runner-state） | 待启动 |
-| G7 | 打包：electron-builder Windows 安装包 + 自启 + 托盘实测 | 安装包在本机实装实跑 | 待启动 |
-| G8 | 切换 runbook：停旧起新步骤 + 回滚路径 | `docs/ops/cutover.md`；实际切换由孙鹏拍板执行 | 待启动 |
+| G5 | UI 重构：multica 风格实现全部页面，去掉运营洞察 | 各功能分区与旧版对齐（运营洞察除外），实操可用 | ✅ 完成（round-3：契约复核 + 7 截图，app.js 零改动） |
+| G6 | 功能验收：全用例过 matrix | `matrix.csv` 全绿（调度链用 sandbox runtime 验证，不碰生产 runner-state） | ✅ C01–C16 全 PASS（C12 托盘菜单点击、C16 NSIS 实装两处留人工注记） |
+| G7 | 打包：electron-builder Windows 安装包 + 自启 + 托盘实测 | 安装包在本机实装实跑 | ✅ 构建成功 + win-unpacked 实跑（round-4；NSIS 实装留切换时） |
+| G8 | 切换 runbook：停旧起新步骤 + 回滚路径 | `docs/ops/cutover.md`；实际切换由孙鹏拍板执行 | ✅ runbook 落档；**执行等孙鹏拍板** |
 
 ## 进展记录
 
@@ -38,3 +38,4 @@
 - **2026-07-11 R1（续）**：G1/G2 完成并落档 spec 两份；electron 43.1.0 + electron-builder 26.15.3 装毕；G3 壳代码就绪（commit 89750f7）；看板源码已复制到 `platform/`（去 aggregate.js/psexec.js，21 文件）。定下 D5（UI 不换栈移植风格）/ D6（洞察去除范围）。进入 G4 平台核配置化改造。
 - **2026-07-11 R2**：G4 迁移完成并首轮实跑验证通过（matrix C01–C11 全 PASS，见 round-1.md）。关键适配：ELECTRON_RUN_AS_NODE fork 修正、代码资产路径与数据根解耦（否则会加载旧看板代码）、Electron 二进制镜像补装。旧看板 8788 全程未受影响。进入 G5 UI 重构（multica 风格）。
 - **2026-07-11 R3**：C13（12 个写端点，sandbox 全生命周期）+ C14（Electron 宿主调度器实跑，桩派发器逐 tick 独立 fork）PASS，见 round-2.md。第三处 execPath 隐患（validateScript --check）同款修复并被"坏脚本拦截"用例反证。G5 UI 重构由实现代理并行进行中。
+- **2026-07-11 R4（收口）**：G5 完成（index.html 全量重写、app.js 零改动、6 个"缺失 ID"独立复核证实为动态创建非回归）；C12/C15 PASS（round-3.md）；G7 打包成功 + win-unpacked 实跑 PASS（round-4.md）；G8 runbook 已备。**matrix C01–C16 全绿。剩余人工项**：① 托盘菜单/折叠等 GUI 交互首用顺手确认；② NSIS 实装 + autoStart 注册（切换时）；③ 正式切换（cutover.md，孙鹏拍板）。

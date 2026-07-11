@@ -18,6 +18,8 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     const config = loadConfig();
+    // 开机自启随配置对齐（仅打包版；dev 下 execPath 是裸 electron.exe，注册了也不对）
+    if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!config.autoStart });
     let port;
     try {
       ({ port } = await startServer(config));

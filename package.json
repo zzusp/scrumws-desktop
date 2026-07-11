@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "小小鹏分身运行看板 · 桌面端（Electron）",
+  "author": "sunpeng <sunpeng@hiqlcd.com>",
   "type": "module",
   "main": "electron/main.js",
   "engines": { "node": ">=20.11" },
@@ -14,5 +15,14 @@
   "devDependencies": {
     "electron": "^43.1.0",
     "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.hiq.scrumws-desktop",
+    "productName": "scrumws-desktop",
+    "asar": false,
+    "files": ["electron/**", "platform/**", "package.json"],
+    "directories": { "output": "dist" },
+    "win": { "target": ["nsis"] },
+    "nsis": { "oneClick": true, "perMachine": false }
   }
 }
