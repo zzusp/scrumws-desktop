@@ -29,3 +29,11 @@
   | 计数胶囊底 | #FFFFFF | 白 | ✓ |
   | awaiting 胶囊 | #E7000B | （参考图无此列，= --destructive，multica blocked 规范） | ✓ |
 - 服务日志确认只读实例（scheduler.lock 由旧看板持有），旧 8788 未受影响
+
+## C18 补充：菜单（侧边栏）漏改修复
+
+孙鹏指出菜单颜色没改。根因：R5 把侧边栏底设为 `--shell-bg`=muted（oklch 0.967），菜单 hover/选中用的 `--accent` 也是 0.967——**胶囊与背景同色，选中态不可见**；参考图（及 multica tokens.css）侧边栏有专用 sidebar token 组：底 `--sidebar`（0.985 ≈ #FAFAFA）、选中胶囊 `--sidebar-accent`（0.95 ≈ #EEEEF0）。
+
+修复：引入 `--sidebar/--sidebar-accent/--sidebar-accent-foreground/--sidebar-border` 四 token，`--shell-bg` 改指 `--sidebar`；`.topnav a:hover/.active`、`.sb-toggle:hover`、侧边栏内非 primary 按钮 hover 全部换 sidebar-accent（新增规则特异性 (0,4,0) 高于后文 `.btn:hover`，不受书写顺序反超——theme-btn 同款坑已预防）。
+
+验证（`round-6/board-sidebar-fixed.png` 像素回采 vs 参考图）：侧边栏底 #FAFAFA vs #FAFAFA ✓、选中胶囊 #EEEEF0 vs #EEEEF0 ✓，目检"任务看板"选中项灰胶囊清晰可见（与参考图 Issues 项一致）。

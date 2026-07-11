@@ -34,8 +34,13 @@
   --info:oklch(0.55 0.18 250);
   --radius:0.625rem;
   --scrollbar-thumb:oklch(0 0 0 / 10%);
+  /* --- multica sidebar token（源：tokens.css light §sidebar）--- */
+  --sidebar:oklch(0.985 0 0);
+  --sidebar-accent:oklch(0.95 0.002 286.4);
+  --sidebar-accent-foreground:oklch(0.21 0.006 285.9);
+  --sidebar-border:oklch(0.92 0.004 286.3);
   /* --- 布局派生 --- */
-  --shell-bg:oklch(0.967 0.001 286.4);         /* 页面底（sidebar 区）——内容盒 bg=background 形成层次差 */
+  --shell-bg:var(--sidebar);                   /* 页面底（sidebar 区）——内容盒 bg=background 形成层次差 */
   /* --- 旧名别名：引用型 --- */
   --bg:var(--background);
   --ink:var(--foreground);
@@ -115,13 +120,14 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 .sb-actions{display:flex;flex-direction:column;gap:6px}
 .sb-actions .btn{width:100%;justify-content:flex-start;gap:8px;padding:7px 10px;font-size:12px}
 .shell.collapsed .sb-actions .btn{justify-content:center;padding:7px 0}
+.sidebar .btn:not(.btn-primary):hover{background:var(--sidebar-accent);border-color:var(--sidebar-border);color:var(--sidebar-accent-foreground)}
 
 /* 侧边栏：分组导航（.topnav a[data-nav] 契约保留） */
 .topnav{display:flex;flex-direction:column;gap:2px;flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
 .sb-group{font-size:10px;color:var(--dim);font-weight:600;letter-spacing:.09em;padding:12px 10px 4px;text-transform:uppercase}
 .topnav a{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:var(--r-lg);color:var(--mut);font-size:12.5px;font-weight:500;text-decoration:none;transition:background .12s,color .12s;white-space:nowrap}
-.topnav a:hover{color:var(--accent-foreground);background:var(--accent)}
-.topnav a.active{color:var(--accent-foreground);background:var(--accent);font-weight:600}
+.topnav a:hover{color:var(--sidebar-accent-foreground);background:var(--sidebar-accent)}
+.topnav a.active{color:var(--sidebar-accent-foreground);background:var(--sidebar-accent);font-weight:600}
 .shell.collapsed .topnav a{justify-content:center;padding:8px 0}
 .shell.collapsed .topnav{gap:4px;padding-top:8px}
 
@@ -138,7 +144,7 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 /* ---------- 顶栏（窄）+ 内容主盒 ---------- */
 .topbar{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 22px 0 8px}
 .sb-toggle{width:30px;height:26px;padding:0;border-color:transparent;background:transparent;color:var(--mut)}
-.sb-toggle:hover{background:var(--accent);border-color:transparent;color:var(--accent-foreground)}
+.sb-toggle:hover{background:var(--sidebar-accent);border-color:transparent;color:var(--sidebar-accent-foreground)}
 .view-title{font-size:13.5px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
 .top-right{margin-left:auto;display:flex;align-items:center;gap:12px}
 #clock{font-family:var(--mono);font-size:11.5px;color:var(--mut);font-variant-numeric:tabular-nums}
