@@ -1,0 +1,15 @@
+{
+  "name": "scrumws-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "小小鹏分身运行看板 · 桌面端（Electron）",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3"
+  }
+}
