@@ -4,8 +4,8 @@ import path from 'node:path';
 import { collectState } from './lib/collect.js';
 import { readLogs, readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask } from './lib/logs.js';
 import { writeConfig, setPauseInvestigation } from './lib/runner-config.js';
-import { createManualTask, replyToTask, cancelTask, restartTask } from './lib/task-actions.js';
-import { searchCliSessions, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
+import { createManualTask, replyToTask, cancelTask, restartTask, taskCwds } from './lib/task-actions.js';
+import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { createDispatcher, updateDispatcher, deleteDispatcher, findDispatcher, readScript, readTemplate, readRegistry } from './lib/dispatchers.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
@@ -155,7 +155,31 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/runner/resume') {
       return sendJson(res, 200, setPauseInvestigation(false));
     }
-    // 手动新建 manual 任务：body = {title, prompt, model}
+    // 已知工作目录列表（新建任务「选已有目录」下拉）：现有任务 cwd + 近 30 天 CLI session cwd，去重
+    if (pathname === '/api/task/cwds') {
+      const seen = new Set();
+      const cwds = [];
+      for (const c of taskCwds()) { if (!seen.has(c)) { seen.add(c); cwds.push({ cwd: c, source: 'task' }); } }
+      for (const c of sessionCwds({ limit: 80 })) { if (!seen.has(c)) { seen.add(c); cwds.push({ cwd: c, source: 'cli' }); } }
+      return sendJson(res, 200, { ok: true, cwds: cwds.slice(0, 60) });
+    }
+    // 系统目录选择（新建任务「直接选电脑目录」）：仅桌面端（Electron dialog）；web 模式回退提示手填
+    if (req.method === 'POST' && pathname === '/api/pick-dir') {
+      if (!process.versions?.electron) {
+        return sendJson(res, 200, { ok: false, error: 'web 模式无法调起系统目录选择，请直接填写目录绝对路径' });
+      }
+      try {
+        const { dialog, BrowserWindow } = await import('electron');
+        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+        const opts = { title: '选择任务工作目录', properties: ['openDirectory'] };
+        const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+        if (r.canceled || !r.filePaths?.length) return sendJson(res, 200, { ok: true, canceled: true });
+        return sendJson(res, 200, { ok: true, dir: r.filePaths[0] });
+      } catch (e) {
+        return sendJson(res, 200, { ok: false, error: `目录选择失败：${e.message}` });
+      }
+    }
+    // 手动新建 manual 任务：body = {title, prompt, model, description, planFirst, cwd}
     if (req.method === 'POST' && pathname === '/api/task/create') {
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 32 * 1024) req.destroy(); });
@@ -229,6 +253,12 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;
+    }
+    // CLI 添加弹窗默认列表：近 N 分钟活跃 session（免关键字）
+    if (pathname === '/api/cli/recent') {
+      const withinMinutes = Number(searchParams.get('within')) || 30;
+      const limit = Number(searchParams.get('limit')) || 30;
+      return sendJson(res, 200, recentCliSessions({ withinMinutes, limit }));
     }
     // CLI session 白名单：搜索 / 添加 / 移除
     if (req.method === 'POST' && pathname === '/api/cli/search') {

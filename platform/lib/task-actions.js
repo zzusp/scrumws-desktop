@@ -276,8 +276,26 @@ export function restartTask({ taskKey, approve = false }) {
   return { ok: true, taskKey, spawned: true, worker: path.basename(workerScript) };
 }
 
-// 创建 manual 任务 + 立即 spawn manual-worker
-export function createManualTask({ title, prompt, model, description, planFirst }) {
+// 现有任务（runner-state + archive）的 task.json.cwd 去重列表 —— 新建任务「选已有工作目录」下拉用
+export function taskCwds() {
+  const seen = new Set();
+  for (const root of [P.runnerRoot, P.archiveRoot]) {
+    let dirs = [];
+    try { dirs = fs.readdirSync(root); } catch { continue; }
+    for (const name of dirs) {
+      try {
+        const t = JSON.parse(fs.readFileSync(path.join(root, name, 'task.json'), 'utf8'));
+        const c = String(t?.cwd || '').trim();
+        if (c) seen.add(c);
+      } catch { /* 跳过坏包 */ }
+    }
+  }
+  return [...seen];
+}
+
+// 创建 manual 任务 + 立即 spawn manual-worker（planFirst 时只存 plan 不 spawn）
+// cwd（可选）：claude 的工作目录，校验存在且是目录后写进 task.json.cwd，供 worker Set-Location
+export function createManualTask({ title, prompt, model, description, planFirst, cwd }) {
   const t = String(title || '').trim();
   const p = String(prompt || '').trim();
   const m = String(model || readConfig().defaultModel || 'claude-opus-4-7').trim();
@@ -285,6 +303,15 @@ export function createManualTask({ title, prompt, model, description, planFirst 
   if (!t) return { ok: false, error: 'title required' };
   if (!p) return { ok: false, error: 'prompt required' };
   if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
+  // cwd 可选：给了就必须存在且是目录（避免建出跑不起来的任务）
+  let cwdFinal = null;
+  const cwdRaw = String(cwd || '').trim();
+  if (cwdRaw) {
+    let st = null;
+    try { st = fs.statSync(cwdRaw); } catch { return { ok: false, error: `工作目录不存在：${cwdRaw}` }; }
+    if (!st.isDirectory()) return { ok: false, error: `工作目录不是文件夹：${cwdRaw}` };
+    cwdFinal = path.resolve(cwdRaw);
+  }
 
   const cfg = readConfig();
   const max = cfg.maxConcurrentRunners || 5;
@@ -308,6 +335,7 @@ export function createManualTask({ title, prompt, model, description, planFirst 
       taskKey, source: 'manual', title: t, prompt: p, model: m,
       mode: 'single', metaMode: 'overwrite', createdAt: nowStr,
     };
+    if (cwdFinal) taskJson.cwd = cwdFinal;
     if (desc) taskJson.description = desc;
     fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
     // state.json = plan（先计划，用户确认后排队）或 queued

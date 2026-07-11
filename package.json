@@ -2,8 +2,8 @@
   "name": "scrumws-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "小小鹏分身运行看板 · 桌面端（Electron）",
-  "author": "sunpeng <sunpeng@hiqlcd.com>",
+  "description": "ScrumWS运行看板 · 桌面端（Electron）",
+  "author": "zzusp <peng_zzu@163.com>",
   "type": "module",
   "main": "electron/main.js",
   "engines": { "node": ">=20.11" },
@@ -17,7 +17,7 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.hiq.scrumws-desktop",
+    "appId": "com.zzusp.scrumws-desktop",
     "productName": "ScrumWS",
     "asar": false,
     "files": ["electron/**", "platform/**", "package.json"],

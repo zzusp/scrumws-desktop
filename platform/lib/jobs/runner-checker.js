@@ -12,6 +12,10 @@ export default async function tick(ctx) {
   const { P, join, log, out, dryRun, fmt } = ctx;
   const now = () => fmt(new Date());
 
+  // ---- ⓪ 授权熔断复查（平台兜底，与派发器/quota 无关）----
+  // 派发器全关时 dwsAuthGate 不再跑，auth-block 靠这里自愈：sentinel 存在且 dws 授权已恢复 → 清除。
+  try { await ctx.recheckAuthBlock(); } catch (e) { log(`授权复查出错：${e.message}`); }
+
   // ---- ① 共享 quota-block ----
   const blockUntil = ctx.quotaBlockActive();
   if (blockUntil) {

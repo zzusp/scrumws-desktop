@@ -119,6 +119,43 @@ export function searchCliSessions({ q, limit = 20 } = {}) {
   return { ok: true, candidates: result, total: candidates.length };
 }
 
+// GET /api/cli/recent —— 添加弹窗默认列表：近 N 分钟内活跃（jsonl mtime）的 CLI session，免关键字
+// 复用 listAllJsonl（已按 mtime 倒序）+ head 预览，返回结构与 searchCliSessions 的 candidates 一致
+export function recentCliSessions({ withinMinutes = 30, limit = 30 } = {}) {
+  const mins = Math.max(1, Math.min(1440, Number(withinMinutes) || 30));
+  const addedSet = new Set(Object.keys(watchlist.readWatchlist().sessions));
+  const cutoff = Date.now() - mins * 60 * 1000;
+  const items = listAllJsonl({ maxAgeDays: 1 }).filter((it) => it.mtimeMs >= cutoff);
+  const picked = items.slice(0, Math.max(1, Math.min(50, Number(limit) || 30)));
+  const candidates = picked.map((it) => {
+    const head = extractHeadPreview(it.jsonlPath);
+    return {
+      sid: it.sid,
+      projectDir: it.projectDir,
+      cwd: head.cwd,
+      gitBranch: head.gitBranch,
+      firstUserMsg: head.firstUserMsg,
+      mtime: fmt(new Date(it.mtimeMs)),
+      sizeMb: +(it.size / 1024 / 1024).toFixed(3),
+      jsonlPath: it.jsonlPath,
+      alreadyAdded: addedSet.has(it.sid),
+    };
+  });
+  return { ok: true, candidates, total: candidates.length, withinMinutes: mins };
+}
+
+// 近 30 天 CLI session 的 cwd 去重列表（本机常用工作目录来源）—— 新建任务「选已有工作目录」下拉用
+export function sessionCwds({ limit = 60 } = {}) {
+  const items = listAllJsonl({ maxAgeDays: 30 }).slice(0, Math.max(1, Math.min(300, Number(limit) || 60)));
+  const seen = new Set();
+  for (const it of items) {
+    const head = extractHeadPreview(it.jsonlPath, 8192);   // cwd 在首个 event，读 8KB 足够
+    const c = String(head.cwd || '').trim();
+    if (c) seen.add(c);
+  }
+  return [...seen];
+}
+
 // POST /api/cli/add
 // body: { sid: string, customTitle?: string }
 export function addCliSession({ sid, customTitle } = {}) {

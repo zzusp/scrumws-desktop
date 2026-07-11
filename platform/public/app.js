@@ -17,6 +17,7 @@ applyTheme(document.documentElement.dataset.theme || 'dark');
 $('themeBtn').addEventListener('click', () => {
   applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
 });
+// 侧边栏折叠 / 展开 + 顶栏视图名同步由 index.html 尾部内联「壳层交互」脚本负责，此处不重复绑定（重复绑定会双触发折叠 → 净零失效）
 
 // ---- 时钟 ----
 function tickClock() {
@@ -83,13 +84,6 @@ function liveJobCardHtml(t, { title, mono, hint, actions = '' }) {
 function renderDispatchers(dispatchers) {
   const grid = $('tasksGrid');
   grid.innerHTML = '';
-  const schedMode = stateData?.scheduler?.mode;
-  const modeTag = $('schedulerModeTag');
-  if (modeTag) {
-    const readonly = schedMode && schedMode !== 'running';
-    modeTag.style.display = readonly ? '' : 'none';
-    if (readonly) modeTag.title = `本实例调度器未运行（${schedMode}${stateData?.scheduler?.lockPid ? `，锁由 pid=${stateData.scheduler.lockPid} 持有` : ''}）`;
-  }
   if (!dispatchers.length) {
     grid.innerHTML = '<div style="color:var(--dim);font-size:13px">还没有派发器 — 点右上「+ 新建派发器」按场景来源创建</div>';
     return;
@@ -608,10 +602,7 @@ window.openTaskModal = (taskKey) => { location.hash = '#/task/' + encodeURICompo
 async function loadTaskDetail(taskKey) {
   modalOpen = true;
   modalPollTaskKey = taskKey;
-  // 从 stateData 里取该任务的 title/hasCustomTitle 用于详情页顶部展示
-  const t = findTaskInState(taskKey);
-  const displayTitle = t?.title || taskKey;
-  renderModalTitle(taskKey, displayTitle, t?.hasCustomTitle);
+  // 标题现在渲染在右侧「任务信息」块内（renderTaskSide），详情页顶部 header 已移除（req4）
   $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">正在拼 CC jsonl…</div>';
   lastModalFp = null;
   try {
@@ -622,7 +613,6 @@ async function loadTaskDetail(taskKey) {
     }
     currentModalData = r;
     renderModalBody();
-    renderModalCwd(r);
     renderTaskSide(taskKey);
     // 回复框显示/禁用判据：需有 meta.sessionId + state ≠ processing
     updateReplyBoxAvailability(taskKey);
@@ -656,16 +646,11 @@ async function reloadModalIfProcessing(taskKey) {
     currentModalData = r;
     const roundsCnt = r.rounds.length;
     const t = findTaskInState(taskKey);
-    // title 随 cc: 解析出来会更新；正在 inline 重命名时不打断输入
-    if (!document.getElementById('modalTitleInput')) {
-      renderModalTitle(taskKey, t?.title || taskKey, t?.hasCustomTitle);
-    }
     // 内容指纹没变就不重画（重画会丢滚动位置和 details 展开态——处理中"显示变动"的根因）
     const fp = JSON.stringify([roundsCnt, r.rounds.map((x) => (x.messages || []).length), r.hasInflight, t?.state, (t?.history || []).length]);
     if (fp !== lastModalFp) {
       lastModalFp = fp;
       renderModalBody(true);
-      renderModalCwd(r);
       renderTaskSide(taskKey);
     }
     updateReplyBoxAvailability(taskKey);
@@ -685,70 +670,29 @@ function findTaskInState(taskKey) {
   return null;
 }
 
-// 标题下方：工作目录（取最新一轮 systemInit.cwd；跨轮不同则退化为"多个目录"提示，具体见 tooltip）
-function renderModalCwd(r) {
-  const el = $('modalCwd');
-  if (!el) return;
-  const cwds = [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
-  if (cwds.length === 0) { el.style.display = 'none'; el.innerHTML = ''; return; }
-  el.style.display = '';
-  const last = cwds[cwds.length - 1];
-  const extra = cwds.length > 1 ? ` <span class="k" title="${escapeAttr(cwds.join('\n'))}">（其他轮 ${cwds.length - 1} 个）</span>` : '';
-  el.innerHTML = `<span class="k">工作目录</span>${escapeHtml(last)}${extra}`;
-}
-
-// Modal 顶部 title 渲染（支持点击 inline edit）
-function renderModalTitle(taskKey, title, hasCustom) {
-  const star = hasCustom ? '<span title="已重命名" style="color:var(--amber);margin-right:4px">★</span>' : '';
-  $('modalTitle').innerHTML = `
-    <span style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
-      ${star}
-      <span id="modalTitleText" style="cursor:pointer;font-family:var(--display);font-size:16px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1" title="点击重命名">${escapeHtml(title)}</span>
-    </span>
-  `;
-  $('modalTitleText').addEventListener('click', () => beginRename(taskKey));
-}
-
-function beginRename(taskKey) {
+// 重命名任务（req4 方案2：任务信息里标题旁 ✎ → customPrompt 模态输入，不被 5s 轮询重画打断）
+async function renameTaskPrompt(taskKey) {
   const t = findTaskInState(taskKey);
-  const currentTitle = t?.title || taskKey;
-  const star = t?.hasCustomTitle ? '<span title="已重命名" style="color:var(--amber);margin-right:4px">★</span>' : '';
-  $('modalTitle').innerHTML = `
-    <span style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
-      ${star}
-      <input id="modalTitleInput" type="text" value="${escapeAttr(currentTitle)}" maxlength="200" style="flex:1;min-width:0;font-family:var(--display);font-size:16px;font-weight:600;padding:4px 10px;border:1px solid var(--hair2);border-radius:8px;background:var(--card);color:var(--ink);outline:none">
-      <button class="btn btn-primary" id="modalRenameSave" style="font-size:11px;padding:3px 12px;flex:none">保存</button>
-      <button class="btn" id="modalRenameCancel" style="font-size:11px;padding:3px 12px;flex:none">取消</button>
-    </span>
-  `;
-  const input = $('modalTitleInput');
-  input.focus();
-  input.select();
-  const submit = async () => {
-    const newTitle = input.value.trim();
-    try {
-      const r = await api(`/api/task/rename?taskKey=${encodeURIComponent(taskKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle }),
-      });
-      if (!r.ok) { customAlert({ title: '重命名失败', message: escapeHtml(r.error) }); return; }
-      await refreshState();
-      const t2 = findTaskInState(taskKey);
-      renderModalTitle(taskKey, t2?.title || taskKey, t2?.hasCustomTitle);
-    } catch (e) { customAlert({ title: '重命名失败', message: escapeHtml(e.message) }); }
-  };
-  const cancel = () => {
-    const t3 = findTaskInState(taskKey);
-    renderModalTitle(taskKey, t3?.title || taskKey, t3?.hasCustomTitle);
-  };
-  $('modalRenameSave').addEventListener('click', submit);
-  $('modalRenameCancel').addEventListener('click', cancel);
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') submit();
-    if (e.key === 'Escape') cancel();
+  const v = await customPrompt({
+    title: '重命名任务',
+    message: '<span style="color:var(--mut);font-size:11px">留空保存 = 清除自定义标题、恢复默认</span>',
+    initial: t?.title || taskKey,
+    placeholder: '输入新的任务标题…',
+    maxlength: 200,
   });
+  if (v === null) return;
+  try {
+    const r = await api(`/api/task/rename?taskKey=${encodeURIComponent(taskKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: v.trim() }),
+    });
+    if (!r.ok) { customAlert({ title: '重命名失败', message: escapeHtml(r.error) }); return; }
+    await refreshState();
+    if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);
+  } catch (e) { customAlert({ title: '重命名失败', message: escapeHtml(e.message) }); }
 }
+window.renameTaskPrompt = renameTaskPrompt;
 
 // 状态徽章色调映射（与 taskCardHtml 对齐）
 const STATE_TAG = {
@@ -779,7 +723,7 @@ function renderModalBody(keepScroll = false) {
 }
 
 // ---- hash 路由：#/dispatcher · #/board · #/dashboard · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
-const ROUTE_VIEWS = ['dispatcher', 'board', 'archive', 'dashboard', 'task'];
+const ROUTE_VIEWS = ['dispatcher', 'board', 'archive', 'dashboard', 'settings', 'task'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
@@ -791,6 +735,7 @@ function router() {
   } else if (h.startsWith('#/dispatcher')) view = 'dispatcher';
   else if (h.startsWith('#/archive')) view = 'archive';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
+  else if (h.startsWith('#/settings')) view = 'settings';
 
   for (const v of ROUTE_VIEWS) { const el = $(`view-${v}`); if (el) el.style.display = v === view ? (v === 'task' ? 'flex' : '') : 'none'; }
   // 详情页是 pageWrap 外的满宽满高布局，进入时隐藏常规页面容器（含 footer）
@@ -1083,17 +1028,28 @@ function renderTaskSide(taskKey) {
   const cliBlock = isCli ? `
       ${kv('cwd', escapeHtml(t.cli?.cwd || '—'))}
       ${kv('git', escapeHtml(t.cli?.gitBranch || '—'))}
-      ${kv('mode', escapeHtml(t.cli?.mode || '—'))}
+      ${(t.cli?.mode && t.cli.mode !== 'normal') ? kv('权限模式', escapeHtml(t.cli.mode)) : ''}
       ${kv('后台 agent', t.cli?.pendingBackgroundAgentCount || 0)}
       ${kv('jsonl 大小', t.cli?.jsonlBytes ? (t.cli.jsonlBytes / 1024 / 1024).toFixed(2) + ' MB' : '—')}
   ` : '';
+  const sideTitle = t.title || t.taskKey;
+  const canRename = !isCli && !t.isArchive;   // 重命名走 /api/task/rename（改 task.json），仅分身非归档任务
+  // 运行时工作目录（分身：最新一轮 systemInit.cwd；CLI 的 cwd 已在 cliBlock）——原详情页 header 的 modalCwd 迁到此
+  const rtCwds = isCli ? [] : [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
+  const rtCwd = rtCwds[rtCwds.length - 1] || null;
   el.innerHTML = `
     <div class="side-block">
       <h3>任务信息</h3>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px">${tags}</div>
+      <div class="side-title-row">
+        <span class="side-title" title="${escapeAttr(sideTitle)}">${escapeHtml(sideTitle)}</span>
+        ${t.hasCustomTitle ? '<span title="已重命名" style="color:var(--amber);flex:none">★</span>' : ''}
+        ${canRename ? `<button class="btn side-edit" title="重命名任务" onclick="renameTaskPrompt('${escapeAttr(t.taskKey)}')">✎</button>` : ''}
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0">${tags}</div>
       ${kv('taskKey', escapeHtml(t.taskKey))}
       ${kv('来源', escapeHtml(srcTxt))}
       ${cliBlock}
+      ${!isCli && rtCwd ? kv('工作目录', escapeHtml(rtCwd)) : ''}
       ${kv('模型', escapeHtml(model))}
       ${isCli ? '' : kv('轮次', meta.rounds || rounds.length || 0)}
       ${kv('turns', fmtNum(meta.numTurns))}
@@ -1116,6 +1072,9 @@ function renderTaskSide(taskKey) {
     ${btns.length ? `<div class="side-block"><h3>操作</h3><div class="side-actions">${btns.join('')}</div></div>` : ''}
     ${tlHtml ? `<div class="side-block"><h3>动态</h3><div class="timeline">${tlHtml}</div></div>` : ''}
   `;
+  // 面包屑末级同步任务标题（详情页 header 已移除，标题改在此块内展示 · req4）
+  const crumbLast = document.getElementById('crumbLast');
+  if (crumbLast) crumbLast.textContent = sideTitle;
 }
 
 function renderDetailTab(r) {
@@ -1487,10 +1446,14 @@ async function refreshState() {
   } catch (e) { console.error('state error:', e); }
 }
 
-// ---- dws 授权失效红条（authBlock 有值 → 显示；恢复正常 → 隐藏）----
+// ---- dws 授权失效提示（authBlock 有值 → 显示；恢复正常 → 隐藏）----
+// 用户手动关闭 → 按 writtenAt 持久化到 localStorage：刷新后不再弹同一条；
+// 授权恢复（ab 为空，checker/派发已清 sentinel）→ 清记录，下次「新一条」失效仍会提示
+const AUTH_DISMISS_KEY = 'auth-dismissed-at';
 function renderAuthBanner(ab) {
   const banner = $('authBanner');
-  if (!ab) { banner.style.display = 'none'; return; }
+  if (!ab) { banner.style.display = 'none'; localStorage.removeItem(AUTH_DISMISS_KEY); return; }
+  if (localStorage.getItem(AUTH_DISMISS_KEY) === (ab.writtenAt || '')) { banner.style.display = 'none'; return; }
   $('authBannerReason').textContent = ab.reason || 'dws 授权失效';
   const bits = [];
   if (ab.writtenAt) bits.push(`熔断于 ${ab.writtenAt}`);
@@ -1500,6 +1463,10 @@ function renderAuthBanner(ab) {
   $('authBannerMeta').textContent = bits.join(' · ');
   banner.style.display = '';
 }
+$('authBannerClose').addEventListener('click', () => {
+  localStorage.setItem(AUTH_DISMISS_KEY, stateData?.authBlock?.writtenAt || '');
+  $('authBanner').style.display = 'none';
+});
 $('authBannerCopy').addEventListener('click', async () => {
   const btn = $('authBannerCopy');
   try {
@@ -1529,17 +1496,68 @@ $('newTaskBtn').addEventListener('click', () => {
   $('newTaskTitle').value = '';
   $('newTaskPrompt').value = '';
   $('newTaskDesc').value = '';
-  $('newTaskPlanFirst').checked = false;
+  $('newTaskCwd').value = '';              // req3：工作目录（可选）
+  loadNewTaskCwds();                       // 填充「已有工作目录」下拉（现有任务 cwd + 近期 CLI session cwd）
+  $('newTaskPlanFirst').checked = true;    // req4：页面新建任务默认进入 plan（可取消勾选改为立即执行）
   newTaskModelCtl?.setValue('claude-opus-4-8');
   $('newTaskErr').style.display = 'none';
   $('newTaskWarn').style.display = 'none';
   setTimeout(() => $('newTaskTitle').focus(), 100);
+});
+
+// req3/req1：工作目录 自定义下拉（不用原生 datalist）+ 浏览按钮
+let newTaskCwdOptions = [];
+async function loadNewTaskCwds() {
+  try { newTaskCwdOptions = (await api('/api/task/cwds'))?.cwds || []; }
+  catch { newTaskCwdOptions = []; }
+  renderCwdMenu();
+}
+function renderCwdMenu() {
+  const menu = $('newTaskCwdMenu');
+  if (!menu) return;
+  const q = ($('newTaskCwd').value || '').trim().toLowerCase();
+  const list = newTaskCwdOptions.filter((c) => !q || c.cwd.toLowerCase().includes(q));
+  menu.innerHTML = list.length
+    ? list.map((c) => `<div class="cwd-item" role="option" data-cwd="${escapeAttr(c.cwd)}"><span class="cwd-path" title="${escapeAttr(c.cwd)}">${escapeHtml(c.cwd)}</span><span class="cwd-src">${c.source === 'task' ? '任务' : 'CLI'}</span></div>`).join('')
+    : `<div class="cwd-empty">${newTaskCwdOptions.length ? '无匹配目录' : '暂无已用过的目录 · 直接填路径或点「浏览」'}</div>`;
+}
+function closeCwdMenu() { $('newTaskCwdMenu')?.classList.remove('open'); }
+function openCwdMenu() { renderCwdMenu(); $('newTaskCwdMenu')?.classList.add('open'); }
+(function initCwdCombo() {
+  const input = $('newTaskCwd'), menu = $('newTaskCwdMenu'), caret = $('newTaskCwdCaret'), combo = $('newTaskCwdCombo');
+  if (!input || !menu || !caret || !combo) return;
+  caret.addEventListener('click', () => (menu.classList.contains('open') ? closeCwdMenu() : openCwdMenu()));
+  input.addEventListener('focus', openCwdMenu);
+  input.addEventListener('input', () => { renderCwdMenu(); menu.classList.add('open'); });
+  menu.addEventListener('mousedown', (e) => {   // mousedown 先于 input blur，避免选中前菜单被关
+    const item = e.target.closest('.cwd-item');
+    if (!item) return;
+    e.preventDefault();
+    input.value = item.dataset.cwd;
+    closeCwdMenu();
+  });
+  document.addEventListener('click', (e) => { if (!combo.contains(e.target)) closeCwdMenu(); });
+})();
+
+// req3：浏览按钮 → 系统目录选择（桌面端 Electron dialog；web 模式回退提示手填）
+$('newTaskCwdBrowse').addEventListener('click', async () => {
+  const btn = $('newTaskCwdBrowse');
+  const errBox = $('newTaskErr');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/pick-dir', { method: 'POST' });
+    if (r.ok && r.dir) { $('newTaskCwd').value = r.dir; closeCwdMenu(); }
+    else if (!r.ok && r.error) { errBox.textContent = r.error; errBox.style.display = 'block'; }
+  } catch (e) {
+    errBox.textContent = e.message; errBox.style.display = 'block';
+  } finally { btn.disabled = false; }
 });
 window.closeNewTaskModal = () => { $('newTaskModal').style.display = 'none'; };
 $('newTaskSubmit').addEventListener('click', async () => {
   const title = $('newTaskTitle').value.trim();
   const prompt = $('newTaskPrompt').value.trim();
   const description = $('newTaskDesc').value.trim();
+  const cwd = $('newTaskCwd').value.trim();
   const planFirst = $('newTaskPlanFirst').checked;
   const model = $('newTaskModel').value;
   const errBox = $('newTaskErr');
@@ -1554,7 +1572,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
     const r = await api('/api/task/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, prompt, model, description, planFirst }),
+      body: JSON.stringify({ title, prompt, model, description, planFirst, cwd }),
     });
     if (!r.ok) {
       errBox.textContent = r.error || '未知错误';
@@ -1581,11 +1599,29 @@ $('newTaskSubmit').addEventListener('click', async () => {
 $('addCliBtn').addEventListener('click', () => {
   $('addCliModal').style.display = 'flex';
   $('addCliSearch').value = '';
-  $('addCliResults').innerHTML = '<div style="color:var(--dim);font-size:12.5px;padding:14px;text-align:center">输入关键字或 sid 前缀，回车搜索</div>';
   $('addCliErr').style.display = 'none';
+  loadRecentCli();   // req1：打开即默认展示近 30min 活跃的 claude code 会话
   setTimeout(() => $('addCliSearch').focus(), 100);
 });
 window.closeAddCliModal = () => { $('addCliModal').style.display = 'none'; };
+
+// 默认列表：近 30min 活跃 session（无需关键字）
+async function loadRecentCli() {
+  const results = $('addCliResults');
+  results.innerHTML = '<div style="color:var(--dim);font-size:12.5px;padding:14px;text-align:center">加载近 30 分钟活跃会话…</div>';
+  try {
+    const r = await api('/api/cli/recent?within=30&limit=30');
+    if (!r.ok) { results.innerHTML = `<div style="color:var(--coral);font-size:12px;padding:14px;text-align:center">${escapeHtml(r.error || '加载失败')}</div>`; return; }
+    if (!r.candidates?.length) {
+      results.innerHTML = '<div style="color:var(--dim);font-size:12.5px;padding:14px;text-align:center">近 30 分钟内没有活跃的 claude code 会话<br>可用上方搜索按关键字 / sid 前缀查更早的</div>';
+      return;
+    }
+    results.innerHTML = '<div style="font-size:10.5px;color:var(--dim);padding:8px 12px 4px;font-family:var(--mono)">近 30 分钟活跃 · ' + r.candidates.length + ' 个（按最近活动倒序）</div>'
+      + r.candidates.map((c) => renderCliCandidateRow(c)).join('');
+  } catch (e) {
+    results.innerHTML = `<div style="color:var(--coral);font-size:12px;padding:14px;text-align:center">${escapeHtml(e.message)}</div>`;
+  }
+}
 
 async function doCliSearch() {
   const q = $('addCliSearch').value.trim();
@@ -1645,8 +1681,8 @@ window.addCliFromSearch = async (sid) => {
     });
     if (!r.ok) { errBox.textContent = r.error || '添加失败'; errBox.style.display = 'block'; return; }
     await refreshState();
-    // 重跑一次搜索让列表刷新 alreadyAdded
-    if ($('addCliSearch').value.trim()) doCliSearch();
+    // 刷新列表 alreadyAdded 态：有关键字→重搜；否则刷新近 30min 默认列表
+    if ($('addCliSearch').value.trim()) doCliSearch(); else loadRecentCli();
   } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
 };
 

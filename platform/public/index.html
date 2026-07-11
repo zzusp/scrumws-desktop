@@ -117,10 +117,11 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 .brand .sub{display:block;font-size:10px;color:var(--dim);white-space:nowrap}
 
 /* 侧边栏：主操作 */
-.sb-actions{display:flex;flex-direction:column;gap:6px}
-.sb-actions .btn{width:100%;justify-content:flex-start;gap:8px;padding:7px 10px;font-size:12px;background:var(--background)}
-.shell.collapsed .sb-actions .btn{justify-content:center;padding:7px 0}
-.sidebar .btn:not(.btn-primary):hover{background:var(--sidebar-accent);border-color:var(--sidebar-border);color:var(--sidebar-accent-foreground)}
+.sb-actions{display:flex;flex-direction:column;gap:2px}
+/* 主操作按钮与下方导航项同款：透明底 / 无边框 / mut 色 / 同字号字重（req4 统一）*/
+.sb-actions .btn{width:100%;justify-content:flex-start;gap:9px;padding:7px 10px;font-size:12.5px;font-weight:500;color:var(--mut);background:transparent;border-color:transparent;border-radius:var(--r-lg)}
+.shell.collapsed .sb-actions .btn{justify-content:center;padding:8px 0}
+.sidebar .btn:not(.btn-primary):hover{background:var(--sidebar-accent);border-color:transparent;color:var(--sidebar-accent-foreground)}
 
 /* 侧边栏：分组导航（.topnav a[data-nav] 契约保留） */
 .topnav{display:flex;flex-direction:column;gap:2px;flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
@@ -131,40 +132,46 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 .shell.collapsed .topnav a{justify-content:center;padding:8px 0}
 .shell.collapsed .topnav{gap:4px;padding-top:8px}
 
-/* 侧边栏：底部控件（横向小排） */
-.sb-foot{flex:none;display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:12px 6px 2px;border-top:1px solid var(--hair)}
-.sb-ctl{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
-.sb-ctl .sb-label,#pauseLabel{font-size:10.5px;color:var(--mut);white-space:nowrap}
-.shell.collapsed .sb-foot{flex-direction:column;align-items:center;gap:10px}
+/* 设置页：控制行（原侧边栏底部控件迁入，折叠不再错位）*/
+.set-list{display:flex;flex-direction:column;gap:2px;margin-bottom:4px}
+.set-row{display:flex;align-items:center;gap:16px;padding:13px 4px;border-bottom:1px solid var(--hair);cursor:pointer;margin:0}
+.set-row:last-child{border-bottom:none}
+.set-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.set-name{font-size:13px;font-weight:600;color:var(--ink)}
+.set-desc{font-size:11px;color:var(--mut);line-height:1.5}
 
 /* 主题按钮：只保留亮色后不再暴露，但 app.js 对 #themeBtn 有 addEventListener，元素必须保留 → 仅 CSS 隐藏
    （.btn.theme-btn 双类提高优先级：后文 .btn{display:inline-flex} 同特异性会按顺序反超单类规则） */
 .btn.theme-btn{display:none}
 
-/* ---------- 顶栏（窄）+ 内容主盒 ---------- */
-.topbar{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 22px 0 8px}
-.sb-toggle{width:30px;height:26px;padding:0;border-color:transparent;background:transparent;color:var(--mut)}
-.sb-toggle:hover{background:var(--sidebar-accent);border-color:transparent;color:var(--sidebar-accent-foreground)}
-.crumb-app{font-size:12.5px;font-weight:500;color:var(--mut)}
-.crumb-sep{font-size:12px;color:var(--dim);margin:0 -2px}
-.view-title{font-size:13.5px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
-.top-right{margin-left:auto;display:flex;align-items:center;gap:12px}
-#clock{font-family:var(--mono);font-size:11.5px;color:var(--mut);font-variant-numeric:tabular-nums}
-.content-box{flex:1;min-height:0;margin:0 14px 14px 4px;background:var(--background);border-radius:var(--r-xl);
+/* ---------- 内容主盒（占满右侧竖向空间）+ 盒内顶栏（面包屑/标题/时钟）---------- */
+.content-box{flex:1;min-height:0;margin:10px 14px 14px 6px;background:var(--background);border-radius:var(--r-xl);
   box-shadow:var(--ring1),var(--shadow-sm);display:flex;flex-direction:column;overflow:hidden}
+.card-topbar{flex:none;height:48px;display:flex;align-items:center;gap:9px;padding:0 16px 0 10px;border-bottom:1px solid var(--hair)}
+.sb-toggle{width:30px;height:28px;padding:0;border-color:transparent;background:transparent;color:var(--mut);flex:none}
+.sb-toggle:hover{background:var(--sidebar-accent);border-color:transparent;color:var(--sidebar-accent-foreground)}
+.crumbs{display:flex;align-items:center;min-width:0}
+.crumb-app,.crumb-mid{font-size:12.5px;font-weight:500;color:var(--mut);text-decoration:none;white-space:nowrap;flex:none}
+a.crumb-app:hover,a.crumb-mid:hover{color:var(--ink2)}
+.crumb-sep{font-size:12px;color:var(--dim);margin:0 7px;flex:none}
+.view-title{font-size:13.5px;font-weight:600;color:var(--ink);letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+#clock{font-family:var(--mono);font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
 #pageWrap{flex:1;min-height:0;overflow-y:auto;padding:18px 20px 24px}
 .view{animation:rise .3s both}
 
-/* dws 授权失效横幅（destructive 软底，内容区顶部全宽） */
-.auth-banner{display:flex;align-items:flex-start;gap:12px;margin:0 14px 10px 4px;padding:11px 16px;border-radius:var(--r-lg);
-  background:var(--coralS);box-shadow:inset 0 0 0 1px color-mix(in oklab, var(--destructive) 30%, transparent);animation:rise .4s}
-.auth-banner>svg.ic{color:var(--coral);margin-top:2px}
-.ab-main{flex:1;min-width:220px;line-height:1.55}
-.ab-title{font-weight:650;font-size:12.5px;color:var(--coral);margin-bottom:3px}
-.ab-reason{font-size:11.5px;color:var(--coralT);margin-bottom:3px}
-.ab-meta{font-size:10.5px;color:var(--mut);font-family:var(--mono)}
-.ab-side{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}
-.ab-side code{font-family:var(--mono);font-size:11.5px;background:var(--card);box-shadow:var(--ring1);padding:5px 10px;border-radius:var(--r-md);color:var(--ink2)}
+/* dws 授权失效提示（multica Alert·destructive 范式：card 白底 + coral 文本/图标 + 细 ring，紧凑单行）*/
+.auth-alert{display:flex;align-items:center;gap:9px;margin:10px 14px 0 6px;padding:8px 12px;
+  background:var(--card);border-radius:var(--r-lg);box-shadow:var(--ring1);animation:rise .3s}
+.auth-alert-ic{color:var(--coral);width:15px;height:15px}
+.auth-alert-text{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;overflow:hidden;white-space:nowrap}
+.auth-alert-title{font-weight:600;font-size:12.5px;color:var(--coralT);flex:none}
+.auth-alert-reason{font-size:12px;color:var(--mut);flex:none}
+.auth-alert-meta{font-family:var(--mono);font-size:10.5px;color:var(--dim);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.auth-alert code{font-family:var(--mono);font-size:11px;background:var(--code-bg);box-shadow:inset 0 0 0 1px var(--hair);padding:3px 8px;border-radius:var(--r-sm);color:var(--ink2);flex:none}
+.auth-alert-btn{font-size:11px;padding:4px 10px;flex:none}
+.auth-alert-x{flex:none;width:20px;height:20px;padding:0;border:none;background:transparent;color:var(--mut);font-size:17px;line-height:1;cursor:pointer;border-radius:var(--r-sm);opacity:.6;transition:opacity .12s,background .12s}
+.auth-alert-x:hover{opacity:1;background:var(--accent);color:var(--ink)}
 
 /* ---------- 按钮（default / outline / ghost / destructive）---------- */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;font-family:var(--sans);font-size:11.5px;font-weight:500;
@@ -243,6 +250,21 @@ select.field-input{background:var(--card)}
 .modal-x:hover{color:var(--ink)}
 .modal-hint{font-size:11px;color:var(--mut);margin-bottom:14px;font-family:var(--mono);line-height:1.6}
 
+/* 新建任务·工作目录：自定义下拉（不用原生 datalist；风格对齐 reply-model 菜单）*/
+.cwd-row{display:flex;gap:8px}
+.cwd-combo{position:relative;flex:1;min-width:0}
+.cwd-combo>.field-input{width:100%;padding-right:30px}
+.cwd-caret{position:absolute;right:0;top:0;bottom:0;width:30px;display:grid;place-items:center;border:none;background:transparent;color:var(--mut);cursor:pointer;font-size:10px;border-radius:0 var(--r-md) var(--r-md) 0}
+.cwd-caret:hover{color:var(--ink2)}
+/* 向上展开：cwd 字段在弹窗底部，向下会被 modal 滚动容器 overflow 裁剪 */
+.cwd-menu{position:absolute;bottom:calc(100% + 4px);left:0;right:0;background:var(--popover);box-shadow:var(--ring1),var(--shadow);border-radius:var(--r-lg);padding:5px;z-index:1100;max-height:230px;overflow-y:auto;display:none;animation:rise .12s}
+.cwd-menu.open{display:block}
+.cwd-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:var(--r-md);cursor:pointer;font-family:var(--mono);font-size:11.5px;color:var(--ink2)}
+.cwd-item .cwd-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cwd-item .cwd-src{margin-left:auto;font-family:var(--sans);font-size:9px;font-weight:600;color:var(--mut);flex:none;background:var(--muted);padding:1px 6px;border-radius:999px}
+.cwd-item:hover,.cwd-item.active{background:var(--accent);color:var(--accent-foreground)}
+.cwd-empty{padding:10px;text-align:center;color:var(--dim);font-size:11.5px}
+
 /* ---------- 任务看板：筛选工具行（参考 landing-hero 顶部 toolbar 的 outline 按钮风）---------- */
 .board-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:12px}
 .board-toolbar .bt-label{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--mut);margin-right:2px}
@@ -267,7 +289,8 @@ select.field-input{background:var(--card)}
 .col-pill.fill-info{background:var(--info);color:#fff}
 .col-count{border-radius:999px;background:var(--background);padding:2px 7px;font-size:10.5px;font-weight:500;color:var(--mut);font-variant-numeric:tabular-nums}
 .col-head .col-hint{font-size:10.5px;color:var(--dim);margin-left:auto}
-.col-body{flex:1;padding:2px;display:flex;flex-direction:column;gap:8px;max-height:calc(100vh - 208px);overflow-y:auto;min-height:calc(100vh - 330px)}
+/* 列高统一钉住（min==max）——比原来更高、接近 landing-hero；用 min-height 而非 height，避免被 flex-basis:0 覆盖坍缩 */
+.col-body{flex:1;padding:2px;display:flex;flex-direction:column;gap:8px;min-height:calc(100vh - 196px);max-height:calc(100vh - 196px);overflow-y:auto}
 
 /* ---------- 运行日志 ---------- */
 .logrow{display:flex;gap:10px;align-items:baseline;padding:4px 8px;border-radius:var(--r-sm)}
@@ -285,16 +308,18 @@ select.field-input{background:var(--card)}
 .md-body a{color:var(--cyan);text-decoration:underline;word-break:break-all}
 .md-body strong{font-weight:700;color:var(--ink)}
 
-/* ---------- 任务详情页：左右布局 ---------- */
+/* ---------- 任务详情页：左右布局（req4：去掉顶部 header，标题移入右侧任务信息）---------- */
 #view-task{flex:1;min-height:0;overflow:hidden}
 .detail-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--hair)}
-.detail-head{padding:14px 22px 11px;flex:none;border-bottom:1px solid var(--hair)}
-.detail-cwd{font-family:var(--mono);font-size:11px;color:var(--dim);word-break:break-all}
-.detail-cwd .k{color:var(--mut);margin-right:6px}
-.detail-main #modalBody{flex:1;overflow-y:auto;padding:14px 22px 22px}
+.detail-main #modalBody{flex:1;overflow-y:auto;padding:16px 22px 22px}
 .detail-side{width:324px;flex:none;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
 .side-block{background:var(--card);box-shadow:var(--ring1);border-radius:var(--r-xl);padding:12px 14px}
 .side-block h3{font-size:11px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+/* 任务信息里的任务标题（req4：从详情页 header 迁入）：过长截断加省略号（req3）+ ✎ 重命名 */
+.side-title-row{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.side-title{flex:1;min-width:0;font-family:var(--display);font-size:14.5px;font-weight:650;color:var(--ink);line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-edit{flex:none;font-size:11px;padding:2px 8px;background:transparent;border-color:transparent;color:var(--mut)}
+.side-edit:hover{background:var(--accent);border-color:transparent;color:var(--accent-foreground)}
 .side-kv{display:flex;margin-bottom:7px;font-size:12px;align-items:baseline}
 .side-kv:last-child{margin-bottom:0}
 .side-kv .k{width:70px;color:var(--dim);flex:none}
@@ -467,51 +492,44 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <svg class="ic" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
         <span class="sb-label">数据看板</span>
       </a>
+      <a href="#/settings" data-nav="settings">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span class="sb-label">设置</span>
+      </a>
     </nav>
-
-    <div class="sb-foot">
-      <label class="sb-ctl" title="暂停派发（dispatcher 仍建 queued 但不 spawn；runner-checker 兜底孤儿不受影响）">
-        <span class="switch"><input type="checkbox" id="pauseSwitch"><span class="slider"></span></span>
-        <span id="pauseLabel">派发中</span>
-      </label>
-      <label class="sb-ctl" title="自动刷新（关闭则暂停轮询）">
-        <span class="switch"><input type="checkbox" id="autoRefreshSwitch" checked><span class="slider"></span></span>
-        <span class="sb-label">自动刷新</span>
-      </label>
-      <button class="btn theme-btn" id="themeBtn" title="切换明暗主题">☀️</button>
-    </div>
   </aside>
 
-  <!-- ===== 内容区：窄顶栏 + 授权横幅 + rounded-xl 主盒 ===== -->
+  <!-- ===== 内容区：授权横幅 + 主盒（盒内自带面包屑顶栏，占满右侧竖向空间）===== -->
   <div class="main">
-    <header class="topbar">
-      <button class="btn sb-toggle" id="sbToggle" title="折叠 / 展开侧边栏">
-        <svg class="ic" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
-      </button>
-      <span class="crumb-app">ScrumWS</span>
-      <span class="crumb-sep">›</span>
-      <span class="view-title" id="viewTitle">任务看板</span>
-      <span id="schedulerModeTag" class="tag tag-amber" style="display:none">只读实例</span>
-      <div class="top-right">
-        <span id="clock">—</span>
-      </div>
-    </header>
 
-    <!-- dws 授权失效红条（sentinel 存在时显示） -->
-    <div id="authBanner" class="auth-banner" style="display:none">
-      <svg class="ic" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.73-2Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-      <div class="ab-main">
-        <div class="ab-title">钉钉 dws 授权失效 · 派发链熔断中</div>
-        <div id="authBannerReason" class="ab-reason">—</div>
-        <div id="authBannerMeta" class="ab-meta">—</div>
+    <!-- dws 授权失效提示（multica Alert·destructive 范式：card 白底 + coral 文本/图标 + 细 ring，紧凑单行）-->
+    <div id="authBanner" class="auth-alert" style="display:none" role="alert">
+      <svg class="ic auth-alert-ic" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.73-2Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+      <div class="auth-alert-text">
+        <span class="auth-alert-title">dws 授权失效 · 派发链熔断中</span>
+        <span id="authBannerReason" class="auth-alert-reason">—</span>
+        <span id="authBannerMeta" class="auth-alert-meta">—</span>
       </div>
-      <div class="ab-side">
-        <code id="authBannerCmd">dws auth login</code>
-        <button class="btn" id="authBannerCopy" title="复制命令 → 到本机 PowerShell 里跑一次">复制</button>
-      </div>
+      <code id="authBannerCmd">dws auth login</code>
+      <button class="btn auth-alert-btn" id="authBannerCopy" title="复制命令 → 到本机 PowerShell 里跑一次">复制</button>
+      <button class="auth-alert-x" id="authBannerClose" title="关闭提示（本次会话内不再弹出；授权恢复后自动重置）" aria-label="关闭">×</button>
     </div>
 
     <div class="content-box">
+      <!-- 盒内顶栏：折叠按钮 + 面包屑/标题 ·· 时钟居右上角 -->
+      <header class="card-topbar">
+        <button class="btn sb-toggle" id="sbToggle" title="折叠 / 展开侧边栏">
+          <svg class="ic" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
+        </button>
+        <nav class="crumbs" id="crumbs" aria-label="面包屑">
+          <a class="crumb-app" href="#/board">ScrumWS</a>
+          <span class="crumb-sep">›</span>
+          <span class="view-title" id="viewTitle">任务看板</span>
+        </nav>
+        <div class="top-right">
+          <span id="clock">—</span>
+        </div>
+      </header>
       <div id="pageWrap">
 
         <!-- ============ 页面 1：派发器（注册表驱动 + 运行日志）============ -->
@@ -613,12 +631,47 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </section>
         </div>
 
-        <!-- ============ 页面 3：数据看板（平台守护）============ -->
+        <!-- ============ 页面 3：数据看板（暂空 · req5，后续想到展示内容再补）============ -->
         <div id="view-dashboard" class="view" style="display:none">
-          <section class="card" style="margin-bottom:var(--gap)">
+          <section class="card" style="display:flex;align-items:center;justify-content:center;min-height:280px">
+            <div style="text-align:center;color:var(--dim);font-size:12.5px;line-height:1.9">
+              <div style="font-size:24px;margin-bottom:8px">📊</div>
+              数据看板 · 暂无内容<br>后续想到要展示的运营洞察再补
+            </div>
+          </section>
+        </div>
+
+        <!-- ============ 页面 5：设置（运行控制 + 平台守护 · req5 从数据看板迁入）============ -->
+        <div id="view-settings" class="view" style="display:none">
+          <section class="card" style="max-width:640px;margin-bottom:var(--gap)">
+            <div class="sec-head">
+              <h2>设置</h2>
+              <span class="sec-sub">运行控制 · 本地偏好（存本机 localStorage，不影响其他实例）</span>
+            </div>
+            <div class="set-list">
+              <label class="set-row" title="暂停派发（dispatcher 仍建 queued 但不 spawn；runner-checker 兜底孤儿不受影响）">
+                <span class="set-main">
+                  <span class="set-name">派发开关 · <span id="pauseLabel">派发中</span></span>
+                  <span class="set-desc">暂停后 dispatcher 仍建 queued 但不 spawn；runner-checker 兜底不受影响</span>
+                </span>
+                <span class="switch"><input type="checkbox" id="pauseSwitch"><span class="slider"></span></span>
+              </label>
+              <label class="set-row" title="自动刷新（关闭则暂停 15s 轮询）">
+                <span class="set-main">
+                  <span class="set-name">自动刷新</span>
+                  <span class="set-desc">关闭后暂停 15s 轮询；手动刷新按钮仍可用</span>
+                </span>
+                <span class="switch"><input type="checkbox" id="autoRefreshSwitch" checked><span class="slider"></span></span>
+              </label>
+            </div>
+            <button class="btn theme-btn" id="themeBtn" title="切换明暗主题">☀️</button>
+          </section>
+
+          <!-- 平台守护（req5 从数据看板迁入）：runner-checker 启停 -->
+          <section class="card" style="max-width:640px">
             <div class="sec-head">
               <h2>平台守护</h2>
-              <span class="sec-sub">看板平台自身的守护组件（不是派发器）· 孤儿任务收纳</span>
+              <span class="sec-sub">看板平台自身的守护组件（不是派发器）· 孤儿任务收纳 + 授权熔断复查</span>
             </div>
             <div id="checkerGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
               <div style="color:var(--dim);font-size:12.5px">加载中…</div>
@@ -626,22 +679,11 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </section>
         </div>
 
-        <footer style="color:var(--dim);font-size:10.5px;text-align:center;margin-top:22px;line-height:1.8">
-          runner 通用抽取 · scripts/lib/claude-runner.ps1 + 平台内置 runner-checker（Node）<br>
-          数据红线：密码 / PII / 源码原文一律不外露、不入库
-        </footer>
-
       </div>
 
       <!-- ============ 页面 4：任务详情（#/task/<taskKey>）：左右布局，左侧上中下、回复条底部固定 ============ -->
       <div id="view-task" class="view" style="display:none">
         <div class="detail-main">
-          <div class="detail-head">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
-              <h2 id="modalTitle" style="font-family:var(--display);font-size:16px;flex:1;min-width:0">—</h2>
-            </div>
-            <div id="modalCwd" class="detail-cwd" style="display:none"></div>
-          </div>
           <div id="modalBody"></div>
           <!-- 继续对话（底部固定条；三态自适应：可对话 / 正在处理 / 需重发）-->
           <div id="modalReplyBox" class="reply-box" style="display:none">
@@ -691,15 +733,15 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
   </div>
 </div>
 
-  <!-- ===== 新建任务 Modal ===== -->
-  <div id="newTaskModal" class="overlay" style="display:none" onclick="if(event.target===this)closeNewTaskModal()">
+  <!-- ===== 新建任务 Modal（点遮罩不关闭，仅 × / 取消关闭）===== -->
+  <div id="newTaskModal" class="overlay" style="display:none">
     <div class="modal-card" style="max-width:720px;max-height:88vh">
       <div class="modal-head">
         <h2>新建 manual 任务</h2>
         <span class="modal-x" onclick="closeNewTaskModal()">×</span>
       </div>
-      <div class="modal-hint">source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 提交即 spawn（除非派发暂停或达并发上限）</div>
-      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0">
+      <div class="modal-hint">source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 默认存为 plan，在看板确认后才执行</div>
+      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0;scrollbar-gutter:stable">
         <label class="field">
           <span class="f-label">Title（任务标题）</span>
           <input type="text" id="newTaskTitle" class="field-input" maxlength="200" placeholder="比如：帮我总结 issue #56 的处理进度">
@@ -731,14 +773,25 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <div class="reply-model-menu" id="newTaskModelMenu" role="listbox"></div>
           </div>
         </label>
+        <label class="field">
+          <span class="f-label">工作目录（可选 · claude 在此目录下运行；留空用默认根目录）</span>
+          <div class="cwd-row">
+            <div class="cwd-combo" id="newTaskCwdCombo">
+              <input type="text" id="newTaskCwd" class="field-input mono" autocomplete="off" placeholder="填绝对路径，或点右侧 ▾ 选已用过的目录">
+              <button type="button" class="cwd-caret" id="newTaskCwdCaret" tabindex="-1" aria-label="展开已用目录">▾</button>
+              <div class="cwd-menu" id="newTaskCwdMenu" role="listbox"></div>
+            </div>
+            <button type="button" class="btn" id="newTaskCwdBrowse" title="打开系统目录选择（桌面端）；web 模式请手填绝对路径">浏览…</button>
+          </div>
+        </label>
       </div>
       <div id="newTaskErr" class="form-err"></div>
       <div id="newTaskWarn" class="form-warn"></div>
       <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex:none">
-        <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);cursor:pointer;user-select:none" title="勾选后任务存为 plan 态，在看板确认排队后才执行">
+        <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);cursor:pointer;user-select:none" title="默认勾选：任务存为 plan 态，在看板确认排队后才执行">
           <input type="checkbox" id="newTaskPlanFirst" style="accent-color:var(--primary)">先计划（确认后再执行）
         </label>
-        <span style="font-size:11px;color:var(--dim);flex:1">不勾选则提交后立即 spawn 独立 worker</span>
+        <span style="font-size:11px;color:var(--dim);flex:1">默认先计划；取消勾选则提交后立即 spawn 独立 worker</span>
         <button class="btn" onclick="closeNewTaskModal()">取消</button>
         <button class="btn btn-primary" id="newTaskSubmit">提交</button>
       </div>
@@ -791,8 +844,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <span class="modal-x" onclick="closeAddCliModal()">×</span>
       </div>
       <div style="font-size:11.5px;color:var(--mut);margin-bottom:14px;line-height:1.6">
-        输入 <b>session id 前缀</b>（6+ hex）或 <b>会话关键字</b> 搜索本机 <code style="font-family:var(--mono);background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11px">~/.claude/projects/</code> 下的 jsonl。
-        添加后卡片自动出现在看板对应桶（活跃 5min 内=processing / 5–30min=awaiting-human / &gt;30min=已归档）。
+        默认列出<b>近 30 分钟活跃</b>的本机 claude code 会话；也可输入 <b>session id 前缀</b>（6+ hex）或 <b>会话关键字</b> 搜索 <code style="font-family:var(--mono);background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11px">~/.claude/projects/</code> 下更早的 jsonl。
+        添加后卡片自动出现在看板对应桶（终端或回复在跑=processing，空闲=awaiting-human）。
       </div>
       <div style="display:flex;gap:8px;margin-bottom:12px;flex:none">
         <input type="text" id="addCliSearch" class="field-input" placeholder="04689bb1 · 或关键字（近 30 天 jsonl 内匹配头 32KB）" style="flex:1">
@@ -831,15 +884,41 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
     shell.classList.toggle('collapsed');
     try { localStorage.setItem(KEY, shell.classList.contains('collapsed') ? '1' : '0'); } catch (e) {}
   });
-  function syncTop() {
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+  }
+  // 面包屑 trail：任务详情按层级 ScrumWS › 任务看板 › <任务>（末级 id=crumbLast，标题由 app.js 加载后回填）
+  function crumbTrail() {
     var h = location.hash || '#/board';
-    var name = h.indexOf('#/task/') === 0 ? '任务详情'
-      : h.indexOf('#/dispatcher') === 0 ? '派发器'
+    if (h.indexOf('#/task/') === 0) {
+      var key = decodeURIComponent(h.slice(7).split('/')[0]);
+      return [
+        { label: 'ScrumWS', href: '#/board' },
+        { label: '任务看板', href: '#/board' },
+        { label: key, id: 'crumbLast' },
+      ];
+    }
+    var name = h.indexOf('#/dispatcher') === 0 ? '派发器'
       : h.indexOf('#/dashboard') === 0 ? '数据看板'
       : h.indexOf('#/archive') === 0 ? '归档'
+      : h.indexOf('#/settings') === 0 ? '设置'
       : '任务看板';
-    var el = document.getElementById('viewTitle');
-    if (el) el.textContent = name;
+    return [{ label: 'ScrumWS', href: '#/board' }, { label: name }];
+  }
+  function syncTop() {
+    var box = document.getElementById('crumbs');
+    if (box) {
+      var trail = crumbTrail();
+      box.innerHTML = trail.map(function (c, i) {
+        var sep = i > 0 ? '<span class="crumb-sep">›</span>' : '';
+        var cls = (i === trail.length - 1) ? 'view-title' : (i === 0 ? 'crumb-app' : 'crumb-mid');
+        var idAttr = c.id ? ' id="' + c.id + '"' : '';
+        var el = c.href
+          ? '<a href="' + c.href + '" class="' + cls + '"' + idAttr + '>' + esc(c.label) + '</a>'
+          : '<span class="' + cls + '"' + idAttr + '>' + esc(c.label) + '</span>';
+        return sep + el;
+      }).join('');
+    }
     var p = document.getElementById('pageWrap');
     if (p) p.scrollTop = 0;
   }

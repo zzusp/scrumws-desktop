@@ -1,6 +1,6 @@
 // 反读本机 CLI session jsonl → 看板 task 卡片 schema。
 // 数据源：~/.claude/projects/<encoded-cwd>/<sid>.jsonl（CC 官方历史目录），每次交互 append 一行 JSON。
-// 三态：mtime <5min=processing / 5-30min=awaiting-human / >30min=archived。
+// state（v4，进程信号判据，见下方 buildCliCard）：终端/回复在跑=processing，空闲=awaiting-human，archived 仅手动。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -187,7 +187,6 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
   try { stat = fs.statSync(jsonlPath); } catch { return null; }
   const mtimeMs = stat.mtimeMs;
   const mtimeIso = new Date(mtimeMs).toISOString();
-  const ageSec = Math.max(0, (now.getTime() - mtimeMs) / 1000);
 
   const { head, tail } = readLinesSplit(jsonlPath);
   const { first, firstUserText } = extractHeadInfo(head);
@@ -196,18 +195,16 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
   // 活进程占用（CC 官方注册表 ~/.claude/sessions/）：终端还开着 = 不能从看板回复
   const att = attached?.get(sid) || null;
 
-  // state 判据 v3（2026-07-10 第三版：进程信号取代 mtime 阈值猜测）：
+  // state 判据 v4（进程信号，不用 mtime 阈值）：
   //   - 终端占用：CC 注册表 ~/.claude/sessions/ 自带实时 status（busy=在跑 / idle=等输入），直接用
   //   - headless 回复：spawnCliReply 落的 runner sentinel，pid 存活=在跑、退出=收敛（零延迟）
-  //   - archived：手动归档 > 无占用且 mtime >30min
-  // 历史版本：v1 纯 mtime 阈值（用户思考也算在跑）→ v2 turn_duration 比较（headless 轮不写
-  // turn_duration，靠 120s mtime 兜底，收敛后要挂 2 分钟）→ v3 全事件化
+  //   - archived：**仅手动归档**（archivedAt）——CLI 会话不再按空闲时长自动归档（用户拍板：归档只手动）
+  // 历史：v1 纯 mtime 阈值 → v2 turn_duration → v3 全事件化(仍保留 >30min 自动归档) → v4 去掉自动归档
   const replyRunnerPid = replyRunners?.get(sid) || null;
   let state;
   if (sidEntry.archivedAt) state = 'archived';
   else if (att) state = att.status === 'busy' ? 'processing' : 'awaiting-human';
   else if (replyRunnerPid) state = 'processing';
-  else if (ageSec > 1800) state = 'archived';
   else state = 'awaiting-human';
 
   const createdAt = first?.timestamp ? fmt(new Date(first.timestamp)) : sidEntry.addedAt;

@@ -189,6 +189,25 @@ export async function dwsAuthGate(sentinel, log, source) {
   return true;
 }
 
+// ---- 授权熔断复查（recovery-only）：平台常驻 runner-checker 调，不依赖派发器 ----
+// 背景：auth-block sentinel 原本只有 dwsAuthGate 在派发 tick 里写/清；派发器一关就没 tick，
+//       熔断标记永远清不掉、告警一直挂着（stale）。这里给平台侧一条独立清除路径。
+// 约束：**只清不写**——sentinel 存在才复查一次 dws auth status，恢复即清；仍失效则原样保留（绝不新写，
+//       熔断仍归 dwsAuthGate/派发链）。判据与 dwsAuthGate 一致（authenticated 且 token/refresh 至少一有效），改判据两边一起改。
+export async function recheckAuthBlock(sentinel, log, { dryRun = false } = {}) {
+  if (!fs.existsSync(sentinel)) return null;   // 无熔断标记 → 无需复查（常态 no-op，不跑 dws）
+  const r = await exec('dws', ['auth', 'status', '--format', 'json', '--timeout', '10'], { timeout: 30000 });
+  if (r.code !== 0) return false;              // 查询失败（仍未登录 / dws 不可用）→ 维持熔断
+  let status = null;
+  try { status = JSON.parse(r.all); } catch { return false; }
+  const recovered = !!(status && status.authenticated && (status.token_valid || status.refresh_token_valid));
+  if (!recovered) return false;                // 仍双失效 → 维持熔断（sentinel 已在，不重写）
+  if (dryRun) { log('[checker] dws 授权已恢复（DryRun，不清 auth-block）'); return true; }
+  fs.rmSync(sentinel, { force: true });
+  log('[checker] dws 授权已恢复（authenticated=true），清除 auth-block —— 平台复查兜底，不依赖派发器');
+  return true;
+}
+
 // ---- spawn detached worker 外壳 ----
 // 不能用 Node spawn 直起 pwsh worker：
 //   · detached:true → DETACHED_PROCESS 无控制台，pwsh 秒退 exit 0（task-actions.js:347 同坑）
@@ -234,6 +253,7 @@ export function buildCtx({ id, logFile, dryRun = false }) {
     stopZombieWorker: (l) => stopZombieWorker(l, log),
     quotaBlockActive: () => quotaBlockActive(P.quotaBlk, log),
     dwsAuthGate: (source) => dwsAuthGate(P.authBlk, log, source),
+    recheckAuthBlock: () => recheckAuthBlock(P.authBlk, log, { dryRun }),
     runnerConfig, planRequired,
     spawnLoop, addSpawnRecord,
     spawnLoopAlert: (taskDir, taskKey) => spawnLoopAlert(taskDir, taskKey, log),
