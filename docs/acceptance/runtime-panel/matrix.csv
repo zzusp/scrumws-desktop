@@ -1,0 +1,13 @@
+case,round-1
+后端 /api/state 返回 runtime 对象,PASS
+claude 探测 online/version/binPath 真实,PASS
+用量聚合与 fixture meta.usage 精确一致,PASS
+活跃会话计数（板内+终端去重）,PASS
+侧边栏含「运行时」菜单,PASS
+点菜单路由到 #/runtime 切视图,PASS
+view-runtime 可见且其他视图隐藏,PASS
+nav「运行时」高亮 active,PASS
+面包屑标题=运行时,PASS
+运行时卡片含 Claude Code/在线/版本/路径/主机/活跃会话,PASS
+用量 stat tiles 值正确（$0.1234/100/2.0K/50.0K）,PASS
+用量覆盖行统计正确（1 任务·2 轮·5 turns）,PASS

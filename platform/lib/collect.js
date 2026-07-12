@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFile } from 'node:child_process';
 import { P } from './paths.js';
 import { fmt, parse, ago } from './timeutil.js';
 import { CHECKER, checkerEnabled, checkerIntervalSec } from './jobs/checker-meta.js';
 import * as scheduler from './scheduler.js';
 import { readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
-import { collectCliSessions } from './collect-cli.js';
+import { collectCliSessions, readAttachedSessions } from './collect-cli.js';
 import { getTaskSessionId } from './task-runner.js';
+import { listSessions } from './session-manager.js';
 
 // ---------- 通用小工具 ----------
 function pidAlive(pid) {
@@ -171,6 +174,95 @@ function collectAll(now) {
   return buckets;
 }
 
+// ---------- Claude Code 运行时探测（版本 / 路径 / 在线，缓存 5min）----------
+// online 语义：本机能解析并执行 `claude --version` = 在线可用；失败（未装/PATH 缺失）= 离线。
+// 探测走后台 execFile 不阻塞 /api/state；模块加载即触发首探，TTL 到点后台重探，读缓存返回。
+const CLAUDE_BIN = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+const WHICH_CMD = process.platform === 'win32' ? 'where' : 'which';
+const RT_DETECT_TTL = 5 * 60 * 1000;
+let claudeRt = { detectedAt: 0, online: null, version: null, binPath: null };   // online:null=检测中
+let rtDetecting = false;
+
+function detectClaudeRuntime() {
+  if (rtDetecting) return;
+  if (claudeRt.detectedAt && Date.now() - claudeRt.detectedAt < RT_DETECT_TTL) return;
+  rtDetecting = true;
+  execFile(CLAUDE_BIN, ['--version'], { timeout: 5000, windowsHide: true }, (err, stdout) => {
+    if (err) {
+      claudeRt = { detectedAt: Date.now(), online: false, version: null, binPath: null };
+      rtDetecting = false;
+      return;
+    }
+    // "2.1.207 (Claude Code)" → 取版本号；无法匹配则原样 trim
+    const version = (String(stdout).trim().match(/\d+\.\d+\.\d+[\w.-]*/) || [String(stdout).trim() || null])[0];
+    execFile(WHICH_CMD, ['claude'], { timeout: 5000, windowsHide: true }, (e2, out2) => {
+      const binPath = e2 ? null : (String(out2).split(/\r?\n/).map((l) => l.trim()).find(Boolean) || null);
+      claudeRt = { detectedAt: Date.now(), online: true, version, binPath };
+      rtDetecting = false;
+    });
+  });
+}
+detectClaudeRuntime();   // 模块加载即触发首探
+
+// ---------- 运行时用量汇总（跨任务聚合 meta）----------
+// totalCostUsd/rounds/numTurns：累计口径（CC result 事件累计值，逐轮覆盖式写盘，跨任务求和即总量）。
+// tokens：取各任务已记录的 meta.usage（末轮快照，CC result.usage 为单轮口径）——真实记录值，非估算。
+// CLI 会话 v1 不计 token（usage=null），单独计数标注，不混入。
+function computeRuntimeUsage(buckets) {
+  const agg = {
+    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+    totalCostUsd: 0, rounds: 0, numTurns: 0, tasksWithUsage: 0, cliCount: 0,
+  };
+  const all = [
+    ...buckets.plan, ...buckets.processing, ...buckets.queued,
+    ...buckets.done, ...buckets['awaiting-human'], ...buckets.archived, ...buckets.other,
+  ];
+  for (const t of all) {
+    if (t.source === 'cli') { agg.cliCount++; continue; }
+    const m = t.meta;
+    if (!m) continue;
+    agg.totalCostUsd += m.totalCostUsd || 0;
+    agg.rounds += m.rounds || 0;
+    agg.numTurns += m.numTurns || 0;
+    const u = m.usage;
+    if (u) {
+      agg.tasksWithUsage++;
+      agg.inputTokens += Number(u.input_tokens) || 0;
+      agg.outputTokens += Number(u.output_tokens) || 0;
+      agg.cacheReadTokens += Number(u.cache_read_input_tokens) || 0;
+      agg.cacheCreationTokens += Number(u.cache_creation_input_tokens) || 0;
+    }
+  }
+  return agg;
+}
+
+// ---------- 运行时卡片（本机 Claude Code 执行环境 + 活跃会话计数）----------
+function buildRuntime(buckets) {
+  // 活跃会话：看板持有的 Mode B 会话（未收敛）+ 终端 CLI 会话（CC 注册表活进程），按 sessionId 去重
+  const boardLive = listSessions().filter((s) => s.state !== 'closed' && s.state !== 'error');
+  const boardSids = new Set(boardLive.map((s) => s.claudeSessionId).filter(Boolean));
+  const attached = readAttachedSessions();
+  let attachedCli = 0;
+  for (const sid of attached.keys()) if (!boardSids.has(sid)) attachedCli++;
+
+  detectClaudeRuntime();   // TTL 到点则后台重探（读缓存，不阻塞）
+  return {
+    tool: 'Claude Code',
+    host: os.hostname(),
+    platform: process.platform,
+    online: claudeRt.online,
+    version: claudeRt.version,
+    binPath: claudeRt.binPath,
+    sessions: {
+      total: boardLive.length + attachedCli,
+      board: boardLive.length,
+      cli: attachedCli,
+      processing: buckets.processing.length,
+    },
+    usage: computeRuntimeUsage(buckets),
+  };
+}
+
 // ---------- /api/state 主入口 ----------
 // job 实况卡（进程内调度器实况 + 心跳日志）——去派发器后仅 Runner Checker 用
 function liveJobCard(id, logFile, enabled, intervalSec, sched, now) {
@@ -218,6 +310,7 @@ export async function collectState() {
     now: fmt(now),
     scheduler: { mode: sched.mode, lockPid: sched.lockPid },
     checker,
+    runtime: buildRuntime(buckets),
     lifecycle: {
       plan: buckets.plan,
       processing: buckets.processing,

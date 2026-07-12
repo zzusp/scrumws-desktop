@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.log
 .sandbox/
+graphify-out/
 # 历史遗留：旧默认 dataRoot 是 Windows 相对路径 'D:\baibu-agent'，在 macOS 上会当相对路径在仓库内建目录。
 # 默认已改为绝对 ~/.scrumws；忽略这个残留目录（可安全删除）。反斜杠在 gitignore 里需转义成 \\。
 D:\\baibu-agent/

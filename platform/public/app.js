@@ -110,6 +110,63 @@ function bindLiveJobSwitches(rootEl, urlFor) {
 }
 
 
+// ---- 面板：运行时（本机 Claude Code 执行环境 + 用量汇总；参考 multica Runtime Panel）----
+// 每次 /api/state 轮询都渲染（即使不在该视图，更新隐藏 DOM），进入 #/runtime 时即为最新。
+function renderRuntime(rt) {
+  const card = $('runtimeCard');
+  const grid = $('usageGrid');
+  if (!card || !grid) return;
+  if (!rt) { card.innerHTML = '<div style="color:var(--dim);font-size:12.5px">运行时数据不可用</div>'; grid.innerHTML = ''; return; }
+  // 大数压缩：token 计数动辄百万，stat tile 用 K/M/B 更易读
+  const compact = (n) => {
+    n = Number(n) || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  };
+  // ---- 运行时卡片 ----
+  const online = rt.online;
+  const statusCls = online == null ? 'detecting' : online ? 'on' : 'off';
+  const statusTxt = online == null ? '检测中…' : online ? '在线' : '离线';
+  const dotCls = online == null ? 'rt-detecting' : online ? 'rt-on' : 'rt-off';
+  const s = rt.sessions || {};
+  const plat = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' }[rt.platform] || rt.platform || '—';
+  const kv = (k, v, title) => `<div class="rt-kv"><span class="k">${k}</span><span class="v"${title ? ` title="${escapeAttr(title)}"` : ''}>${v}</span></div>`;
+  const dim = (t) => `<span style="color:var(--dim)">${t}</span>`;
+  card.innerHTML = `
+    <div class="rt-panel">
+      <div class="rt-badge"><svg viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></div>
+      <div class="rt-info">
+        <div class="rt-name">${escapeHtml(rt.tool || 'Claude Code')}<span class="rt-status ${statusCls}"><span class="rt-dot ${dotCls}"></span>${statusTxt}</span></div>
+        <div class="rt-kvs">
+          ${kv('主机', escapeHtml(rt.host || '—'))}
+          ${kv('平台', escapeHtml(plat))}
+          ${kv('版本', rt.version ? escapeHtml(rt.version) : dim('未知'))}
+          ${kv('路径', rt.binPath ? escapeHtml(rt.binPath) : dim('—'), rt.binPath || '')}
+        </div>
+      </div>
+      <div class="rt-sessions">
+        <div class="rt-sess-num">${s.total ?? 0}</div>
+        <div class="rt-sess-label">活跃会话</div>
+        <div class="rt-sess-sub">板内 ${s.board ?? 0} · 终端 ${s.cli ?? 0}</div>
+      </div>
+    </div>`;
+  // ---- 用量 stat tiles ----
+  const u = rt.usage || {};
+  const tiles = [
+    { label: '总成本', val: '$' + (u.totalCostUsd || 0).toFixed(4), color: 'var(--brand)' },
+    { label: '输入 tokens', val: compact(u.inputTokens || 0), color: 'var(--info)' },
+    { label: '输出 tokens', val: compact(u.outputTokens || 0), color: 'var(--success)' },
+    { label: '缓存读命中', val: compact(u.cacheReadTokens || 0), color: 'var(--warning)' },
+  ];
+  const sub = `覆盖 ${u.tasksWithUsage || 0} 个已执行任务 · 累计 ${u.rounds || 0} 轮 · ${u.numTurns || 0} turns`
+    + (u.cliCount ? ` · ${u.cliCount} 个 CLI 会话无 token 计量` : '');
+  grid.innerHTML =
+    `<div class="stat-grid">${tiles.map((t) => `<div class="stat-tile"><div class="stat-val">${t.val}</div><div class="stat-label">${escapeHtml(t.label)}</div><div class="stat-accent" style="background:${t.color}"></div></div>`).join('')}</div>`
+    + `<div class="stat-sub">${escapeHtml(sub)}</div>`;
+}
+
 // ---- 面板 ② 任务生命周期 ----
 // 把毫秒时长格式化为「Xh Ym / Xm Ys / Xs」
 function fmtDuration(ms) {
@@ -679,7 +736,7 @@ function findTaskKeyBySession(sid) {
 
 // ---- hash 路由：#/board · #/archive · #/dashboard · #/settings · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
 // 详情页已归一：#/session/<id>（历史链接）重定向到其归属任务的 #/task/<taskKey>。
-const ROUTE_VIEWS = ['board', 'archive', 'dashboard', 'settings', 'task'];
+const ROUTE_VIEWS = ['board', 'archive', 'runtime', 'dashboard', 'settings', 'task'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
@@ -696,6 +753,7 @@ function router() {
     view = 'task';
     taskKey = decodeURIComponent(mTask[1]);
   } else if (h.startsWith('#/archive')) view = 'archive';
+  else if (h.startsWith('#/runtime')) view = 'runtime';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
   else if (h.startsWith('#/settings')) view = 'settings';
 
@@ -1504,6 +1562,7 @@ async function refreshState() {
   try {
     stateData = await api('/api/state');
     renderChecker(stateData.checker);
+    renderRuntime(stateData.runtime);
     renderLifecycle(stateData.lifecycle);
   } catch (e) { console.error('state error:', e); }
 }

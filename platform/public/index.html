@@ -463,6 +463,35 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .confirm-body code,.confirm-body b{font-family:var(--mono);font-size:11px;color:var(--ink2);background:var(--card2);box-shadow:inset 0 0 0 1px var(--hair);padding:1px 6px;border-radius:4px;font-weight:500}
 .confirm-actions{display:flex;justify-content:flex-end;gap:8px}
 .confirm-actions .btn{padding:7px 18px;font-size:12px;font-weight:500}
+
+/* ---------- 运行时视图：运行时卡片 + 用量 stat tiles（参考 multica Runtime Panel）---------- */
+.rt-panel{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.rt-badge{width:46px;height:46px;border-radius:var(--r-lg);background:var(--primary);color:var(--primary-foreground);display:grid;place-items:center;flex:none}
+.rt-badge svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.rt-info{flex:1;min-width:220px}
+.rt-name{display:flex;align-items:center;gap:10px;font-family:var(--display);font-size:15px;font-weight:650;color:var(--ink);line-height:1.3}
+.rt-status{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600}
+.rt-status.on{color:var(--jade)}
+.rt-status.off{color:var(--coral)}
+.rt-status.detecting{color:var(--mut)}
+.rt-dot{width:7px;height:7px;border-radius:50%;flex:none}
+.rt-dot.rt-on{background:var(--jade);box-shadow:0 0 0 3px var(--jadeS)}
+.rt-dot.rt-off{background:var(--coral);box-shadow:0 0 0 3px var(--coralS)}
+.rt-dot.rt-detecting{background:var(--dim);animation:pulse 1.2s ease-in-out infinite}
+.rt-kvs{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:13px}
+.rt-kv{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}
+.rt-kv .k{font-size:10px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.rt-kv .v{font-family:var(--mono);font-size:12px;color:var(--ink2);word-break:break-all;overflow:hidden;text-overflow:ellipsis;max-width:340px}
+.rt-sessions{flex:none;text-align:center;padding:10px 24px;border-radius:var(--r-lg);background:color-mix(in oklab,var(--muted) 45%,transparent);align-self:center}
+.rt-sess-num{font-family:var(--display);font-size:28px;font-weight:700;color:var(--ink);line-height:1;font-variant-numeric:tabular-nums}
+.rt-sess-label{font-size:11px;color:var(--mut);margin-top:6px;font-weight:500}
+.rt-sess-sub{font-size:10px;color:var(--dim);margin-top:3px;font-family:var(--mono)}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat-tile{padding:14px 16px;border-radius:var(--r-lg);background:var(--card);box-shadow:var(--ring1)}
+.stat-val{font-family:var(--display);font-size:22px;font-weight:700;color:var(--ink);line-height:1.1;font-variant-numeric:tabular-nums;word-break:break-all}
+.stat-label{font-size:11px;color:var(--mut);margin-top:6px;font-weight:500}
+.stat-accent{width:22px;height:3px;border-radius:999px;margin-top:10px;opacity:.85}
+.stat-sub{font-size:11px;color:var(--dim);margin-top:12px;font-family:var(--mono);line-height:1.6}
 </style>
 </head>
 <body>
@@ -502,6 +531,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <span class="sb-label">归档</span>
       </a>
       <div class="sb-group">平台</div>
+      <a href="#/runtime" data-nav="runtime">
+        <svg class="ic" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+        <span class="sb-label">运行时</span>
+      </a>
       <a href="#/dashboard" data-nav="dashboard">
         <svg class="ic" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
         <span class="sb-label">数据看板</span>
@@ -602,7 +635,25 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </section>
         </div>
 
-        <!-- ============ 页面 3：数据看板（暂空 · req5，后续想到展示内容再补）============ -->
+        <!-- ============ 页面 3：运行时（本机 Claude Code 执行环境 + 用量汇总 · 参考 multica Runtime Panel）============ -->
+        <div id="view-runtime" class="view" style="display:none">
+          <section class="card" style="margin-bottom:var(--gap)">
+            <div class="sec-head">
+              <h2>运行时</h2>
+              <span class="sec-sub">本机 Claude Code 执行环境 · 在线状态与活跃会话</span>
+            </div>
+            <div id="runtimeCard"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
+          </section>
+          <section class="card">
+            <div class="sec-head">
+              <h2>用量汇总</h2>
+              <span class="sec-sub">来自任务执行记录（meta.usage）· 累计成本/轮次 + 记录 token 用量</span>
+            </div>
+            <div id="usageGrid"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
+          </section>
+        </div>
+
+        <!-- ============ 页面 3b：数据看板（暂空 · req5，后续想到展示内容再补）============ -->
         <div id="view-dashboard" class="view" style="display:none">
           <section class="card" style="display:flex;align-items:center;justify-content:center;min-height:280px">
             <div style="text-align:center;color:var(--dim);font-size:12.5px;line-height:1.9">
@@ -825,7 +876,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         { label: key, id: 'crumbLast' },
       ];
     }
-    var name = h.indexOf('#/dashboard') === 0 ? '数据看板'
+    var name = h.indexOf('#/runtime') === 0 ? '运行时'
+      : h.indexOf('#/dashboard') === 0 ? '数据看板'
       : h.indexOf('#/archive') === 0 ? '归档'
       : h.indexOf('#/settings') === 0 ? '设置'
       : '任务看板';
