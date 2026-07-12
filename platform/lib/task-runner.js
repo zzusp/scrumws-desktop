@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
 import { fmt } from './timeutil.js';
-import { createSession, sendUserMessage, getSession, closeSession } from './session-manager.js';
+import { createSession, sendUserMessage, getSession, closeSession, getSessionIdByTaskKey } from './session-manager.js';
 
 // taskKey → 内存会话 id（reply 复用 / 详情接 live SSE / 判活）
 const registry = new Map();
@@ -15,7 +15,8 @@ const lastBeat = new Map();   // taskKey → 上次 heartbeat 落盘的 ms（节
 
 // 该任务当前是否有活着的 Mode B 会话（供 /api/state 暴露 mbSessionId + reply 判复用）
 export function getTaskSessionId(taskKey) {
-  const id = registry.get(taskKey);
+  // file 任务经 bind() 注册 registry；收养会话未 bind，靠 session 自记 taskKey 反查
+  const id = registry.get(taskKey) || getSessionIdByTaskKey(taskKey);
   if (!id) return null;
   const s = getSession(id);
   if (!s || s.state === 'closed' || s.state === 'error') return null;

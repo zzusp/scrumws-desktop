@@ -249,7 +249,7 @@ const server = http.createServer(async (req, res) => {
         const seed = hist.messages.map((m) => m.role === 'assistant'
           ? { type: 'assistant', message: { id: m.messageId || null, content: m.content || [], usage: m.usage || null, model: m.model || null } }
           : { type: 'user', message: { content: m.content || [] } });
-        const r = createSession({ cwd: hist.cwd, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed });
+        const r = createSession({ cwd: hist.cwd, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null });
         sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
       });
       return;
