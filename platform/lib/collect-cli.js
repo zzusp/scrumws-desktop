@@ -8,6 +8,7 @@ import os from 'node:os';
 import { fmt, parse, ago } from './timeutil.js';
 import { listWatchlist, upsertWatchlist, setDoneWatchlist } from './cli-watchlist.js';
 import { P } from './paths.js';
+import { listSessions } from './session-manager.js';
 
 const CC_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const CC_SESSIONS = path.join(os.homedir(), '.claude', 'sessions');
@@ -53,6 +54,20 @@ function readActiveReplyRunners(tmpDir) {
     } catch { try { fs.unlinkSync(file); } catch { } }
   }
   return map;
+}
+
+// 看板持有的 Mode B 会话 state（running|idle|starting）——"在跑/等人"的权威信号。
+// 会话引擎按 stream-json 事件实时维护（system/init→running, result→idle），比反读 CC 注册表的
+// att.status 准：headless/sdk-cli 进程根本不写 status，只能靠这里判 processing。
+// 收养会话 taskKey=cli:<short>、init 后 claudeSessionId=<sid>，两键都留兜底。
+function readBoardSessions() {
+  const byTask = new Map(), bySid = new Map();
+  for (const s of listSessions()) {
+    if (s.state === 'closed' || s.state === 'error') continue;
+    if (s.taskKey) byTask.set(s.taskKey, s.state);
+    if (s.claudeSessionId) bySid.set(s.claudeSessionId, s.state);
+  }
+  return { byTask, bySid };
 }
 
 // 全局扫 ~/.claude/projects/*/<sid>.jsonl，返回首个命中的 { jsonlPath, projectDir }。
@@ -117,7 +132,10 @@ function extractHeadInfo(headLines) {
     const c = firstUser.message?.content;
     firstUserText = (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text || '').join(' ') : '').trim();
   }
-  return { first, firstUserText };
+  // cwd/gitBranch/version 只挂在真实 user/assistant/attachment 行，元事件（queue-operation/last-prompt/
+  // ai-title/mode）不带 → 扫首条带该字段的事件，别只认 first（首行可能恰是元事件，取空）。
+  const firstEnv = events.find((e) => e.cwd || e.gitBranch || e.version) || null;
+  return { first, firstUserText, firstEnv };
 }
 
 // 从尾部行里找最后一条 event，以及最后一条 turn_duration / assistant / user / mode
@@ -127,21 +145,22 @@ function extractTailInfo(tailLines) {
   const events = tailLines.map(tryParse).filter(Boolean);
   if (events.length === 0) return {};
   const last = events[events.length - 1];
-  let lastTurn = null, lastAssistant = null, lastUser = null, lastMode = null;
+  let lastTurn = null, lastAssistant = null, lastUser = null, lastMode = null, lastEnv = null;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (!lastTurn && e.type === 'system' && e.subtype === 'turn_duration') lastTurn = e;
     if (!lastAssistant && e.type === 'assistant') lastAssistant = e;
     if (!lastUser && e.type === 'user') lastUser = e;
     if (!lastMode && e.type === 'mode') lastMode = e;
-    if (lastTurn && lastAssistant && lastUser && lastMode) break;
+    if (!lastEnv && (e.cwd || e.gitBranch || e.version)) lastEnv = e;   // 末尾侧首条带 cwd/git 的真实事件
+    if (lastTurn && lastAssistant && lastUser && lastMode && lastEnv) break;
   }
-  return { last, lastTurn, lastAssistant, lastUser, lastMode };
+  return { last, lastTurn, lastAssistant, lastUser, lastMode, lastEnv };
 }
 
 // 单个 watchlist entry → 卡片对象；jsonl 缺失时返回 stub 卡片（提示"文件已消失"）
 // attached / replyRunners 由调用方传入（避免每个 sid 重扫注册表）
-function collectOneCli(sidEntry, now, attached, replyRunners) {
+function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   const { sid } = sidEntry;
   let jsonlPath = sidEntry.jsonlPath;
   let projectDir = sidEntry.projectDir;
@@ -190,8 +209,8 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
   const mtimeIso = new Date(mtimeMs).toISOString();
 
   const { head, tail } = readLinesSplit(jsonlPath);
-  const { first, firstUserText } = extractHeadInfo(head);
-  const { last, lastTurn, lastAssistant, lastUser, lastMode } = extractTailInfo(tail);
+  const { first, firstUserText, firstEnv } = extractHeadInfo(head);
+  const { last, lastTurn, lastAssistant, lastUser, lastMode, lastEnv } = extractTailInfo(tail);
 
   // 活进程占用（CC 官方注册表 ~/.claude/sessions/）：终端还开着 = 不能从看板回复
   const att = attached?.get(sid) || null;
@@ -211,18 +230,24 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
     setDoneWatchlist(sid, false);
     doneAt = null;
   }
+  // 看板持有的 Mode B 会话在跑=权威 processing 信号（sdk-cli 进程不写 att.status，只能靠它判在跑）。
+  // running/starting=正在生成回复 → processing；idle=一轮收敛等下一条 → awaiting-human。
+  const boardState = board ? (board.bySid.get(sid) || board.byTask.get(`cli:${sid.slice(0, 8)}`) || null) : null;
   let state;
   if (sidEntry.archivedAt) state = 'archived';
   else if (doneAt) state = 'done';
+  else if (boardState) state = boardState === 'idle' ? 'awaiting-human' : 'processing';
   else if (att) state = att.status === 'busy' ? 'processing' : 'awaiting-human';
   else if (replyRunnerPid) state = 'processing';
   else state = 'awaiting-human';
 
   const createdAt = first?.timestamp ? fmt(new Date(first.timestamp)) : sidEntry.addedAt;
   const lastActivity = last?.timestamp ? fmt(new Date(last.timestamp)) : fmt(new Date(mtimeMs));
-  const cwd = last?.cwd || first?.cwd || null;
-  const gitBranch = last?.gitBranch || first?.gitBranch || null;
-  const version = last?.version || first?.version || null;
+  // cwd/git/version：att（CC 注册表活进程，最新值）> 事件里首条带该字段的真实行（末尾侧优先，更新）。
+  // 不再直接用 first/last —— 它们可能恰是不带 cwd/git 的元事件（queue-operation/last-prompt）。
+  const cwd = att?.cwd || lastEnv?.cwd || firstEnv?.cwd || null;
+  const gitBranch = lastEnv?.gitBranch || firstEnv?.gitBranch || null;
+  const version = lastEnv?.version || firstEnv?.version || null;
   const pendingBg = Number(last?.pendingBackgroundAgentCount) || 0;
   const mode = lastMode?.mode || 'normal';
 
@@ -315,10 +340,11 @@ export function collectCliSessions(now) {
   if (list.length === 0) return [];
   const attached = readAttachedSessions();
   const replyRunners = readActiveReplyRunners(P.tmpDir);
+  const board = readBoardSessions();
   const cards = [];
   for (const entry of list) {
     try {
-      const c = collectOneCli(entry, now, attached, replyRunners);
+      const c = collectOneCli(entry, now, attached, replyRunners, board);
       if (c) cards.push(c);
     } catch (e) {
       // 单个 sid 出错不影响其他；打日志到 stderr 便于排查

@@ -161,6 +161,20 @@ function parseCcSession(jsonlText) {
   for (const e of events) {
     if (e.type === 'system' && e.subtype === 'turn_duration' && Number(e.durationMs) > 0) workMs += Number(e.durationMs);
   }
+  // headless / Mode B 会话磁盘 jsonl 不含 turn_duration（那是交互 TUI 才写的元事件）→ 退化用每轮墙钟
+  // （真人 user 消息 → 该轮最后一条 assistant）之和近似，排除轮间用户输入间隔。
+  if (workMs === 0) {
+    let turnStart = null, turnEnd = null;
+    const flush = () => { if (turnStart != null && turnEnd != null && turnEnd > turnStart) workMs += turnEnd - turnStart; };
+    for (const m of messages) {
+      if (m.role === 'user' && m.isMeta) continue;   // caveat/hook 等系统 user 不算一轮起点
+      const t = m.at ? new Date(m.at).getTime() : null;
+      if (!t || isNaN(t)) continue;
+      if (m.role === 'user') { flush(); turnStart = t; turnEnd = null; }
+      else if (m.role === 'assistant' && turnStart != null) turnEnd = t;
+    }
+    flush();
+  }
   const summary = {
     sessionId: lastResult?.session_id || null,
     numTurns: lastResult?.num_turns ?? messages.filter((m) => m.role === 'assistant').length,
