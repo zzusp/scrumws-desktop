@@ -1,9 +1,10 @@
 import path from 'node:path';
 import os from 'node:os';
 
-// 数据根 = 分身工作目录（runtime/、scripts/ 所在），桌面端启动时经 SCRUMWS_DATA_ROOT 注入；
-// 默认指向本机分身目录（goal.md D2：运行时数据不搬家，app 只是平台进程的新宿主）。
-export const ROOT = process.env.SCRUMWS_DATA_ROOT || 'D:\\baibu-agent';
+// 数据根 = 运行时态目录（runtime/、scripts/ 所在），桌面端启动时经 SCRUMWS_DATA_ROOT 注入；
+// 默认落用户主目录下的绝对路径 ~/.scrumws。不用相对路径：相对路径挂在启动 CWD 下，换目录启动即
+// 指向另一处、还可能落在仓库内被 git clean 连锅端——曾导致看板任务"凭空消失"。
+export const ROOT = process.env.SCRUMWS_DATA_ROOT || path.join(os.homedir(), '.scrumws');
 
 // CC 官方项目目录名编码：盘符冒号与路径分隔符折成 '-'（D:\baibu-agent → D--baibu-agent）
 const ccProjectName = ROOT.replace(/[:\\/]/g, '-');
