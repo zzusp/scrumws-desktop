@@ -488,8 +488,13 @@ window.approveTaskAction = approveTaskAction;
 let currentModalData = null;
 let lastModalFp = null;             // poll 内容指纹：没新内容不重画 DOM（保住滚动位置和 details 展开态）
 
-// 卡片点击入口：跳 hash 路由（#/task/<key>），由 router 调 loadTaskDetail 渲染详情页
-window.openTaskModal = (taskKey) => { location.hash = '#/task/' + encodeURIComponent(taskKey); };
+// 卡片点击入口：有活跃 Mode B 会话（运行中/暖着）→ 跳实时会话面 #/session/<mbSessionId>；
+// 否则跳只读详情 #/task/<key>（历史 + 回复框；回复会自动 --resume 续起会话）
+window.openTaskModal = (taskKey) => {
+  const t = findTaskInState(taskKey);
+  if (t?.mbSessionId) location.hash = '#/session/' + encodeURIComponent(t.mbSessionId);
+  else location.hash = '#/task/' + encodeURIComponent(taskKey);
+};
 
 async function loadTaskDetail(taskKey) {
   modalOpen = true;
@@ -1454,43 +1459,9 @@ async function refreshState() {
     stateData = await api('/api/state');
     renderChecker(stateData.checker);
     renderLifecycle(stateData.lifecycle);
-    renderAuthBanner(stateData.authBlock);
   } catch (e) { console.error('state error:', e); }
 }
 
-// ---- dws 授权失效提示（authBlock 有值 → 显示；恢复正常 → 隐藏）----
-// 用户手动关闭 → 按 writtenAt 持久化到 localStorage：刷新后不再弹同一条；
-// 授权恢复（ab 为空，checker 复查已清 sentinel）→ 清记录，下次「新一条」失效仍会提示
-const AUTH_DISMISS_KEY = 'auth-dismissed-at';
-function renderAuthBanner(ab) {
-  const banner = $('authBanner');
-  if (!ab) { banner.style.display = 'none'; localStorage.removeItem(AUTH_DISMISS_KEY); return; }
-  if (localStorage.getItem(AUTH_DISMISS_KEY) === (ab.writtenAt || '')) { banner.style.display = 'none'; return; }
-  $('authBannerReason').textContent = ab.reason || 'dws 授权失效';
-  const bits = [];
-  if (ab.writtenAt) bits.push(`熔断于 ${ab.writtenAt}`);
-  if (ab.source) bits.push(`来源 ${ab.source}`);
-  if (ab.expiresAt) bits.push(`token 到期 ${ab.expiresAt}`);
-  bits.push('登录后下一 tick 自动恢复（无需重启）');
-  $('authBannerMeta').textContent = bits.join(' · ');
-  banner.style.display = '';
-}
-$('authBannerClose').addEventListener('click', () => {
-  localStorage.setItem(AUTH_DISMISS_KEY, stateData?.authBlock?.writtenAt || '');
-  $('authBanner').style.display = 'none';
-});
-$('authBannerCopy').addEventListener('click', async () => {
-  const btn = $('authBannerCopy');
-  try {
-    await navigator.clipboard.writeText('dws auth login');
-    const old = btn.textContent;
-    btn.textContent = '已复制';
-    setTimeout(() => { btn.textContent = old; }, 1500);
-  } catch (e) {
-    btn.textContent = '复制失败';
-    setTimeout(() => { btn.textContent = '复制'; }, 1500);
-  }
-});
 $('autoRefreshSwitch').addEventListener('change', (e) => { autoRefresh = e.target.checked; });
 
 // ---- 新建任务 Modal ----
@@ -1582,9 +1553,11 @@ $('newTaskSubmit').addEventListener('click', async () => {
       errBox.style.display = 'block';
       return;
     }
-    // 入队式：任务落 plan/queued 桶，不自动执行（在看板确认/重新发起触发运行）
     closeNewTaskModal();
-    await refreshState();
+    // queued → 已自动起会话执行（r.sessionUiId）：跳实时会话面看逐字 / 权限 / 打断。
+    // plan → 待确认，留在看板由用户「确认执行」。
+    if (r.sessionUiId) location.hash = '#/session/' + encodeURIComponent(r.sessionUiId);
+    else await refreshState();
   } catch (e) {
     errBox.textContent = e.message;
     errBox.style.display = 'block';
@@ -1848,32 +1821,8 @@ function scheduleStateRefresh() {
 // ==== Mode B 交互会话（S5：看板持有的 claude 会话 · 逐字 / 权限确认 / 打断）====
 let mb = null;   // { id, sse, transcript:[], liveText, perms:[], info, state, syncing }
 
-// 入口弹窗
-$('newSessionBtn').addEventListener('click', () => {
-  const sel = $('newSessionModel');
-  sel.innerHTML = BASE_MODELS.map((m) => `<option value="${escapeAttr(m.value)}"${m.value === 'claude-opus-4-8' ? ' selected' : ''}>${escapeHtml(m.name)} · ${escapeHtml(m.desc)}</option>`).join('');
-  $('newSessionEffort').innerHTML = EFFORTS.map((e) => `<option value="${e}"${e === 'high' ? ' selected' : ''}>${e}</option>`).join('');
-  $('newSessionErr').textContent = '';
-  $('newSessionModal').style.display = 'flex';
-  setTimeout(() => $('newSessionPrompt').focus(), 80);
-});
-window.closeNewSessionModal = () => { $('newSessionModal').style.display = 'none'; };
-$('newSessionSubmit').addEventListener('click', async () => {
-  const prompt = $('newSessionPrompt').value.trim();
-  const cwd = $('newSessionCwd').value.trim();
-  const model = $('newSessionModel').value;
-  const effort = $('newSessionEffort').value;
-  const err = $('newSessionErr');
-  if (!prompt) { err.textContent = '请填首条消息'; return; }
-  err.textContent = '正在启动会话…';
-  try {
-    const r = await api('/api/session/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, cwd: cwd || undefined, model, effort }) });
-    if (!r.ok) { err.textContent = r.error || '创建失败'; return; }
-    closeNewSessionModal();
-    $('newSessionPrompt').value = ''; $('newSessionCwd').value = '';
-    location.hash = '#/session/' + encodeURIComponent(r.id);
-  } catch (e) { err.textContent = e.message; }
-});
+// 交互会话不再有独立入口——统一由「新建任务」创建（任务进 queued 即自动起绑定会话执行）。
+// 本视图（#/session/<mbSessionId>）只作为「运行中任务」的实时会话面（逐字 / 权限 / 打断），从任务卡进入。
 
 // 只关前端 SSE，不 close 后端进程（离开视图 / 切会话时用；会话继续跑）
 function mbDetach() { mbStopStatusTimer(); if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
@@ -1980,7 +1929,10 @@ function mbRenderHead() {
   const cid = mb.info?.claudeSessionId ? mb.info.claudeSessionId.slice(0, 8) : '—';
   const colors = { starting: 'var(--mut)', running: 'var(--amber)', idle: 'var(--cyan)', closed: 'var(--dim)', error: 'var(--coral)' };
   const stTag = `<span class="tag" style="color:${colors[mb.state] || 'var(--mut)'}">${escapeHtml(mb.state)}${mb.state === 'running' ? ' <span style="animation:pulse 1.4s infinite">●</span>' : ''}</span>`;
+  const tk = mb.info?.taskKey;
   el.innerHTML = `
+    <button class="btn" onclick="location.hash='#/board'" title="返回看板（会话继续在后台跑）">← 看板</button>
+    ${tk ? `<span><span class="sh-k">任务</span><span class="sh-v" title="${escapeAttr(tk)}">${escapeHtml(tk)}</span></span>` : ''}
     <span><span class="sh-k">会话</span><span class="sh-v">${escapeHtml(cid)}</span></span>
     ${stTag}
     <span><span class="sh-k">模型</span><span class="sh-v">${escapeHtml(mb.info?.model || '—')}</span></span>
@@ -2122,7 +2074,12 @@ async function mbSend() {
   mb.transcript.push({ type: 'user', message: { role: 'user', content: msg } });   // 乐观回显
   mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); mb.liveUsage = null;   // 从发送即开始计时（CC 风格）
   mb.state = 'running'; mbRenderBody(); mbRenderHead();
-  const r = await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }));
+  // 任务绑定会话 → 走 /api/task/reply（内部 sendUserMessage + 置任务 state=processing）；
+  // 未绑定（CLI 收养会话）→ 直接 /api/session/send
+  const tk = mb.info?.taskKey;
+  const r = tk
+    ? await api(`/api/task/reply?taskKey=${encodeURIComponent(tk)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }))
+    : await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }));
   if (!r.ok) customAlert({ title: '发送失败', message: escapeHtml(r.error || '') });
 }
 window.mbRespond = async (requestId, allow) => {

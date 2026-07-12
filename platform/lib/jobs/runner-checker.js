@@ -1,30 +1,18 @@
-// 平台守护 · 孤儿任务收纳器 —— scripts/runner-checker.ps1 的 Node 移植
-// 平台内置 job（不可表单编辑），由看板进程内调度器每 intervalSec 秒 fork 一次（去派发器后是调度器唯一的 job）。
-// 流程（纯脚本层，不启 claude、不消耗 API 额度）：
-//   ① 共享 quota-block 在效 → 全轮跳过
-//   ② 扫 runner-state/ 找孤儿（lease 死 + resolvedAt=null + state 不在 awaiting-human/queued/plan 跳过名单）
-//   ③ 每个孤儿：提 sid（meta.sessionId ?? state.pendingResumeSessionId）→ 直接标 awaiting-human +
-//      outcomeDetail.resumeSessionId，落看板 awaiting-human 分区由人处置（reply-runner --resume 或重新发起）
-// 2026-07-10 复盘定：**平台组件不外发通知**（原“私发 owner 附 sid”钉钉逻辑删除）——任务看板保持通用、
-// 不绑定钉钉等具体工具；孤儿可见性靠看板 awaiting-human 分区 + 数据看板 awaiting-human 红色瓦片。
+// 平台守护 · 孤儿任务收纳器。平台内置 job（不可表单编辑），由看板进程内调度器每 intervalSec 秒 fork 一次
+// （去派发器 + 交互会话统一为任务后，是调度器唯一的 job）。
+// 流程（纯脚本层，不启 claude、不消耗额度）：
+//   ① 扫 runner-state/ 找孤儿（lease 死 + resolvedAt=null + state 不在 awaiting-human/queued/plan 跳过名单）
+//   ② 每个孤儿：提 sid（meta.sessionId ?? state.pendingResumeSessionId）→ 标 awaiting-human +
+//      outcomeDetail.resumeSessionId，落看板 awaiting-human 分区由人处置（从详情回复即 --resume 续 / 重新发起）
+// 覆盖场景：Mode B 会话执行到一半服务重启（内存会话丢失、claude 子进程随 stdin 断退出）→ lease pid 死 →
+//   本 job 把卡在 processing 的任务收成 awaiting-human，带 resumeSessionId，用户回复即续。
+// 平台组件不外发通知：孤儿可见性靠看板 awaiting-human 分区 + 数据看板红瓦片。
 
 export default async function tick(ctx) {
   const { P, join, log, out, dryRun, fmt } = ctx;
   const now = () => fmt(new Date());
 
-  // ---- ⓪ 授权熔断复查（平台兜底）----
-  // auth-block sentinel 由 scripts 侧 .ps1 worker 链写；平台侧靠这里自愈：sentinel 存在且 dws 授权已恢复 → 清除。
-  try { await ctx.recheckAuthBlock(); } catch (e) { log(`授权复查出错：${e.message}`); }
-
-  // ---- ① 共享 quota-block ----
-  const blockUntil = ctx.quotaBlockActive();
-  if (blockUntil) {
-    log(`quota-block 生效（reset ${fmt(blockUntil).slice(11)}），全轮跳过 checker`);
-    if (dryRun) out('quota-block 生效，跳过');
-    return;
-  }
-
-  // ---- ② 扫孤儿 ----
+  // ---- ① 扫孤儿 ----
   const dirs = ctx.listDirs(P.runnerRoot);
   const orphans = [];
   for (const name of dirs) {
@@ -39,21 +27,18 @@ export default async function tick(ctx) {
     if (!ctx.exists(stateFile)) continue;
     const s = ctx.readJson(stateFile);
     if (!s) continue;
-    // 跳过名单：awaiting-human 人工兜底中；queued 待运行（用户从看板触发）；plan 待确认（从未 spawn）
+    // 跳过名单：awaiting-human 人工兜底中；queued 待运行；plan 待确认（从未起会话）
     if (['awaiting-human', 'queued', 'plan'].includes(String(s.state))) continue;
     if (s.resolvedAt) continue;
     orphans.push({ dir, taskKey: s.taskKey || null, stateFile, metaFile: join(dir, 'meta.json'), safeKey: name });
   }
 
-  // 补 TaskKey（task.json 或目录名逆推）
+  // 补 TaskKey（task.json 或目录名逆推：<source>__<slug> → <source>:<slug>）
   for (const o of orphans) {
     if (o.taskKey) continue;
     const t = ctx.readJson(join(o.dir, 'task.json'));
     if (t?.taskKey) { o.taskKey = t.taskKey; continue; }
-    let m;
-    if ((m = /^chat__(.+)$/.exec(o.safeKey))) o.taskKey = `chat:${m[1]}`;
-    else if ((m = /^issue__(.+)_(\d+)$/.exec(o.safeKey))) o.taskKey = `issue:${m[1]}#${m[2]}`;
-    else o.taskKey = `unknown:${o.safeKey}`;
+    o.taskKey = o.safeKey.includes('__') ? o.safeKey.replace('__', ':') : `unknown:${o.safeKey}`;
   }
 
   log(`扫描 ${dirs.length} 个任务包，孤儿 ${orphans.length} 个${dryRun ? ' [DryRun]' : ''}`);
@@ -62,7 +47,7 @@ export default async function tick(ctx) {
     return;
   }
 
-  // ---- ③ helpers ----
+  // ---- ② helpers ----
   function updateOrphanState(orphan, patch) {
     if (dryRun) return;
     const s = ctx.readJson(orphan.stateFile) || {};
@@ -80,7 +65,7 @@ export default async function tick(ctx) {
     ctx.appendText(join(orphan.dir, 'checker.log'), `[${now()}] ${line}\n`);
   }
 
-  // ---- ④ 收纳：不主动 --resume 询问，直接标 awaiting-human（看板 awaiting-human 分区即出口，不外发通知）----
+  // ---- ③ 收纳：直接标 awaiting-human（看板 awaiting-human 分区即出口，不外发通知）----
   const plan = [];
   for (const o of orphans) {
     try {
@@ -94,8 +79,8 @@ export default async function tick(ctx) {
       const sidShort = sid ? sid.slice(0, 8) : null;
 
       const reason = sid
-        ? 'runner 中断（pid 死 + 未收尾）；sid 已落，可从看板续（reply-runner --resume）'
-        : 'runner 中断（pid 死 + 未收尾）；无 sid 无法续、需从看板重新发起';
+        ? '会话中断（pid 死 + 未收尾）；sid 已落，可从看板回复续（--resume）'
+        : '会话中断（pid 死 + 未收尾）；无 sid 无法续、需从看板重新发起';
       plan.push(sid ? `PROMOTE ${o.taskKey} sid=${sidShort}` : `PROMOTE ${o.taskKey}（无 sid 可续）`);
       appendCheckerLog(o, sid ? `verdict=ORPHAN-PROMOTED sid=${sidShort}` : 'verdict=ORPHAN-PROMOTED no-sid');
 

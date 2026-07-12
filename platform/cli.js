@@ -2,16 +2,16 @@
 import http from 'node:http';
 import { parseArgs } from 'node:util';
 
-// ScrumWS 任务新增 CLI（HTTP 瘦客户端）：把任务推给运行中的 app，落 plan/queued 桶，不 spawn worker。
-// 供任意来源（聊天机器人 / issue webhook / 脚本 …）新建任务，与看板「新建任务」按钮同一后端端点。
+// ScrumWS 任务新增 CLI（HTTP 瘦客户端）：把任务推给运行中的 app。queued 即自动起交互式 claude 会话执行，
+// plan 待看板确认后执行。供任意来源（聊天机器人 / issue webhook / 脚本 …）新建任务，与看板「新建任务」按钮同一端点。
 //
 //   node platform/cli.js create --source <s> --title <t> --prompt <p> [--model <m>] [--cwd <dir>] [--desc <备注>] [--plan]
 //   node platform/cli.js create --source chat --title "标题" --prompt -          # prompt 从 stdin 读（长文本）
 //   node platform/cli.js create --json                                          # 整体 JSON body 从 stdin 读
 //
-// 端口取 --port ?? SCRUMWS_PORT ?? 8799；服务只 bind 127.0.0.1。exit 0=已入队 / 1=失败。
+// 端口取 --port ?? SCRUMWS_PORT ?? 8799；服务只 bind 127.0.0.1。exit 0=已提交 / 1=失败。
 
-const HELP = `ScrumWS 任务新增 CLI —— 把任务推给运行中的 app（落 plan/queued 桶，不自动执行）
+const HELP = `ScrumWS 任务新增 CLI —— 把任务推给运行中的 app（queued 自动执行 / plan 待看板确认）
 
 用法：
   node platform/cli.js create [选项]
@@ -23,7 +23,7 @@ const HELP = `ScrumWS 任务新增 CLI —— 把任务推给运行中的 app（
   --model  <m>    模型（缺省取 runner-config.defaultModel）
   --cwd    <dir>  工作目录绝对路径（可选，须存在且是目录）
   --desc   <备注> 纯用户备注（不进 prompt）
-  --plan          落 plan 桶（需在看板确认后才排队）；缺省落 queued
+  --plan          落 plan 桶（需在看板「确认执行」后才跑）；缺省落 queued 立即自动起会话执行
   --json          整体 JSON body 从 stdin 读（覆盖上述字段）
   --port   <n>    app 端口（缺省 SCRUMWS_PORT 或 8799）
   -h, --help      本帮助
@@ -116,7 +116,9 @@ async function main() {
   }
 
   if (r.json?.ok) {
-    console.log(`✓ 已入队 ${r.json.taskKey}（state=${r.json.state}）`);
+    const st = r.json.state;
+    const label = st === 'processing' ? '已起会话执行' : st === 'plan' ? '已入计划（待看板确认执行）' : '已入队';
+    console.log(`✓ ${label} ${r.json.taskKey}（state=${st}）${r.json.startError ? ` · 起会话失败：${r.json.startError}` : ''}`);
     process.exit(0);
   }
   console.error(`✗ 新建失败（HTTP ${r.status}）：${r.json?.error || r.raw || '未知错误'}`);

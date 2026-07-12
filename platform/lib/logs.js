@@ -365,7 +365,12 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
   let prevEndedAt = null;   // 前一 session 的 endedAt，作为本 session cc: 窗口的下界
   for (const s of sortedHistory) {
     if (!s.sessionId || !/^[a-f0-9-]{36}$/.test(s.sessionId)) continue;
-    const jsonlFile = path.join(P.ccProjectDir, `${s.sessionId}.jsonl`);
+    let jsonlFile = path.join(P.ccProjectDir, `${s.sessionId}.jsonl`);
+    // 交互任务 cwd≠数据根时 jsonl 落在别的 CC 项目目录 → 全局按 sid 兜底定位
+    if (!fs.existsSync(jsonlFile)) {
+      const found = _collectCli.locateJsonlBySid(s.sessionId);
+      if (found) jsonlFile = found.jsonlPath;
+    }
     if (!fs.existsSync(jsonlFile)) {
       rounds.push({ round: s.round || null, sessionId: s.sessionId, at: s.at || null, body: '（CC jsonl 文件不存在，可能已被清或历史久远）' });
       continue;
