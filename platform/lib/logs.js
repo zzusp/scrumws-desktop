@@ -587,3 +587,23 @@ export function unarchiveCliTask(taskKey) {
   if (!entry) return { ok: false, error: 'cli session not in watchlist' };
   return _cliWatchlist.setArchivedWatchlist(entry[0], false);
 }
+
+// CLI 人工完成：写 watchlist.doneAt（照抄归档机制，不动 jsonl）。会话之后又有活动 collect 会自动清 doneAt 退出 done。
+export function completeCliSession(taskKey) {
+  if (typeof taskKey !== 'string' || !taskKey.startsWith('cli:')) return { ok: false, error: 'not a cli task' };
+  const shortSid = taskKey.slice(4);
+  const w = _cliWatchlist.readWatchlist();
+  const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
+  if (!entry) return { ok: false, error: 'cli session not in watchlist' };
+  return _cliWatchlist.setDoneWatchlist(entry[0], true);
+}
+
+// CLI 取消完成：清 watchlist.doneAt，回落存活自动判态
+export function uncompleteCliTask(taskKey) {
+  if (typeof taskKey !== 'string' || !taskKey.startsWith('cli:')) return { ok: false, error: 'not a cli task' };
+  const shortSid = taskKey.slice(4);
+  const w = _cliWatchlist.readWatchlist();
+  const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
+  if (!entry) return { ok: false, error: 'cli session not in watchlist' };
+  return _cliWatchlist.setDoneWatchlist(entry[0], false);
+}

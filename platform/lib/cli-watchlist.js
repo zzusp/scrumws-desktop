@@ -59,6 +59,8 @@ export function upsertWatchlist(sid, { customTitle = null, note = null, jsonlPat
     projectDir: projectDir || prev.projectDir || null,
     // 手动归档时间戳（用户主动"收起来"；null=未归档，走 mtime 自动判态）
     archivedAt: prev.archivedAt || null,
+    // 手动完成时间戳（人工判定会话已完成 → 落 done 态；会话之后又有活动 collect 会自动清、退出 done）
+    doneAt: prev.doneAt || null,
   };
   writeRaw(w);
   return { ok: true, sid, entry: w.sessions[sid] };
@@ -81,4 +83,15 @@ export function setArchivedWatchlist(sid, archived) {
   w.sessions[sid].archivedAt = archived ? fmt(new Date()) : null;
   writeRaw(w);
   return { ok: true, sid, archivedAt: w.sessions[sid].archivedAt };
+}
+
+// 手动完成 / 取消完成：只写 doneAt 字段。done = 落 done 态（优先级低于归档、高于存活推导）；
+// 取消完成 = 清 doneAt 回落存活自动判态。注意：collect 时若 doneAt 之后 jsonl 又有新活动，会自动清 doneAt（会话又跑起来了）。
+export function setDoneWatchlist(sid, done) {
+  if (!isValidSid(sid)) return { ok: false, error: 'invalid sid' };
+  const w = readRaw();
+  if (!w.sessions[sid]) return { ok: false, error: 'sid not in watchlist' };
+  w.sessions[sid].doneAt = done ? fmt(new Date()) : null;
+  writeRaw(w);
+  return { ok: true, sid, doneAt: w.sessions[sid].doneAt };
 }

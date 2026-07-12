@@ -196,8 +196,12 @@ function taskCardHtml(t, section) {
       actionBtn = '';
     } else if (section === 'archived' || t.cli?.archivedAt) {
       actionBtn = `<button class="btn" onclick="event.stopPropagation();unarchiveCliTask('${escapeAttr(t.taskKey)}')" title="取消归档，回落 mtime 自动判态（processing/awaiting-human）">↺ 取消归档</button>${rmBtn}`;
+    } else if (section === 'done') {
+      // 人工标完成的 CLI 会话：可取消完成（回落存活判态）或归档收走
+      actionBtn = `<button class="btn" style="color:var(--mut)" onclick="event.stopPropagation();uncompleteCliTask('${escapeAttr(t.taskKey)}')" title="取消完成，回落存活自动判态">↺ 取消完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
     } else {
-      actionBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
+      // awaiting-human（终端空闲/退出）：可人工标完成 → done，或归档
+      actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
     }
   } else if (section === 'plan') {
     actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="不做了，直接归档">归档</button>`;
@@ -747,16 +751,16 @@ function updateReplyBoxAvailability(taskKey) {
       hint.innerHTML = 'session 正在算（可能是上一条看板回复在跑）· 等它收敛后可继续发';
       return;
     }
-    // 空闲且无占用：开放 composer，走 /api/task/reply（后端路由到 cli-reply-runner → claude --resume）
-    stateTag.textContent = 'CLI · 可回复';
-    hint.innerHTML = '终端已关闭 · 从看板发消息将以 <b>headless --resume</b> 续跑该 session';
+    // 空闲且无占用：开放 composer，发消息 = 收养成 Mode B 实时会话并把消息作为首条发出（--resume + 全部历史），跳会话视图
+    stateTag.textContent = 'CLI · 可续接对话';
+    hint.innerHTML = '终端已关闭 · 发消息将在看板<b>续接成实时会话</b>（带全部历史，可连续多轮）';
     replyBody.style.display = 'flex';
     text.disabled = false; send.disabled = false;
     text.value = '';
     updateReplyCount(0, countEl);
     if (typeof window.__resetReplyModel === 'function') window.__resetReplyModel();
-    send.onclick = () => sendReply(taskKey);
-    text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendReply(taskKey); } };
+    send.onclick = () => sendCliContinue(taskKey);
+    text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendCliContinue(taskKey); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);
     setTimeout(() => text.focus(), 60);
     return;
@@ -878,6 +882,37 @@ async function sendReply(taskKey) {
   }
 }
 
+// CLI 会话「发送消息」= 收养成 Mode B 实时会话并把这条消息作为首条发出（--resume + 全部历史），跳会话视图。
+// 消息不塞进 adopt（createSession(prompt) 走 sendUserMessage 不进 transcript、视图看不到）——改为收养后由
+// 会话视图 synced 时 mbSend 乐观回显发出，保证消息可见。pendingCliMessage 只在收养成功后置、消费一次即清。
+let pendingCliMessage = null;
+async function sendCliContinue(taskKey) {
+  const text = $('modalReplyText');
+  const send = $('modalReplySend');
+  const model = $('modalReplyModel').value;
+  const msg = text.value.trim();
+  if (!msg) { showReplyToast('消息不能为空', 'err'); return; }
+  const t = findTaskInState(taskKey);
+  const sessionId = t?.meta?.sessionId;
+  if (!sessionId) { showReplyToast('该会话无 sessionId，无法续接', 'err'); return; }
+  if (t?.state === 'processing') { showReplyToast('会话仍在运行——先退出终端再续接，避免两个进程同写一个会话', 'err'); return; }
+  send.disabled = true; text.disabled = true; send.textContent = '续接中…';
+  try {
+    const body = model ? { sessionId, model } : { sessionId };
+    const r = await api('/api/session/adopt', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
+    pendingCliMessage = msg;                                    // 会话视图 synced 后自动发出
+    location.hash = '#/session/' + encodeURIComponent(r.id);    // → Mode B 会话视图（含历史 + 实时续接）
+  } catch (e) {
+    showReplyToast(e.message, 'err');
+  } finally {
+    send.disabled = false; text.disabled = false; send.textContent = '发送 ⏎';
+  }
+}
+window.sendCliContinue = sendCliContinue;
+
 // ---- Escape helpers ----
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -917,15 +952,19 @@ function renderTaskSide(taskKey) {
   // 快捷操作（与看板卡片同一套全局动作）；CLI 卡片：归档/取消归档 + 从看板移除
   const btns = [];
   if (isCli) {
-    // awaiting-human 仅可归档；归档后（archived）才可移除 + 取消归档；processing（会话正在跑）禁归档/移除
+    // awaiting-human 可标完成/续接/归档；done 可取消完成/归档；归档后可移除 + 取消归档；processing（会话正在跑）禁操作
     if (t.state === 'processing') {
       // 无操作按钮
     } else if (t.cli?.archivedAt) {
       btns.push(`<button class="btn" onclick="unarchiveCliTask('${escapeAttr(t.taskKey)}')">↺ 取消归档</button>`);
       btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
+    } else if (t.state === 'done') {
+      // 人工标完成的 CLI 会话：取消完成（回落存活判态）或归档
+      btns.push(`<button class="btn" onclick="uncompleteCliTask('${escapeAttr(t.taskKey)}')">↺ 取消完成</button>`);
+      btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     } else {
-      // 终端已退出（非 processing）→ 可在看板续接成 Mode B 交互会话（--resume + 全部历史）
-      if (t.meta?.sessionId) btns.push(`<button class="btn" style="color:var(--cyan);border-color:color-mix(in oklab, var(--primary) 45%, transparent)" onclick="adoptCliSession('${escapeAttr(t.taskKey)}','${escapeAttr(t.meta.sessionId)}')" title="终端已退出，在看板里接着这个会话对话（--resume 续接，带全部历史，效果同看板发起）">⚡ 在看板继续对话</button>`);
+      // 终端已退出（非 processing）→ 可人工标完成 或 归档；续接对话走详情底部 composer（发消息即收养成 Mode B 实时会话）
+      btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button>`);
       btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     }
   } else {
@@ -1644,16 +1683,6 @@ window.addCliFromSearch = async (sid) => {
 };
 
 // S10 收养：终端起的 CLI 会话 → 看板 Mode B 交互会话（--resume 续接，带全部历史）
-window.adoptCliSession = async (taskKey, sessionId) => {
-  const t = findTaskInState(taskKey);
-  if (t?.state === 'processing') { customAlert({ title: '会话仍在运行', message: '终端里这个会话还活着——先退出终端再在看板继续，避免两个进程同时写同一会话。' }); return; }
-  try {
-    const r = await api('/api/session/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
-    if (!r.ok) { customAlert({ title: '续接失败', message: escapeHtml(r.error || '未知错误') }); return; }
-    location.hash = '#/session/' + encodeURIComponent(r.id);   // → Mode B 会话视图（含历史 + 实时续接）
-  } catch (e) { customAlert({ title: '续接失败', message: escapeHtml(e.message) }); }
-};
-
 window.unarchiveCliTask = async (taskKey) => {
   try {
     const r = await api(`/api/cli/unarchive?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
@@ -1661,6 +1690,15 @@ window.unarchiveCliTask = async (taskKey) => {
     await refreshState();
     if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);
   } catch (e) { customAlert({ title: '取消归档失败', message: escapeHtml(e.message) }); }
+};
+
+window.uncompleteCliTask = async (taskKey) => {
+  try {
+    const r = await api(`/api/cli/uncomplete?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
+    if (!r.ok) { customAlert({ title: '取消完成失败', message: escapeHtml(r.error || '未知错误') }); return; }
+    await refreshState();
+    if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);
+  } catch (e) { customAlert({ title: '取消完成失败', message: escapeHtml(e.message) }); }
 };
 
 window.removeCliSession = async (sid) => {
@@ -1844,7 +1882,11 @@ function loadSession(id) {
   const es = new EventSource(`/api/session/stream?id=${encodeURIComponent(id)}`);
   mb.sse = es;
   es.addEventListener('info', (e) => { try { mb.info = JSON.parse(e.data); mb.state = mb.info.state || mb.state; mbRenderHead(); } catch { /* ignore */ } });
-  es.addEventListener('synced', () => { mb.syncing = false; mbRenderBody(); mbRenderHead(); });
+  es.addEventListener('synced', () => {
+    mb.syncing = false; mbRenderBody(); mbRenderHead();
+    // 从 CLI 详情「发送消息」收养而来：历史回放完成后自动发出用户那条消息（mbSend 乐观回显 → 可见）
+    if (pendingCliMessage) { const m = pendingCliMessage; pendingCliMessage = null; $('sessionInput').value = m; mbSend(); }
+  });
   es.onmessage = (e) => { let o; try { o = JSON.parse(e.data); } catch { return; } mbOnEvent(o); };
   // EventSource 断线自动重连；重连后服务端会重发 info + 回放 transcript
 }

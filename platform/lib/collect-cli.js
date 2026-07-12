@@ -1,11 +1,12 @@
 // 反读本机 CLI session jsonl → 看板 task 卡片 schema。
 // 数据源：~/.claude/projects/<encoded-cwd>/<sid>.jsonl（CC 官方历史目录），每次交互 append 一行 JSON。
-// state（v4，进程信号判据，见下方 buildCliCard）：终端/回复在跑=processing，空闲=awaiting-human，archived 仅手动。
+// state（v4，进程信号判据，见下方 buildCliCard）：终端/回复在跑=processing，空闲=awaiting-human，archived/done 仅手动。
+// done：人工标完成（watchlist.doneAt），优先级 archived > done > 存活推导；done 后 jsonl 又有活动会自动清 doneAt 退出 done。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fmt, parse, ago } from './timeutil.js';
-import { listWatchlist, upsertWatchlist } from './cli-watchlist.js';
+import { listWatchlist, upsertWatchlist, setDoneWatchlist } from './cli-watchlist.js';
 import { P } from './paths.js';
 
 const CC_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
@@ -201,8 +202,18 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
   //   - archived：**仅手动归档**（archivedAt）——CLI 会话不再按空闲时长自动归档（用户拍板：归档只手动）
   // 历史：v1 纯 mtime 阈值 → v2 turn_duration → v3 全事件化(仍保留 >30min 自动归档) → v4 去掉自动归档
   const replyRunnerPid = replyRunners?.get(sid) || null;
+  // 手动完成（doneAt）：优先级在归档之下、存活推导之上。
+  // 但若标 done 之后 jsonl 又有新活动（回终端跑 / 看板继续对话都会 append 抬 mtime）
+  // → 视为"会话又跑起来了"，自动清 doneAt 退出 done、回落存活推导（用户选定语义）。+2s 防同秒误判。
+  let doneAt = sidEntry.doneAt || null;
+  const doneAtMs = doneAt ? parse(doneAt)?.getTime() : null;   // parse 返回 Date，取 ms 再比较（Date+number 会退化成字符串拼接）
+  if (doneAtMs != null && mtimeMs > doneAtMs + 2000) {
+    setDoneWatchlist(sid, false);
+    doneAt = null;
+  }
   let state;
   if (sidEntry.archivedAt) state = 'archived';
+  else if (doneAt) state = 'done';
   else if (att) state = att.status === 'busy' ? 'processing' : 'awaiting-human';
   else if (replyRunnerPid) state = 'processing';
   else state = 'awaiting-human';
@@ -253,10 +264,11 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
     source: 'cli',
     kind: 'interactive',
     state,
-    outcome: null,
+    outcome: state === 'done' ? 'success' : null,
     enteredAt: createdAt,
-    resolvedAt: state === 'archived' ? lastActivity : null,
-    outcomeDetail: null,
+    resolvedAt: state === 'archived' ? lastActivity : state === 'done' ? doneAt : null,
+    // done 标 resolvedBy=user，复用卡片「人工完成」标（app.js manualDoneTag）
+    outcomeDetail: state === 'done' ? { resolvedBy: 'user' } : null,
     createdAt,
     history: [],
     durationMs,
@@ -285,12 +297,13 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
       projectDir,
       addedAt: sidEntry.addedAt,
       archivedAt: sidEntry.archivedAt || null,
+      doneAt: doneAt || null,
       // 活进程占用：非 null = 有终端进程持有该 session（看板不可回复，去终端里继续）
       attachedPid: att?.pid || null,
       attachedStatus: att?.status || null,
     },
-    resolvedAgo: state === 'archived' ? ago(lastActivity, now).text : null,
-    resolvedAgoSec: state === 'archived' ? Math.max(0, Math.round((now - parse(lastActivity)) / 1000)) : null,
+    resolvedAgo: state === 'archived' ? ago(lastActivity, now).text : state === 'done' ? ago(doneAt, now).text : null,
+    resolvedAgoSec: state === 'archived' ? Math.max(0, Math.round((now - parse(lastActivity)) / 1000)) : state === 'done' ? Math.max(0, Math.round((now - parse(doneAt)) / 1000)) : null,
     queuedAgeMin: null,
     isArchive: false,
   };
