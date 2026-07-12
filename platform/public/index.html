@@ -384,6 +384,7 @@ select.field-input{background:var(--card)}
 .cc-gbody{margin:2px 0 8px 21px;border-left:1px solid var(--hair);padding-left:12px}
 .cc-dur{display:flex;gap:9px;align-items:baseline;color:var(--dim);font-size:11.5px;font-family:var(--mono);font-style:italic;padding:1px 0 7px}
 .cc-dur-total{color:var(--mut);font-weight:600;margin-top:6px}
+.mb-status{color:var(--amber);font-style:normal;font-weight:500;white-space:nowrap}
 .cc-think{margin:1px 0 3px 21px}
 .cc-think summary{color:var(--dim);font-style:italic;font-size:11.5px;font-family:var(--mono)}
 .cc-think-body{color:var(--dim);font-style:italic;font-size:12px;line-height:1.65;white-space:pre-wrap;border-left:2px solid var(--hair2);padding:4px 0 4px 10px;margin-top:6px}
@@ -819,6 +820,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <label class="field">
           <span class="f-label">模型</span>
           <select id="newSessionModel" class="field-input"></select>
+        </label>
+        <label class="field">
+          <span class="f-label">推理档位</span>
+          <select id="newSessionEffort" class="field-input"></select>
         </label>
         <label class="field">
           <span class="f-label">首条消息</span>

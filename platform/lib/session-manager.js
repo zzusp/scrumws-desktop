@@ -6,7 +6,7 @@ import fs from 'node:fs';
 // ---- Mode B：看板持有的交互式 claude 会话引擎（L2 地基 / S4）----
 // 基于已验证命令（docs/acceptance/board-interactive-session/round-1.md）：
 //   claude -p --input-format stream-json --output-format stream-json --verbose
-//          --include-partial-messages --permission-prompt-tool stdio [--resume <sid>] [--model <m>]
+//          --include-partial-messages --permission-prompt-tool stdio [--resume <sid>] [--model <m>] [--effort <lvl>]
 // 双向：stdin 喂 stream-json user 消息（保持打开 = 持久多轮）；stdout 解析 NDJSON 事件。
 // 本模块只做引擎骨架：spawn / 解析 / 转发 / 送消息 / 生命周期。
 // 权限应答（can_use_tool）、打断（interrupt）、前端渲染留给 S5/S6/S7 —— 但相关 stdin 原语已就绪。
@@ -15,6 +15,7 @@ const CLAUDE_BIN = process.platform === 'win32' ? 'claude.cmd' : 'claude';
 const ALLOWED_MODELS = new Set([
   'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001', 'claude-fable-5',
 ]);
+const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);   // claude --effort 合法档位（CLI v2.1.207 实测校验集）
 const TRANSCRIPT_CAP = 2000;   // 完整消息上限（逐字 partial 不入 transcript，只实时转发）
 
 const sessions = new Map();    // id → Session
@@ -22,11 +23,12 @@ const sessions = new Map();    // id → Session
 function nowStr() { return new Date().toISOString(); }
 
 class Session {
-  constructor({ id, cwd, model }) {
+  constructor({ id, cwd, model, effort }) {
     this.id = id;                    // 看板内部句柄
     this.claudeSessionId = null;     // CC 侧 session_id（system/init 里拿，用于 --resume / 关联磁盘 jsonl）
     this.cwd = cwd || null;
     this.model = model || null;
+    this.effort = effort || null;    // reasoning effort（spawn 时 --effort 传入）；供前端实时状态行显示 "thinking with X effort"
     this.state = 'starting';         // starting | running | idle | closed | error
     this.createdAt = nowStr();
     this.transcript = [];            // 完整消息（user/assistant/result/system），有界
@@ -50,7 +52,7 @@ class Session {
 
   info() {
     return {
-      id: this.id, claudeSessionId: this.claudeSessionId, cwd: this.cwd, model: this.model,
+      id: this.id, claudeSessionId: this.claudeSessionId, cwd: this.cwd, model: this.model, effort: this.effort,
       state: this.state, createdAt: this.createdAt, transcriptLen: this.transcript.length,
       truncated: this.truncated, pendingPermissions: this.pendingPermissions.size, lastError: this.lastError,
     };
@@ -117,23 +119,25 @@ function writeStdin(s, obj) {
 
 // ---- 对外 API ----
 
-export function createSession({ cwd, model, resume, prompt, seedTranscript } = {}) {
+export function createSession({ cwd, model, effort, resume, prompt, seedTranscript } = {}) {
   if (cwd) {
     try { if (!fs.statSync(cwd).isDirectory()) return { ok: false, error: `cwd 不是目录：${cwd}` }; }
     catch { return { ok: false, error: `cwd 不存在：${cwd}` }; }
   }
   if (model && !ALLOWED_MODELS.has(model)) return { ok: false, error: `model 不在白名单：${[...ALLOWED_MODELS].join(', ')}` };
+  if (effort && !ALLOWED_EFFORTS.has(effort)) return { ok: false, error: `effort 不在白名单：${[...ALLOWED_EFFORTS].join(', ')}` };
 
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
     '--verbose', '--include-partial-messages', '--permission-prompt-tool', 'stdio'];
   if (model) args.push('--model', model);
+  if (effort) args.push('--effort', effort);
   if (resume) args.push('--resume', resume);
 
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;   // 防经宿主扩散到 claude 后代（README 宿主适配点 1）
 
   const id = randomUUID();
-  const s = new Session({ id, cwd, model });
+  const s = new Session({ id, cwd, model, effort });
   // S10 收养：预置历史 transcript（终端会话的既往对话）→ SSE 连上即回放，续接体验连续
   if (Array.isArray(seedTranscript) && seedTranscript.length) {
     s.transcript = seedTranscript.slice(-TRANSCRIPT_CAP);

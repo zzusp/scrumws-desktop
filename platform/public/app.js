@@ -1079,7 +1079,7 @@ function roundTokenStats(round) {
   return { up, down: t.output_tokens || 0, cacheRead: t.cache_read_input_tokens || 0 };
 }
 
-function renderDetailTab(r) {
+function renderDetailTab(r, liveMb) {
   const rounds = r.rounds || [];
   if (rounds.length === 0) return '<div style="color:var(--dim);padding:12px 0">无会话数据</div>';
   const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
@@ -1122,7 +1122,9 @@ function renderDetailTab(r) {
     }
     const tk = roundTokenStats(round);
     const durTxt = (roundDur > 0 && !isNaN(roundDur)) ? `Worked for ${fmtDuration(roundDur)} in total${round.inflight ? '（进行中）' : ''}` : '';
-    if (durTxt || tk) {
+    if (liveMb && round.inflight) {
+      // 实时会话进行中：本轮统计汇总不显示，改由 mbRenderBody 底部 mbStatus 实时状态行承载
+    } else if (durTxt || tk) {
       const tokTxt = tk
         ? `<span style="margin-left:${durTxt ? '10px' : '0'};color:var(--dim)" title="上行=本轮上下文峰值(含缓存命中，送入模型量) · 下行=本轮累计生成 · 缓存=cache_read 命中量">↑ ${fmtNum(tk.up)} / ↓ ${fmtNum(tk.down)}${tk.cacheRead ? ` · 缓存 ${fmtNum(tk.cacheRead)}` : ''}</span>`
         : '';
@@ -1733,6 +1735,7 @@ const BASE_MODELS = [
   { value: 'claude-sonnet-5',               name: 'Sonnet 5',       desc: '平衡 · 中等速度与推理',                 tier: 'cyan', tierLabel: '平衡' },
   { value: 'claude-haiku-4-5-20251001',     name: 'Haiku 4.5',      desc: '最快 · 最省 token',                     tier: 'amber',tierLabel: '高速' },
 ];
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];   // claude --effort 档位（后端白名单一致）；默认 high
 
 // 通用初始化：wrapId/btnId/menuId/selectId 四元素 + models 列表 + 是否首项后加分隔线
 // inScroll=true：宿主在 overflow:auto 容器内（如新建任务表单）——absolute 定位会被容器裁剪，
@@ -1849,6 +1852,7 @@ let mb = null;   // { id, sse, transcript:[], liveText, perms:[], info, state, s
 $('newSessionBtn').addEventListener('click', () => {
   const sel = $('newSessionModel');
   sel.innerHTML = BASE_MODELS.map((m) => `<option value="${escapeAttr(m.value)}"${m.value === 'claude-opus-4-8' ? ' selected' : ''}>${escapeHtml(m.name)} · ${escapeHtml(m.desc)}</option>`).join('');
+  $('newSessionEffort').innerHTML = EFFORTS.map((e) => `<option value="${e}"${e === 'high' ? ' selected' : ''}>${e}</option>`).join('');
   $('newSessionErr').textContent = '';
   $('newSessionModal').style.display = 'flex';
   setTimeout(() => $('newSessionPrompt').focus(), 80);
@@ -1858,11 +1862,12 @@ $('newSessionSubmit').addEventListener('click', async () => {
   const prompt = $('newSessionPrompt').value.trim();
   const cwd = $('newSessionCwd').value.trim();
   const model = $('newSessionModel').value;
+  const effort = $('newSessionEffort').value;
   const err = $('newSessionErr');
   if (!prompt) { err.textContent = '请填首条消息'; return; }
   err.textContent = '正在启动会话…';
   try {
-    const r = await api('/api/session/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, cwd: cwd || undefined, model }) });
+    const r = await api('/api/session/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, cwd: cwd || undefined, model, effort }) });
     if (!r.ok) { err.textContent = r.error || '创建失败'; return; }
     closeNewSessionModal();
     $('newSessionPrompt').value = ''; $('newSessionCwd').value = '';
@@ -1871,12 +1876,12 @@ $('newSessionSubmit').addEventListener('click', async () => {
 });
 
 // 只关前端 SSE，不 close 后端进程（离开视图 / 切会话时用；会话继续跑）
-function mbDetach() { if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
+function mbDetach() { mbStopStatusTimer(); if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
 
 function loadSession(id) {
   if (mb && mb.id === id && mb.sse) return;   // 已在该会话，避免重复连
   mbDetach();
-  mb = { id, sse: null, transcript: [], liveText: '', perms: [], info: {}, state: 'starting', syncing: true, liveUsage: null };
+  mb = { id, sse: null, transcript: [], liveText: '', perms: [], info: {}, state: 'starting', syncing: true, liveUsage: null, turnStartedAt: null, gerundSeed: 0 };
   $('sessionBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">连接会话…</div>';
   mbRenderHead();
   const es = new EventSource(`/api/session/stream?id=${encodeURIComponent(id)}`);
@@ -1900,13 +1905,16 @@ function mbOnEvent(ev) {
       if (e.type === 'content_block_delta' && e.delta) {
         const d = e.delta;
         if (d.type === 'text_delta') { mb.liveText += d.text || ''; if (!mb.syncing) mbUpdateLive(); }
+        // thinking 态：thinking_delta 期间为真；正文/工具入参 delta 一来即结束（供底部实时状态行显示 " · thinking"）
+        if (mb.liveUsage) { if (d.type === 'thinking_delta') mb.liveUsage.thinking = true; else if (d.type === 'text_delta' || d.type === 'input_json_delta') mb.liveUsage.thinking = false; }
         // 下行估算：累计所有 delta 文本长度（text/thinking/tool 入参），≈ output tokens（thinking 不可见但计费）
         const dl = (d.text || d.thinking || d.partial_json || '').length;
         if (dl && mb.liveUsage) { mb.liveUsage.outChars += dl; if (!mb.syncing) mbUpdateLiveTokens(); }
       } else if (e.type === 'message_start') {
         // 上行（input+cache）在开跑即知 → 即时真值；下行待末尾
         const u = e.message?.usage || {};
-        mb.liveUsage = { up: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), outChars: 0, outReal: null, active: true };
+        mb.liveUsage = { up: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), outChars: 0, outReal: null, active: true, thinking: false };
+        if (!mb.turnStartedAt) { mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); }
         if (!mb.syncing) mbUpdateLiveTokens();
       } else if (e.type === 'message_delta' && e.usage) {
         // CC 只在末尾发一次 message_delta（实测：逐 token 增长不可得）→ 拿到本轮下行真值
@@ -1919,7 +1927,7 @@ function mbOnEvent(ev) {
     }
     case 'assistant': mb.transcript.push(ev); mb.liveText = ''; if (!mb.syncing) mbRenderBody(); return;
     case 'user': mb.transcript.push(ev); if (!mb.syncing) mbRenderBody(); return;
-    case 'result': mb.liveText = ''; mb.state = 'idle'; if (mb.liveUsage) mb.liveUsage.active = false; if (!mb.syncing) { mbRenderBody(); mbRenderHead(); } return;
+    case 'result': mb.liveText = ''; mb.state = 'idle'; mb.turnStartedAt = null; if (mb.liveUsage) { mb.liveUsage.active = false; mb.liveUsage.thinking = false; } if (!mb.syncing) { mbRenderBody(); mbRenderHead(); } return;
     case 'system':
       if (ev.subtype === 'init') { if (ev.session_id) mb.info.claudeSessionId = ev.session_id; mb.state = 'running'; if (!mb.syncing) mbRenderHead(); }
       return;
@@ -1994,13 +2002,49 @@ function mbUpdateLiveTokens() {
   el.textContent = `↑ ${Number(u.up).toLocaleString('en-US')} / ↓ ${down}${u.active ? ' · 生成中' : ''}`;
 }
 
+// 实时活动状态行（Claude Code 风格）：✻ Gerund…（Ns · ↓ tokens[· thinking with X effort]）
+// 数据源：turnStartedAt 计时 · liveUsage 下行(生成中 ~估算 / 末尾真值) · liveUsage.thinking(thinking_delta)
+//   · effort 来自 mb.info.effort（spawn 时 --effort 传入、经 s.info() 回传；收养会话未指定则省略档位）。
+const MB_GLYPHS = ['✻', '✳', '✽', '✢', '·', '✢', '✽', '✳'];
+const MB_GERUNDS = ['Accomplishing', 'Actualizing', 'Baking', 'Brewing', 'Churning', 'Cogitating', 'Computing', 'Conjuring', 'Crafting', 'Divining', 'Drizzling', 'Effecting', 'Forging', 'Germinating', 'Hatching', 'Herding', 'Ideating', 'Incubating', 'Manifesting', 'Marinating', 'Moseying', 'Mulling', 'Noodling', 'Percolating', 'Pondering', 'Processing', 'Puzzling', 'Reticulating', 'Ruminating', 'Shucking', 'Simmering', 'Smooshing', 'Spinning', 'Stewing', 'Synthesizing', 'Transmuting', 'Vibing', 'Whirring', 'Working', 'Wrangling'];
+let mbStatusTimer = null;
+let mbStatusTick = 0;
+
+function mbFmtK(n) { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n); }
+
+function mbStatusText() {
+  const u = mb && mb.liveUsage;
+  const elapsed = (mb && mb.turnStartedAt) ? Math.max(0, Math.floor((Date.now() - mb.turnStartedAt) / 1000)) : 0;
+  const glyph = MB_GLYPHS[mbStatusTick % MB_GLYPHS.length];
+  const gerund = MB_GERUNDS[((mb?.gerundSeed || 0) + Math.floor(elapsed / 5)) % MB_GERUNDS.length];
+  let downTxt = '0';
+  if (u) {
+    if (u.outReal != null) downTxt = mbFmtK(u.outReal);
+    else if (u.outChars) downTxt = '~' + mbFmtK(Math.ceil(u.outChars / 4));
+  }
+  const eff = mb && mb.info && mb.info.effort;
+  const think = (u && u.thinking) ? (eff ? ` · thinking with ${eff} effort` : ' · thinking') : '';
+  return `${glyph} ${gerund}… (${elapsed}s · ↓ ${downTxt} tokens${think})`;
+}
+
+function mbTick() {
+  if (!mb || (mb.state !== 'running' && mb.state !== 'starting')) { mbStopStatusTimer(); return; }
+  mbStatusTick++;
+  const el = document.getElementById('mbStatus');
+  if (el) el.textContent = mbStatusText();
+}
+function mbStartStatusTimer() { if (!mbStatusTimer) mbStatusTimer = setInterval(mbTick, 300); }
+function mbStopStatusTimer() { if (mbStatusTimer) { clearInterval(mbStatusTimer); mbStatusTimer = null; } }
+
 function mbRenderBody() {
   if (!mb) return;
   const body = $('sessionBody'); if (!body) return;
   const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   const rounds = mbToRounds();
-  let html = rounds[0].messages.length ? renderDetailTab({ rounds }) : '<div style="color:var(--dim);padding:12px 0">等待 claude 响应…</div>';
+  let html = rounds[0].messages.length ? renderDetailTab({ rounds }, true) : '<div style="color:var(--dim);padding:12px 0">等待 claude 响应…</div>';
   if (mb.liveText) html += `<div class="cc-line cc-text"><span class="cc-dot">⏺</span><div class="mb-live" id="mbLive">${escapeHtml(mb.liveText)}</div></div>`;
+  const running = mb.state === 'running' || mb.state === 'starting';
+  if (running) html += `<div class="cc-dur cc-dur-total mb-status" id="mbStatus">${escapeHtml(mbStatusText())}</div>`;
   for (const p of mb.perms) {
     html += (p.toolName === 'AskUserQuestion' && Array.isArray(p.input?.questions))
       ? mbAskCardHtml(p)
@@ -2014,6 +2058,7 @@ function mbRenderBody() {
   }
   body.innerHTML = html;
   if (atBottom) body.scrollTop = body.scrollHeight;
+  if (running) mbStartStatusTimer(); else mbStopStatusTimer();
 }
 
 // S8：AskUserQuestion 交互卡 —— 渲染问题 + 选项（单选 radio / 多选 checkbox），提交回传 answers
@@ -2075,6 +2120,7 @@ async function mbSend() {
   if (!msg) return;
   ta.value = ''; $('sessionCount').textContent = '0 字';
   mb.transcript.push({ type: 'user', message: { role: 'user', content: msg } });   // 乐观回显
+  mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); mb.liveUsage = null;   // 从发送即开始计时（CC 风格）
   mb.state = 'running'; mbRenderBody(); mbRenderHead();
   const r = await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }));
   if (!r.ok) customAlert({ title: '发送失败', message: escapeHtml(r.error || '') });
