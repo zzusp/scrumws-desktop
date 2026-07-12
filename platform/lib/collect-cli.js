@@ -215,12 +215,12 @@ function collectOneCli(sidEntry, now, attached, replyRunners) {
   const pendingBg = Number(last?.pendingBackgroundAgentCount) || 0;
   const mode = lastMode?.mode || 'normal';
 
-  // title：customTitle > 真人首条 user 前 60 字 > cli:<short>
+  // title：customTitle > 真人首条 user 首行（保留完整，仅上限 200 防超长；显示端再截断）> cli:<short>
   const shortSid = sid.slice(0, 8);
   let title = sidEntry.customTitle || null;
   if (!title && firstUserText) {
     const oneLine = firstUserText.split(/\r?\n/).find((l) => l.trim()) || firstUserText;
-    title = oneLine.trim().slice(0, 60);
+    title = oneLine.trim().slice(0, 200);
   }
   if (!title) title = `cli:${shortSid}`;
 

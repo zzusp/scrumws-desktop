@@ -4,7 +4,7 @@ import path from 'node:path';
 import { collectState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, restartTask, taskCwds } from './lib/task-actions.js';
+import { createTask, replyToTask, cancelTask, completeTask, restartTask, taskCwds } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
@@ -119,6 +119,13 @@ const server = http.createServer(async (req, res) => {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
       const r = cancelTask({ taskKey });
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    // 人工确认完成（awaiting-human → done）
+    if (req.method === 'POST' && pathname === '/api/task/complete') {
+      const taskKey = searchParams.get('taskKey');
+      if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
+      const r = completeTask({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
     // 回复任务（跨 chat/issue/manual）：body = {message, model?}；taskKey 从 query 拿

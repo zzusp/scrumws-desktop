@@ -92,6 +92,46 @@ export function cancelTask({ taskKey }) {
   return { ok: true, taskKey, killedPid, resolvedAt: nowStr };
 }
 
+// 人工确认完成（awaiting-human → done）：人工复查后判定任务其实已完成，落成成功终态。
+// 与 worker 自动 done 区分：outcomeDetail.resolvedBy='user'（卡片「人工完成」标据此显示）。
+// 仅对 awaiting-human 分身任务；CLI 无可写 state.json / 无 done 态、processing/queued/plan/done 语义不符，一律拒绝。
+export function completeTask({ taskKey }) {
+  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
+  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话无 done 态，不能人工确认完成' };
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
+  const stateFile = path.join(taskDir, 'state.json');
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { }
+  if (state.state !== 'awaiting-human') {
+    return { ok: false, error: `只有 awaiting-human 任务可人工确认完成（当前 ${state.state || '未知'}）` };
+  }
+
+  const p2 = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
+  const history = Array.isArray(state.history) ? state.history : [];
+  history.push({ state: 'done', at: nowStr, by: 'user' });
+  const newState = {
+    ...state,
+    state: 'done',
+    outcome: 'success',
+    resolvedAt: nowStr,
+    enteredAt: nowStr,
+    outcomeDetail: {
+      ...(state.outcomeDetail || {}),
+      resolvedBy: 'user',
+      failureReason: null,
+    },
+    history,
+  };
+  try { fs.writeFileSync(stateFile, JSON.stringify(newState, null, 2), 'utf8'); }
+  catch (e) { return { ok: false, error: `写 state.json 失败: ${e.message}` }; }
+
+  return { ok: true, taskKey, resolvedAt: nowStr };
+}
+
 // 回复任务（跨 chat/issue/manual/cli）：分身走 reply-runner --resume；CLI 会话走 cli-reply-runner
 export function replyToTask({ taskKey, message, model }) {
   if (String(taskKey || '').startsWith('cli:')) return replyCliSession({ taskKey, message, model });

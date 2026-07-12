@@ -171,18 +171,24 @@ function taskCardHtml(t, section) {
   const descBtn = `<button class="btn" onclick="event.stopPropagation();editTaskDesc('${escapeAttr(t.taskKey)}')" title="${t.description ? '编辑' : '添加'}任务描述（自己看的备注，不发给 claude）">✎ 描述</button>`;
   let actionBtn = '';
   if (isCli) {
-    // CLI 卡片只读：processing/awaiting-human 可归档（收进已归档区）；archived 可取消归档；两态都有「移除」
+    // CLI 卡片只读：awaiting-human 仅可归档；归档后（archived）才可「移除」+ 取消归档；
+    // processing（会话正在跑）禁归档/移除——不动正在运行的会话
     const rmBtn = `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">移除</button>`;
-    if (section === 'archived' || t.cli?.archivedAt) {
+    if (section === 'processing') {
+      actionBtn = '';
+    } else if (section === 'archived' || t.cli?.archivedAt) {
       actionBtn = `<button class="btn" onclick="event.stopPropagation();unarchiveCliTask('${escapeAttr(t.taskKey)}')" title="取消归档，回落 mtime 自动判态（processing/awaiting-human）">↺ 取消归档</button>${rmBtn}`;
     } else {
-      actionBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>${rmBtn}`;
+      actionBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
     }
   } else if (section === 'plan') {
     actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="不做了，直接归档">归档</button>`;
   } else if (section === 'processing' || section === 'queued') {
     actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();cancelTaskAction('${escapeAttr(t.taskKey)}')">中断</button>`;
-  } else if (section === 'done' || section === 'awaiting-human') {
+  } else if (section === 'awaiting-human') {
+    // 人工复查后判定其实已完成 → 确认完成（移入 done）；或归档收走
+    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此任务已完成 → 移入 done">✓ 确认完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
+  } else if (section === 'done') {
     actionBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
   }
   // 任务描述（用户备注）：有则显示一行截断，点击直接编辑
@@ -194,6 +200,9 @@ function taskCardHtml(t, section) {
   const titleText = t.title || t.taskKey;
   const titleShort = titleText.length > 60 ? titleText.slice(0, 60) + '…' : titleText;
   const titleBadge = t.hasCustomTitle ? '<span title="已重命名" style="color:var(--amber);font-size:10px;margin-right:4px">★</span>' : '';
+  // 人工完成标：done 且 resolvedBy=user（区别于 worker 自动 done）
+  const manualDoneTag = (section === 'done' && t.outcomeDetail?.resolvedBy === 'user')
+    ? '<span class="tag tag-jade" title="人工确认完成（非 worker 自动收敛）">人工完成</span>' : '';
 
   return `
     <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="openTaskModal('${escapeAttr(t.taskKey)}')">
@@ -201,7 +210,7 @@ function taskCardHtml(t, section) {
       ${statusLine}
       ${descLine}
       <div class="card-foot">
-        ${sourceTag}
+        ${sourceTag}${manualDoneTag}
         <span class="card-key" title="${escapeAttr(t.taskKey)}">${escapeHtml(shortTaskKey(t.taskKey))}</span>
         <span class="cardbtns">${descBtn}${actionBtn}</span>
       </div>
@@ -417,6 +426,24 @@ async function cancelTaskAction(taskKey) {
   } catch (e) { customAlert({ title: '中断失败', message: escapeHtml(e.message) }); }
 }
 window.cancelTaskAction = cancelTaskAction;
+
+// awaiting-human → done：人工确认任务已完成（标 resolvedBy=user，卡片显示「人工完成」）
+async function completeTaskAction(taskKey) {
+  const ok = await customConfirm({
+    title: '确认完成',
+    message: `人工判定 <code>${escapeHtml(taskKey)}</code> 已完成 → 移入 <code>done</code>（标记「人工完成」）。<br>之后如需继续，在详情里继续对话即可重新排队执行。`,
+    confirmText: '确认完成',
+    tone: 'primary',
+  });
+  if (!ok) return;
+  try {
+    const r = await api(`/api/task/complete?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
+    if (!r.ok) { customAlert({ title: '确认完成失败', message: escapeHtml(r.error) }); return; }
+    await refreshState();
+    if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);
+  } catch (e) { customAlert({ title: '确认完成失败', message: escapeHtml(e.message) }); }
+}
+window.completeTaskAction = completeTaskAction;
 
 // plan → queued 的用户确认（立即 spawn）
 async function approveTaskAction(taskKey) {
@@ -822,15 +849,19 @@ function renderTaskSide(taskKey) {
   // 快捷操作（与看板卡片同一套全局动作）；CLI 卡片：归档/取消归档 + 从看板移除
   const btns = [];
   if (isCli) {
-    if (t.cli?.archivedAt) {
+    // awaiting-human 仅可归档；归档后（archived）才可移除 + 取消归档；processing（会话正在跑）禁归档/移除
+    if (t.state === 'processing') {
+      // 无操作按钮
+    } else if (t.cli?.archivedAt) {
       btns.push(`<button class="btn" onclick="unarchiveCliTask('${escapeAttr(t.taskKey)}')">↺ 取消归档</button>`);
+      btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
     } else {
       btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     }
-    btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
   } else {
     if (t.state === 'plan' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button>`);
     if (['queued', 'processing'].includes(t.state) && !t.isArchive) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${escapeAttr(t.taskKey)}')">中断</button>`);
+    if (t.state === 'awaiting-human' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')">✓ 确认完成</button>`);
     if ((t.resolvedAt || t.state === 'plan') && !t.isArchive) btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
   }
   const descText = t.description || '';

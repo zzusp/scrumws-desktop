@@ -58,7 +58,7 @@ function extractHeadPreview(jsonlPath, bytes = 32768) {
                   : '';
           const s = c.trim();
           if (s && !/^<local-command-|^<command-name>|^<system-reminder>|^<user-prompt-submit-hook>/.test(s)) {
-            result.firstUserMsg = s.split(/\r?\n/).find((l) => l.trim())?.trim().slice(0, 60) || null;
+            result.firstUserMsg = s.split(/\r?\n/).find((l) => l.trim())?.trim().slice(0, 200) || null;
           }
         }
         if (result.firstUserMsg && result.cwd && result.gitBranch) break;
