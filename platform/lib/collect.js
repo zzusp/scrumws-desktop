@@ -154,6 +154,8 @@ function collectAll(now) {
   // CLI session 卡片（用户显式加入 watchlist 的本机 claude 会话；不写 runner-state/，纯反读 jsonl）
   // 三态映射：processing / awaiting-human / archived（大于 30min 自动落归档区，不占活跃桶）
   for (const cli of collectCliSessions(now)) {
+    // 收养会话按 taskKey 反查活会话 id（getTaskSessionId 内含 session-manager 兜底）→ 详情据此进 live 模式
+    cli.mbSessionId = getTaskSessionId(cli.taskKey);
     if (cli.state === 'archived') { cli.isArchive = true; buckets.archived.push(cli); }
     else if (buckets[cli.state]) buckets[cli.state].push(cli);
     else buckets.other.push(cli);

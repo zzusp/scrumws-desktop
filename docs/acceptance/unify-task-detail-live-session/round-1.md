@@ -37,6 +37,6 @@ PASS  看板点卡片进 #/task/（openTaskModal 归一）
 
 ## 未覆盖 / 盲点
 
-- CLI watchlist「收养」→ `#/task/<cliTaskKey>` live 的真机流程本轮未单测（后端反查 + 透传已就位，
-  逻辑同 board 任务；下轮可补一条 CLI adopt E2E）。
+- CLI watchlist「收养」→ `#/task/<cliTaskKey>` live 的真机流程 → **已在 Round 2 补测（10/10 PASS）**，
+  并借此发现修复 collect.js 未给 cli 卡塞 mbSessionId 的真缺口。
 - Windows 侧未跑（沿用上游 Mode B 结论：跨平台，Windows 抽查非阻塞）。

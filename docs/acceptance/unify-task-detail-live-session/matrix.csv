@@ -1,16 +1,26 @@
-case,desc,round-1
-C1,view-session 已删（getElementById 为 null）,PASS
-C2,详情 composer 打断按钮 #modalReplyInterrupt 存在,PASS
-C3,未知 #/session/<x> 重定向到 #/board,PASS
-C4,新建任务提交后路由到 #/task/<key>,PASS
-C5,未跳独立会话面 #/session/,PASS
-C6,view-task 可见,PASS
-C7,逐字 #mbLive 流式增长（进 #modalBody）,PASS
-C8,assistant 文本(mango) 渲染进 #modalBody,PASS
-C9,右侧 taskSide 含任务信息(manual:),PASS
-C10,composer #modalReplyText 存在,PASS
-C11,打断按钮 live 模式可见,PASS
-C12,composer 续一轮 assistant(mango2) 渲染（处理中插话）,PASS
-C13,拿到当前活会话 id,PASS
-C14,旧 #/session/<活会话id> 重定向回 #/task/<key>,PASS
-C15,看板点卡片进 #/task/（openTaskModal 归一）,PASS
+case,desc,round-1,round-2
+C1,view-session 已删（getElementById 为 null）,PASS,—
+C2,详情 composer 打断按钮 #modalReplyInterrupt 存在,PASS,—
+C3,未知 #/session/<x> 重定向到 #/board,PASS,—
+C4,新建任务提交后路由到 #/task/<key>,PASS,—
+C5,未跳独立会话面 #/session/,PASS,—
+C6,view-task 可见,PASS,—
+C7,逐字 #mbLive 流式增长（进 #modalBody）,PASS,—
+C8,assistant 文本(mango) 渲染进 #modalBody,PASS,—
+C9,右侧 taskSide 含任务信息(manual:),PASS,—
+C10,composer #modalReplyText 存在,PASS,—
+C11,打断按钮 live 模式可见,PASS,—
+C12,composer 续一轮 assistant(mango2) 渲染（处理中插话）,PASS,—
+C13,拿到当前活会话 id,PASS,—
+C14,旧 #/session/<活会话id> 重定向回 #/task/<key>,PASS,—
+C15,看板点卡片进 #/task/（openTaskModal 归一）,PASS,—
+C16,种子会话拿到真 CC sessionId,—,PASS
+C17,看板出现 CLI 卡片 cli:<short>,—,PASS
+C18,点开 CLI 卡进 #/task/<cliKey>,—,PASS
+C19,尚未进 live 模式（mb 为空）,—,PASS
+C20,observe 模式 composer = CLI 可续接对话,—,PASS
+C21,只读历史含种子对话(BANANA42/记住了),—,PASS
+C22,发消息后进入 live 模式（mb.id 有值）,—,PASS
+C23,收养后仍在 #/task/<cliKey>（未跳 #/session/）,—,PASS
+C24,view-session 视图不存在,—,PASS
+C25,收养会话 --resume 续上上下文（BANANA42 复现 ≥2 次）,—,PASS

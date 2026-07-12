@@ -37,6 +37,8 @@ Mode B 会话分派 live / 只读；退掉 `#/session/` 独立视图。
 - `session-manager.js` 加 `getSessionIdByTaskKey`（按 taskKey 反查活会话）。
 - `task-runner.js` `getTaskSessionId` 加该反查兜底（收养会话未经 bind 注册 registry）。
 - `server.js` `/api/session/adopt` 透传 `taskKey` 进 `createSession`。
+- `collect.js` cli 循环加 `cli.mbSessionId = getTaskSessionId(cli.taskKey)`（Round 2 发现：原来只有 board
+  任务塞 mbSessionId，cli 卡没塞 → 收养后详情进不了 live）。
 
 ## 验证
 
