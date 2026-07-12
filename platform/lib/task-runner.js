@@ -116,7 +116,12 @@ function bind(taskKey, id) {
 // 立即置 processing + 写占位 lease（同步落盘，/api/state 秒级可见；system.init 到达后补真 pid）
 function markProcessing(taskKey, id) {
   const s = getSession(id);
-  setTaskState(taskKey, { state: 'processing', outcome: null, resolvedAt: null }, 'session');
+  // 清 outcomeDetail：起会话/唤醒即进 processing，上一轮收敛/checker 收孤儿写的 failureReason(resumeSessionId 等)
+  // 必须一并清掉，否则详情右上「任务信息」卡片会残留旧的"会话中断…可 --resume"红条（reply/restart 两路共用本函数）。
+  setTaskState(taskKey, {
+    state: 'processing', outcome: null, resolvedAt: null,
+    outcomeDetail: { quotaResetAt: null, failureReason: null, checkerExhausted: false },
+  }, 'session');
   writeLease(taskKey, s?.child?.pid || 0);
 }
 
@@ -125,7 +130,7 @@ export function startTask(taskKey) {
   const task = readJson(path.join(taskDirOf(taskKey), 'task.json'));
   if (!task) return { ok: false, error: 'task.json 不存在，无法起会话' };
   if (getTaskSessionId(taskKey)) return { ok: false, error: '该任务已有活跃会话在跑' };
-  const r = createSession({ taskKey, cwd: task.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, prompt: task.prompt });
+  const r = createSession({ taskKey, cwd: task.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, prompt: task.prompt, bypass: true });
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);
@@ -149,7 +154,7 @@ export function replyTask(taskKey, message, model) {
   const state = readJson(path.join(dir, 'state.json'));
   const sid = meta?.sessionId || state?.outcomeDetail?.resumeSessionId || null;
   if (!sid) return { ok: false, error: '无 sessionId 可 --resume（会话从未成功起过，请重新发起）' };
-  const r = createSession({ taskKey, cwd: task?.cwd || undefined, model: model || task?.model || undefined, effort: task?.effort || undefined, resume: sid, prompt: msg });
+  const r = createSession({ taskKey, cwd: task?.cwd || undefined, model: model || task?.model || undefined, effort: task?.effort || undefined, resume: sid, prompt: msg, bypass: true });
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);

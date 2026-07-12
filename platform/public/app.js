@@ -751,6 +751,8 @@ function updateReplyBoxAvailability(taskKey) {
   restartBody.style.display = 'none';
   // 徽章 class 归零（保留 .tag 基类）
   stateTag.className = 'tag tag-mut';
+  // 状态头默认显示；实时会话（Mode B）分支会隐藏整条（见下方 mbSessionId 分支）
+  if (stateTag.parentElement) stateTag.parentElement.style.display = '';
   // 清旧事件监听（防止上次 modal 的旧 handler 残留）
   send.onclick = null;
   restartBtn.onclick = null;
@@ -764,17 +766,13 @@ function updateReplyBoxAvailability(taskKey) {
   if (t?.mbSessionId) {
     replyBody.style.display = 'flex';
     text.disabled = false; send.disabled = false;
+    // 实时会话不显示状态头（"生成中·可插话/打断 / 看板持有的实时会话… / token 读数"整条去掉）——直接常开输入 + 打断
+    if (stateTag.parentElement) stateTag.parentElement.style.display = 'none';
     if (mb && mb.id === t.mbSessionId) {
       const running = mb.state === 'running' || mb.state === 'starting';
-      stateTag.className = 'tag ' + (running ? 'tag-amber' : 'tag-jade');
-      stateTag.textContent = running ? '生成中 · 可插话/打断' : '实时会话 · 可继续';
       if (interruptBtn) { interruptBtn.style.display = ''; interruptBtn.disabled = !running; interruptBtn.onclick = () => mbInterrupt(); }
-    } else {
-      stateTag.textContent = '连接实时会话…';
     }
-    hint.innerHTML = '看板持有的实时会话（Mode B）· 逐字 / 权限确认 / 打断，<b>处理中也能插话</b><span id="mbLiveTokens" style="margin-left:8px;font-family:var(--mono);color:var(--dim)"></span>';
     updateReplyCount(text.value.length, countEl);
-    mbUpdateLiveTokens();
     send.onclick = () => mbSend();
     text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); mbSend(); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);

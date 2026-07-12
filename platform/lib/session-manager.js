@@ -6,7 +6,8 @@ import fs from 'node:fs';
 // ---- Mode B：看板持有的交互式 claude 会话引擎（L2 地基 / S4）----
 // 基于已验证命令（docs/acceptance/board-interactive-session/round-1.md）：
 //   claude -p --input-format stream-json --output-format stream-json --verbose
-//          --include-partial-messages --permission-prompt-tool stdio [--resume <sid>] [--model <m>] [--effort <lvl>]
+//          --include-partial-messages [--permission-prompt-tool stdio | --dangerously-skip-permissions] [--resume <sid>] [--model <m>] [--effort <lvl>]
+// bypass=true（任务发起/唤醒）→ --dangerously-skip-permissions 免逐工具授权；否则走 stdio 权限卡（S5）。
 // 双向：stdin 喂 stream-json user 消息（保持打开 = 持久多轮）；stdout 解析 NDJSON 事件。
 // 本模块只做引擎骨架：spawn / 解析 / 转发 / 送消息 / 生命周期。
 // 权限应答（can_use_tool）、打断（interrupt）、前端渲染留给 S5/S6/S7 —— 但相关 stdin 原语已就绪。
@@ -120,7 +121,7 @@ function writeStdin(s, obj) {
 
 // ---- 对外 API ----
 
-export function createSession({ cwd, model, effort, resume, prompt, seedTranscript, taskKey } = {}) {
+export function createSession({ cwd, model, effort, resume, prompt, seedTranscript, taskKey, bypass } = {}) {
   if (cwd) {
     try { if (!fs.statSync(cwd).isDirectory()) return { ok: false, error: `cwd 不是目录：${cwd}` }; }
     catch { return { ok: false, error: `cwd 不存在：${cwd}` }; }
@@ -129,7 +130,11 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
   if (effort && !ALLOWED_EFFORTS.has(effort)) return { ok: false, error: `effort 不在白名单：${[...ALLOWED_EFFORTS].join(', ')}` };
 
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
-    '--verbose', '--include-partial-messages', '--permission-prompt-tool', 'stdio'];
+    '--verbose', '--include-partial-messages'];
+  // 任务发起/唤醒（startTask/replyTask 传 bypass:true）默认跳过权限确认，避免逐工具反复授权；
+  // 手动交互会话（session/create、adopt）仍走 stdio 权限卡（S5）。
+  if (bypass) args.push('--dangerously-skip-permissions');
+  else args.push('--permission-prompt-tool', 'stdio');
   if (model) args.push('--model', model);
   if (effort) args.push('--effort', effort);
   if (resume) args.push('--resume', resume);
