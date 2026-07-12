@@ -1,0 +1,38 @@
+case,description,macOS,Windows
+S11-A-flags,claude 支持 Mode B 所需 flag(partial/input-format/output-format/resume/verbose),PASS,PENDING
+S11-B1-stdio-accepted,--permission-prompt-tool stdio 被接受(未报 unknown option),PASS,PENDING
+S11-B2-can-use-tool,权限委派吐 can_use_tool control_request,PASS,PENDING
+S11-B3-tool-held,工具在收到 control_response 前不执行(目标文件未创建),PASS,PENDING
+S11-C-dws-independent,dws 与 claude 模型鉴权相互独立(dws 仅为 claude 工具),PASS,N/A
+S1-sse-firstframe,SSE 连接返回 200 text/event-stream 且首帧含 processing + 现有消息,PASS,PENDING
+S1-sse-block-push,追加"同 message.id 新 content block"触发推送(块级指纹非消息条数),PASS,PENDING
+S1-sse-done-close,state 收敛→发 done 事件并关闭连接,PASS,PENDING
+S1-sse-fallback,无 EventSource/SSE 出错回落 5s 轮询,PASS,PENDING
+S3-token-agg,roundTokenStats 聚合正确(下行Σoutput / 上行末条上下文峰值 / 缓存末条快照 / 退回 / 容错),PASS,N/A
+S3-token-render,每轮末尾渲染 ↑上行 / ↓下行 / 缓存,PASS,PENDING
+S2-ts-stamp,logs.js parseCcSession 给 tool_use/tool_result 块补 _ts(走真实 readWorkerLog),PASS,PENDING
+S2-step-dur,每步耗时可算(tool_use._ts→tool_result._ts=1430ms) + fmtStepDur 亚秒格式,PASS,N/A
+S2-live-tick,进行中轮未完成工具 live 跳秒(inflight 门控),PASS,PENDING
+S4-engine-bidi,SessionManager 真 claude 双向多轮(session_id/text_delta/pong→ping/close),PASS,PENDING
+S4-http-sse,HTTP 全栈 create→stream(SSE 逐字)→send→close→list,PASS,PENDING
+S4-perm-interrupt-primitive,respondPermission/interruptSession stdin 原语(respond 见 S5 / interrupt 见 S6 已验),PASS,PENDING
+S6-interrupt-engine,真 claude interrupt→turn ~200ms 结束+输出截断(123→143 vs >3000)+转向拿新响应,PASS,N/A
+S6-interrupt-browser,真浏览器 打断按钮→turn 截断(523→577 vs >3000) + 输入框转向→REDIRECTED,PASS,PENDING
+S5-perm-allow,真 claude allow → 工具执行(文件创建+内容正确 updatedInput 回传原 input),PASS,N/A
+S5-perm-deny,真 claude deny → 工具不执行(文件未创建),PASS,N/A
+S5-http-perm-path,全 HTTP 权限路径 create→SSE control_request(顶层 request_id)→POST /respond→执行,PASS,PENDING
+S5-mbtorounds,mbToRounds 转换(assistant/user/tool_result/string 归一/inflight),PASS,N/A
+S5-dom-ids,14 个 view-session/newSession DOM id app.js↔index.html 交叉核对,PASS,PENDING
+S5-render-browser,真浏览器(Electron/Chromium)驱动真前端:入口→modal→会话视图→工具渲染→权限卡出现→点允许→工具执行→卡片移除,PASS,PENDING
+S5-live-render-browser,真浏览器逐字 #mbLive 流式增长(MutationObserver 捕获长度序列 16→76→151→199),PASS,PENDING
+S7-modeb-merge,mbToRounds 按 message.id 合并增量 assistant 事件(thinking/text/tool_use 归一),PASS,PENDING
+S7-modeb-step-timing,Mode B 每步耗时徽章(· 540ms) + 进行中工具 live 跳秒(_ts 收到时刻),PASS,PENDING
+S7-live-tokens-uplink,实时上行即时真值(message_start ↑29737 立即显示),PASS,PENDING
+S7-live-tokens-downlink,下行生成中 ~估算增长(~0→~377)→末尾 message_delta 真值(528),PASS,PENDING
+S7-footer-real-usage,每轮 token footer 贴回 message_delta usage 显示真值,PASS,PENDING
+S8-ask-mechanism,AskUserQuestion 走 can_use_tool + 应答 updatedInput.answers 回传→claude 拿到答案继续,PASS,N/A
+S8-ask-card-browser,真浏览器 AskUserQuestion 交互卡渲染问题+选项→选中提交→卡片移除→claude 继续(YOU PICKED TEA),PASS,PENDING
+S10-resume-context,--resume 续上前会话上下文(会话1记 teal→关→会话2 resume 记得 teal),PASS,PENDING
+S10-adopt-engine,readCcSessionForAdopt 定位+解析+推 cwd/model + seed transcript + 续接记得 mango,PASS,N/A
+S10-adopt-http,POST /api/session/adopt + SSE 回放历史(BANANA42) + 续接可继续,PASS,PENDING
+S10-adopt-ui,CLI 卡"在看板继续对话"按钮(非 processing 显示)+ route 到 Mode B,BY-INSPECTION,PENDING

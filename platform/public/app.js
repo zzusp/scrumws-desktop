@@ -25,7 +25,7 @@ function tickClock() {
   const p = (n) => String(n).padStart(2, '0');
   $('clock').textContent = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
-tickClock(); setInterval(tickClock, 1000);
+tickClock(); setInterval(() => { tickClock(); tickLiveTimers(); }, 1000);
 
 // ---- 状态 ----
 let stateData = null;
@@ -34,6 +34,7 @@ let autoRefresh = true;
 let modalOpen = false;
 let modalPollTimer = null;
 let modalPollTaskKey = null;
+let modalSse = null;                // 详情页块级近实时 SSE（processing 时）；断了回落 5s 轮询
 let stateTimer = null;
 const MODAL_POLL_MS = 5000;
 
@@ -121,6 +122,23 @@ function fmtDuration(ms) {
   const h = Math.floor(m / 60);
   const rm = m % 60;
   return rm ? `${h}h ${rm}m` : `${h}h`;
+}
+
+// 每步耗时：亚秒精度（fmtDuration 到秒会把 20ms 的工具显示成 0s）
+function fmtStepDur(ms) {
+  if (ms == null || !isFinite(ms) || ms < 0) return '';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return fmtDuration(ms);
+}
+
+// 进行中步骤 live 跳秒：扫详情流里带 data-since 的元素，每秒刷新（跨 SSE 重画存活，元素每次重建）
+function tickLiveTimers() {
+  const now = Date.now();
+  document.querySelectorAll('.cc-live-timer[data-since]').forEach((el) => {
+    const t = Number(el.getAttribute('data-since'));
+    if (t) el.textContent = '· ' + fmtDuration(now - t);
+  });
 }
 
 function taskCardHtml(t, section) {
@@ -486,26 +504,71 @@ async function loadTaskDetail(taskKey) {
     renderTaskSide(taskKey);
     // 回复框显示/禁用判据：需有 meta.sessionId + state ≠ processing
     updateReplyBoxAvailability(taskKey);
-    // processing 任务：启动 modal 内 5s poll 拉最新 jsonl（含 in-flight round）
-    ensureModalPoll(taskKey);
+    // processing 任务：块级近实时 SSE（in-flight jsonl 一变就推）；断了回落 5s 轮询
+    ensureModalLive(taskKey);
   } catch (e) {
     $('modalBody').innerHTML = `<div style="color:var(--coral)">${e.message}</div>`;
   }
 }
 
-// modal 内轮询：processing 任务每 5s 拉 worker-log；state 变了自动停 poll
-function ensureModalPoll(taskKey) {
+// worker-log 内容指纹（block 级，与服务端 wlFingerprint 对齐）：消息条数会漏"同消息新增 content
+// block"，改按 content block 计数 —— 否则处理中逐块增长不重画。
+function modalContentFp(r, stateStr, histLen) {
+  const rounds = r.rounds || [];
+  return JSON.stringify([
+    rounds.length,
+    rounds.map((x) => (x.messages || []).reduce((n, m) => n + (m.content ? m.content.length : 0), 0)),
+    r.hasInflight, stateStr, histLen,
+  ]);
+}
+
+// 关闭详情页实时通道（SSE + 兜底轮询都清）
+function closeModalLive() {
+  if (modalSse) { try { modalSse.close(); } catch { /* ignore */ } modalSse = null; }
   if (modalPollTimer) { clearInterval(modalPollTimer); modalPollTimer = null; }
-  const t = findTaskInState(taskKey);
-  if (t?.state !== 'processing') return;
+}
+
+function startModalPoll(taskKey) {
+  if (modalPollTimer) clearInterval(modalPollTimer);
   modalPollTimer = setInterval(() => reloadModalIfProcessing(taskKey), MODAL_POLL_MS);
 }
 
+// processing 任务：优先 SSE 块级推送；无 EventSource / SSE 出错则回落 5s 轮询
+function ensureModalLive(taskKey) {
+  closeModalLive();
+  const t = findTaskInState(taskKey);
+  if (t?.state !== 'processing') return;
+  if (typeof EventSource === 'undefined') { startModalPoll(taskKey); return; }
+  const es = new EventSource(`/api/worker-log/stream?taskKey=${encodeURIComponent(taskKey)}`);
+  modalSse = es;
+  es.onmessage = (ev) => {
+    if (!modalOpen || modalPollTaskKey !== taskKey) { closeModalLive(); return; }
+    let payload = null;
+    try { payload = JSON.parse(ev.data); } catch { return; }
+    if (payload && payload.ok) applyStreamedWorkerLog(taskKey, payload);
+  };
+  es.addEventListener('done', () => { closeModalLive(); reloadModalIfProcessing(taskKey); });   // 收敛：最后同步一次
+  es.onerror = () => { closeModalLive(); if (modalOpen && modalPollTaskKey === taskKey) startModalPoll(taskKey); };
+}
+
+// 消费 SSE 推来的 worker-log：消息流立即用推送数据渲染（不阻塞），侧栏卡片走一次轻量 state 刷新
+async function applyStreamedWorkerLog(taskKey, r) {
+  currentModalData = r;
+  const histLen = (findTaskInState(taskKey)?.history || []).length;
+  const fp = modalContentFp(r, r.state, histLen);
+  if (fp !== lastModalFp) { lastModalFp = fp; renderModalBody(true); }
+  try {
+    stateData = await api('/api/state');
+    if (!modalOpen || modalPollTaskKey !== taskKey) return;
+    renderTaskSide(taskKey);
+    updateReplyBoxAvailability(taskKey);
+    const t = findTaskInState(taskKey);
+    if (t && t.state !== 'processing') closeModalLive();
+  } catch { /* state 抖动：忽略，下一帧再同步 */ }
+}
+
 async function reloadModalIfProcessing(taskKey) {
-  if (!modalOpen || modalPollTaskKey !== taskKey) {
-    if (modalPollTimer) { clearInterval(modalPollTimer); modalPollTimer = null; }
-    return;
-  }
+  if (!modalOpen || modalPollTaskKey !== taskKey) { closeModalLive(); return; }
   try {
     // 先拉 state（modal 打开时看板 poll 被门控 skip 掉，findTaskInState 会陈旧；这里主动喂）
     const s = await api('/api/state');
@@ -514,10 +577,9 @@ async function reloadModalIfProcessing(taskKey) {
     const r = await api(`/api/worker-log?taskKey=${encodeURIComponent(taskKey)}`);
     if (!r.ok) return;
     currentModalData = r;
-    const roundsCnt = r.rounds.length;
     const t = findTaskInState(taskKey);
     // 内容指纹没变就不重画（重画会丢滚动位置和 details 展开态——处理中"显示变动"的根因）
-    const fp = JSON.stringify([roundsCnt, r.rounds.map((x) => (x.messages || []).length), r.hasInflight, t?.state, (t?.history || []).length]);
+    const fp = modalContentFp(r, t?.state, (t?.history || []).length);
     if (fp !== lastModalFp) {
       lastModalFp = fp;
       renderModalBody(true);
@@ -525,9 +587,7 @@ async function reloadModalIfProcessing(taskKey) {
     }
     updateReplyBoxAvailability(taskKey);
     // state 已收敛 → 停 poll（下次 open 才再评估）
-    if (t && t.state !== 'processing') {
-      clearInterval(modalPollTimer); modalPollTimer = null;
-    }
+    if (t && t.state !== 'processing') closeModalLive();
   } catch { /* 网络抖一下别把 modal 打坏，静默继续 */ }
 }
 
@@ -593,36 +653,44 @@ function renderModalBody(keepScroll = false) {
 }
 
 // ---- hash 路由：#/board · #/archive · #/dashboard · #/settings · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
-const ROUTE_VIEWS = ['board', 'archive', 'dashboard', 'settings', 'task'];
+const ROUTE_VIEWS = ['board', 'archive', 'dashboard', 'settings', 'task', 'session'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
   let taskKey = null;
+  let sessionId = null;
   const mTask = /^#\/task\/([^/]+)(?:\/(?:overview|detail|timeline))?$/.exec(h);
+  const mSession = /^#\/session\/([^/]+)$/.exec(h);
   if (mTask) {
     view = 'task';
     taskKey = decodeURIComponent(mTask[1]);
+  } else if (mSession) {
+    view = 'session';
+    sessionId = decodeURIComponent(mSession[1]);
   } else if (h.startsWith('#/archive')) view = 'archive';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
   else if (h.startsWith('#/settings')) view = 'settings';
 
-  for (const v of ROUTE_VIEWS) { const el = $(`view-${v}`); if (el) el.style.display = v === view ? (v === 'task' ? 'flex' : '') : 'none'; }
-  // 详情页是 pageWrap 外的满宽满高布局，进入时隐藏常规页面容器（含 footer）
-  $('pageWrap').style.display = view === 'task' ? 'none' : '';
+  const fullBleed = view === 'task' || view === 'session';   // 满宽满高布局（pageWrap 外）
+  for (const v of ROUTE_VIEWS) { const el = $(`view-${v}`); if (el) el.style.display = v === view ? ((v === 'task' || v === 'session') ? 'flex' : '') : 'none'; }
+  $('pageWrap').style.display = fullBleed ? 'none' : '';
   document.querySelectorAll('.topnav a').forEach((a) => {
-    a.classList.toggle('active', a.dataset.nav === view || (view === 'task' && a.dataset.nav === 'board'));
+    a.classList.toggle('active', a.dataset.nav === view || (fullBleed && a.dataset.nav === 'board'));
   });
 
-  // 离开详情页：停详情轮询 + 立即刷一次看板并重置计时
+  // 离开详情页：停详情实时通道（SSE + 兜底轮询）+ 立即刷一次看板并重置计时
   if (view !== 'task' && modalOpen) {
     modalOpen = false;
     modalPollTaskKey = null;
-    if (modalPollTimer) { clearInterval(modalPollTimer); modalPollTimer = null; }
+    closeModalLive();
     $('modalReplyBox').style.display = 'none';
     refreshState();
     scheduleStateRefresh();
   }
+  // 离开交互会话：只关前端 SSE（不 close 后端进程，会话继续跑，可再进来）
+  if (view !== 'session' && mb) { mbDetach(); }
   if (view === 'task' && taskKey) loadTaskDetail(taskKey);
+  if (view === 'session' && sessionId) loadSession(sessionId);
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', router);
@@ -856,6 +924,8 @@ function renderTaskSide(taskKey) {
       btns.push(`<button class="btn" onclick="unarchiveCliTask('${escapeAttr(t.taskKey)}')">↺ 取消归档</button>`);
       btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
     } else {
+      // 终端已退出（非 processing）→ 可在看板续接成 Mode B 交互会话（--resume + 全部历史）
+      if (t.meta?.sessionId) btns.push(`<button class="btn" style="color:var(--cyan);border-color:color-mix(in oklab, var(--primary) 45%, transparent)" onclick="adoptCliSession('${escapeAttr(t.taskKey)}','${escapeAttr(t.meta.sessionId)}')" title="终端已退出，在看板里接着这个会话对话（--resume 续接，带全部历史，效果同看板发起）">⚡ 在看板继续对话</button>`);
       btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     }
   } else {
@@ -950,9 +1020,30 @@ function renderTaskSide(taskKey) {
   if (crumbLast) crumbLast.textContent = sideTitle;
 }
 
+// 每轮上/下行 token（从已解析的 message.usage 聚合）：
+//   上行 = 最后一条 assistant 的 input+cache_read+cache_creation（本轮上下文峰值，快照口径）
+//   下行 = 本轮所有 assistant 消息 output_tokens 之和（累计生成）
+//   缓存 = 最后一条的 cache_read（上下文里命中缓存的部分，与上行同为快照口径，不跨消息累加）
+// 老数据/归档 messages 无 usage 时退回 ccSummary.tokens / metaUsage（那是最后一条的 usage，单条口径）。
+function roundTokenStats(round) {
+  const asst = (round.messages || []).filter((m) => m.role === 'assistant' && m.usage);
+  if (asst.length) {
+    let down = 0;
+    for (const m of asst) down += (m.usage || {}).output_tokens || 0;
+    const last = asst[asst.length - 1].usage || {};
+    const up = (last.input_tokens || 0) + (last.cache_read_input_tokens || 0) + (last.cache_creation_input_tokens || 0);
+    return { up, down, cacheRead: last.cache_read_input_tokens || 0 };
+  }
+  const t = round.ccSummary?.tokens || round.metaUsage;
+  if (!t) return null;
+  const up = (t.input_tokens || 0) + (t.cache_read_input_tokens || 0) + (t.cache_creation_input_tokens || 0);
+  return { up, down: t.output_tokens || 0, cacheRead: t.cache_read_input_tokens || 0 };
+}
+
 function renderDetailTab(r) {
   const rounds = r.rounds || [];
   if (rounds.length === 0) return '<div style="color:var(--dim);padding:12px 0">无会话数据</div>';
+  const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
   const parts = [];
   rounds.forEach((round) => {
     if (round.error) {
@@ -979,7 +1070,7 @@ function renderDetailTab(r) {
           <div class="msg-user-bubble" title="${escapeAttr(fmtTime(cc.at))}">${escapeHtml(stripDirectivePrefix(cc.text))}</div>
         </div>`).join(''));
     }
-    parts.push(renderCcFlow(units, resultById, false));
+    parts.push(renderCcFlow(units, resultById, false, round.inflight));
     // 整轮工作时长：优先 ccSummary.workMs（turn_duration 累加 = claude 实际在算的时长，
     // 不含用户输入间隔）；无 turn_duration 数据时退回墙钟（rounds.jsonl 起止 → 消息首尾时间戳）
     let roundDur = round.ccSummary?.workMs || null;
@@ -990,8 +1081,13 @@ function renderDetailTab(r) {
         if (ats.length >= 2) roundDur = new Date(ats[ats.length - 1]) - new Date(ats[0]);
       }
     }
-    if (roundDur > 0 && !isNaN(roundDur)) {
-      parts.push(`<div class="cc-dur cc-dur-total"><span>✻</span><span>Worked for ${fmtDuration(roundDur)} in total${round.inflight ? '（进行中）' : ''}</span></div>`);
+    const tk = roundTokenStats(round);
+    const durTxt = (roundDur > 0 && !isNaN(roundDur)) ? `Worked for ${fmtDuration(roundDur)} in total${round.inflight ? '（进行中）' : ''}` : '';
+    if (durTxt || tk) {
+      const tokTxt = tk
+        ? `<span style="margin-left:${durTxt ? '10px' : '0'};color:var(--dim)" title="上行=本轮上下文峰值(含缓存命中，送入模型量) · 下行=本轮累计生成 · 缓存=cache_read 命中量">↑ ${fmtNum(tk.up)} / ↓ ${fmtNum(tk.down)}${tk.cacheRead ? ` · 缓存 ${fmtNum(tk.cacheRead)}` : ''}</span>`
+        : '';
+      parts.push(`<div class="cc-dur cc-dur-total"><span>✻</span><span>${durTxt}</span>${tokTxt}</div>`);
     }
   });
   return parts.join('');
@@ -1040,9 +1136,18 @@ function toolResultText(c) {
   return c.content == null ? '' : JSON.stringify(c.content);
 }
 
-function renderCcTool(c, result) {
+function renderCcTool(c, result, inflight) {
   const name = escapeHtml(c.name || 'Tool');
   const arg = escapeHtml(toolArgSummary(c));
+  // 每步耗时：tool_use._ts → tool_result._ts（完成，亚秒精度）；进行中轮里未完成的工具 → live 跳秒
+  const useTs = c._ts ? new Date(c._ts).getTime() : null;
+  let durBadge = '';
+  if (result && useTs && result._ts) {
+    const d = new Date(result._ts).getTime() - useTs;
+    if (d >= 0) durBadge = `<span class="cc-step-dur" style="color:var(--dim);margin-left:6px;font-size:10.5px" title="本步耗时 tool_use→tool_result">· ${fmtStepDur(d)}</span>`;
+  } else if (!result && inflight && useTs) {
+    durBadge = `<span class="cc-step-dur cc-live-timer" data-since="${useTs}" style="color:var(--amber);margin-left:6px;font-size:10.5px" title="进行中，已用时">· ${fmtDuration(Date.now() - useTs)}</span>`;
+  }
   // 入参展开区：Edit 渲染成 old/new diff 色块；其余美化 JSON
   let inputBody;
   if (c.name === 'Edit' && c.input?.old_string != null) {
@@ -1081,7 +1186,7 @@ function renderCcTool(c, result) {
       <div class="cc-line">
         <span class="cc-dot${result?.is_error ? ' err' : ''}">⏺</span>
         <details class="cc-exp cc-head">
-          <summary><span class="cc-name">${name}</span><span class="cc-args">(${arg})</span></summary>
+          <summary><span class="cc-name">${name}</span><span class="cc-args">(${arg})</span>${durBadge}</summary>
           ${inputBody}
         </details>
       </div>
@@ -1139,7 +1244,7 @@ function toolGroupSummary(tools) {
 }
 
 // 把过滤后的显示单元展开成块序列并渲染：text/user/meta 平铺，连续 tool+thinking 聚成折叠工作组
-function renderCcFlow(units, resultById, forceOpen) {
+function renderCcFlow(units, resultById, forceOpen, inflight) {
   const blocks = [];
   units.forEach((u) => {
     if (u.kind === 'u') {
@@ -1186,7 +1291,7 @@ function renderCcFlow(units, resultById, forceOpen) {
     while (j < blocks.length && (blocks[j].t === 'tool' || blocks[j].t === 'think')) j++;
     const group = blocks.slice(i, j);
     const tools = group.filter((x) => x.t === 'tool');
-    const inner = group.map((x) => (x.t === 'tool' ? renderCcTool(x.c, x.res) : renderCcThink(x.c))).join('');
+    const inner = group.map((x) => (x.t === 'tool' ? renderCcTool(x.c, x.res, inflight) : renderCcThink(x.c))).join('');
     if (tools.length < 2) {
       out.push(inner);   // 单个工具不折叠，平铺更省一次点击
     } else {
@@ -1538,6 +1643,17 @@ window.addCliFromSearch = async (sid) => {
   } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
 };
 
+// S10 收养：终端起的 CLI 会话 → 看板 Mode B 交互会话（--resume 续接，带全部历史）
+window.adoptCliSession = async (taskKey, sessionId) => {
+  const t = findTaskInState(taskKey);
+  if (t?.state === 'processing') { customAlert({ title: '会话仍在运行', message: '终端里这个会话还活着——先退出终端再在看板继续，避免两个进程同时写同一会话。' }); return; }
+  try {
+    const r = await api('/api/session/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
+    if (!r.ok) { customAlert({ title: '续接失败', message: escapeHtml(r.error || '未知错误') }); return; }
+    location.hash = '#/session/' + encodeURIComponent(r.id);   // → Mode B 会话视图（含历史 + 实时续接）
+  } catch (e) { customAlert({ title: '续接失败', message: escapeHtml(e.message) }); }
+};
+
 window.unarchiveCliTask = async (taskKey) => {
   try {
     const r = await api(`/api/cli/unarchive?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
@@ -1687,6 +1803,257 @@ function scheduleStateRefresh() {
   if (stateTimer) clearInterval(stateTimer);
   stateTimer = setInterval(() => { if (autoRefresh && !modalOpen) refreshState(); }, REFRESH_STATE_MS);
 }
+
+// ==== Mode B 交互会话（S5：看板持有的 claude 会话 · 逐字 / 权限确认 / 打断）====
+let mb = null;   // { id, sse, transcript:[], liveText, perms:[], info, state, syncing }
+
+// 入口弹窗
+$('newSessionBtn').addEventListener('click', () => {
+  const sel = $('newSessionModel');
+  sel.innerHTML = BASE_MODELS.map((m) => `<option value="${escapeAttr(m.value)}"${m.value === 'claude-opus-4-8' ? ' selected' : ''}>${escapeHtml(m.name)} · ${escapeHtml(m.desc)}</option>`).join('');
+  $('newSessionErr').textContent = '';
+  $('newSessionModal').style.display = 'flex';
+  setTimeout(() => $('newSessionPrompt').focus(), 80);
+});
+window.closeNewSessionModal = () => { $('newSessionModal').style.display = 'none'; };
+$('newSessionSubmit').addEventListener('click', async () => {
+  const prompt = $('newSessionPrompt').value.trim();
+  const cwd = $('newSessionCwd').value.trim();
+  const model = $('newSessionModel').value;
+  const err = $('newSessionErr');
+  if (!prompt) { err.textContent = '请填首条消息'; return; }
+  err.textContent = '正在启动会话…';
+  try {
+    const r = await api('/api/session/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, cwd: cwd || undefined, model }) });
+    if (!r.ok) { err.textContent = r.error || '创建失败'; return; }
+    closeNewSessionModal();
+    $('newSessionPrompt').value = ''; $('newSessionCwd').value = '';
+    location.hash = '#/session/' + encodeURIComponent(r.id);
+  } catch (e) { err.textContent = e.message; }
+});
+
+// 只关前端 SSE，不 close 后端进程（离开视图 / 切会话时用；会话继续跑）
+function mbDetach() { if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
+
+function loadSession(id) {
+  if (mb && mb.id === id && mb.sse) return;   // 已在该会话，避免重复连
+  mbDetach();
+  mb = { id, sse: null, transcript: [], liveText: '', perms: [], info: {}, state: 'starting', syncing: true, liveUsage: null };
+  $('sessionBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">连接会话…</div>';
+  mbRenderHead();
+  const es = new EventSource(`/api/session/stream?id=${encodeURIComponent(id)}`);
+  mb.sse = es;
+  es.addEventListener('info', (e) => { try { mb.info = JSON.parse(e.data); mb.state = mb.info.state || mb.state; mbRenderHead(); } catch { /* ignore */ } });
+  es.addEventListener('synced', () => { mb.syncing = false; mbRenderBody(); mbRenderHead(); });
+  es.onmessage = (e) => { let o; try { o = JSON.parse(e.data); } catch { return; } mbOnEvent(o); };
+  // EventSource 断线自动重连；重连后服务端会重发 info + 回放 transcript
+}
+
+function mbOnEvent(ev) {
+  if (!mb) return;
+  switch (ev.type) {
+    case 'stream_event': {
+      const e = ev.event;
+      if (!e) return;
+      if (e.type === 'content_block_delta' && e.delta) {
+        const d = e.delta;
+        if (d.type === 'text_delta') { mb.liveText += d.text || ''; if (!mb.syncing) mbUpdateLive(); }
+        // 下行估算：累计所有 delta 文本长度（text/thinking/tool 入参），≈ output tokens（thinking 不可见但计费）
+        const dl = (d.text || d.thinking || d.partial_json || '').length;
+        if (dl && mb.liveUsage) { mb.liveUsage.outChars += dl; if (!mb.syncing) mbUpdateLiveTokens(); }
+      } else if (e.type === 'message_start') {
+        // 上行（input+cache）在开跑即知 → 即时真值；下行待末尾
+        const u = e.message?.usage || {};
+        mb.liveUsage = { up: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), outChars: 0, outReal: null, active: true };
+        if (!mb.syncing) mbUpdateLiveTokens();
+      } else if (e.type === 'message_delta' && e.usage) {
+        // CC 只在末尾发一次 message_delta（实测：逐 token 增长不可得）→ 拿到本轮下行真值
+        if (mb.liveUsage) { mb.liveUsage.outReal = e.usage.output_tokens ?? null; }
+        // 贴到最近一条 assistant 事件的 message.usage，供每轮 token footer 显示真值
+        for (let i = mb.transcript.length - 1; i >= 0; i--) { if (mb.transcript[i].type === 'assistant' && mb.transcript[i].message) { mb.transcript[i].message.usage = e.usage; break; } }
+        if (!mb.syncing) { mbUpdateLiveTokens(); mbRenderBody(); }
+      }
+      return;
+    }
+    case 'assistant': mb.transcript.push(ev); mb.liveText = ''; if (!mb.syncing) mbRenderBody(); return;
+    case 'user': mb.transcript.push(ev); if (!mb.syncing) mbRenderBody(); return;
+    case 'result': mb.liveText = ''; mb.state = 'idle'; if (mb.liveUsage) mb.liveUsage.active = false; if (!mb.syncing) { mbRenderBody(); mbRenderHead(); } return;
+    case 'system':
+      if (ev.subtype === 'init') { if (ev.session_id) mb.info.claudeSessionId = ev.session_id; mb.state = 'running'; if (!mb.syncing) mbRenderHead(); }
+      return;
+    case 'control_request':
+      if (ev.request && ev.request.subtype === 'can_use_tool') {
+        mb.perms.push({ requestId: ev.request_id, toolName: ev.request.tool_name || 'Tool', input: ev.request.input || {} });
+        if (!mb.syncing) mbRenderBody();
+      }
+      return;
+    case 'closed': mb.state = 'closed'; if (!mb.syncing) { mbRenderHead(); mbRenderBody(); } return;
+    case 'error': mb.state = 'error'; mb.lastError = ev.error; if (!mb.syncing) mbRenderHead(); return;
+    default: return;
+  }
+}
+
+// 把 Mode B settled 事件转成 renderDetailTab 认识的 rounds 形状（复用工具/思考/token/每步计时渲染）。
+// stream-json 的 assistant 事件是增量（同 message.id 拆成 thinking/text/tool_use 各一条）——按 id 合并，
+// 与 Mode A parseCcSession 同语义，否则消息被拆开、tool_use 与 usage 对不上。
+function mbToRounds() {
+  const messages = [];
+  let curAsst = null;
+  for (const ev of mb.transcript) {
+    if (ev.type === 'assistant' && ev.message) {
+      const mid = ev.message.id || null;
+      if (curAsst && mid && curAsst._mid === mid) {
+        for (const c of ev.message.content || []) {
+          const dup = curAsst.content.find((x) => x.type === c.type &&
+            (x.text === c.text || (x.name && x.name === c.name && JSON.stringify(x.input) === JSON.stringify(c.input))));
+          if (!dup) curAsst.content.push(c);
+        }
+        if (ev.message.usage) curAsst.usage = ev.message.usage;
+      } else {
+        curAsst = { role: 'assistant', _mid: mid, at: (ev.message.content || [])[0]?._ts || null, content: [...(ev.message.content || [])], usage: ev.message.usage || null, model: ev.message.model || null };
+        messages.push(curAsst);
+      }
+    } else if (ev.type === 'user' && ev.message) {
+      curAsst = null;
+      let content = ev.message.content;
+      if (typeof content === 'string') content = [{ type: 'text', text: content }];
+      messages.push({ role: 'user', at: (content || [])[0]?._ts || null, content: content || [], isMeta: false });
+    }
+  }
+  const inflight = mb.state === 'running' || mb.state === 'starting';
+  return [{ round: 1, sessionId: mb.info?.claudeSessionId || null, inflight, messages, ccSummary: {}, humanCc: [] }];
+}
+
+function mbRenderHead() {
+  if (!mb) return;
+  const el = $('sessionHead'); if (!el) return;
+  const cid = mb.info?.claudeSessionId ? mb.info.claudeSessionId.slice(0, 8) : '—';
+  const colors = { starting: 'var(--mut)', running: 'var(--amber)', idle: 'var(--cyan)', closed: 'var(--dim)', error: 'var(--coral)' };
+  const stTag = `<span class="tag" style="color:${colors[mb.state] || 'var(--mut)'}">${escapeHtml(mb.state)}${mb.state === 'running' ? ' <span style="animation:pulse 1.4s infinite">●</span>' : ''}</span>`;
+  el.innerHTML = `
+    <span><span class="sh-k">会话</span><span class="sh-v">${escapeHtml(cid)}</span></span>
+    ${stTag}
+    <span><span class="sh-k">模型</span><span class="sh-v">${escapeHtml(mb.info?.model || '—')}</span></span>
+    ${mb.info?.cwd ? `<span><span class="sh-k">cwd</span><span class="sh-v" title="${escapeAttr(mb.info.cwd)}">${escapeHtml(mb.info.cwd)}</span></span>` : ''}
+    <span id="mbLiveTokens" class="sh-v" style="color:var(--dim)"></span>
+    <button class="btn" style="margin-left:auto" onclick="mbCloseSession()">结束会话</button>`;
+  const ib = $('sessionInterruptBtn'); if (ib) ib.disabled = mb.state !== 'running';
+  mbUpdateLiveTokens();
+}
+
+// 实时 token 读数：上行(input+cache) message_start 即知真值；下行生成中按累计 delta 字符估算(~)、
+// 末尾 message_delta 给真值。CC 只在末尾发一次 message_delta —— 逐 token 增长不可得（两次实测证伪）。
+function mbUpdateLiveTokens() {
+  const el = document.getElementById('mbLiveTokens'); if (!el) return;
+  const u = mb && mb.liveUsage;
+  if (!u) { el.textContent = ''; return; }
+  const down = u.outReal != null ? Number(u.outReal).toLocaleString('en-US')
+    : '~' + Math.ceil(u.outChars / 4).toLocaleString('en-US');
+  el.textContent = `↑ ${Number(u.up).toLocaleString('en-US')} / ↓ ${down}${u.active ? ' · 生成中' : ''}`;
+}
+
+function mbRenderBody() {
+  if (!mb) return;
+  const body = $('sessionBody'); if (!body) return;
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  const rounds = mbToRounds();
+  let html = rounds[0].messages.length ? renderDetailTab({ rounds }) : '<div style="color:var(--dim);padding:12px 0">等待 claude 响应…</div>';
+  if (mb.liveText) html += `<div class="cc-line cc-text"><span class="cc-dot">⏺</span><div class="mb-live" id="mbLive">${escapeHtml(mb.liveText)}</div></div>`;
+  for (const p of mb.perms) {
+    html += (p.toolName === 'AskUserQuestion' && Array.isArray(p.input?.questions))
+      ? mbAskCardHtml(p)
+      : `<div class="perm-card">
+      <div class="pc-tool">🔐 claude 请求使用工具 <span style="color:var(--amber)">${escapeHtml(p.toolName)}</span></div>
+      <pre>${escapeHtml(JSON.stringify(p.input, null, 2).slice(0, 2000))}</pre>
+      <div class="pc-actions">
+        <button class="btn btn-primary" onclick="mbRespond('${escapeAttr(p.requestId)}', true)">允许</button>
+        <button class="btn btn-danger" onclick="mbRespond('${escapeAttr(p.requestId)}', false)">拒绝</button>
+      </div></div>`;
+  }
+  body.innerHTML = html;
+  if (atBottom) body.scrollTop = body.scrollHeight;
+}
+
+// S8：AskUserQuestion 交互卡 —— 渲染问题 + 选项（单选 radio / 多选 checkbox），提交回传 answers
+function mbAskCardHtml(p) {
+  const qs = p.input.questions || [];
+  const body = qs.map((q, qi) => {
+    const multi = !!q.multiSelect;
+    const opts = (q.options || []).map((o) => `
+      <label class="ask-opt">
+        <input type="${multi ? 'checkbox' : 'radio'}" name="q${qi}" value="${escapeAttr(o.label)}">
+        <span class="ask-opt-label">${escapeHtml(o.label)}</span>
+        ${o.description ? `<span class="ask-opt-desc">${escapeHtml(o.description)}</span>` : ''}
+      </label>`).join('');
+    return `<div class="ask-q" data-q="${escapeAttr(q.question)}">
+      ${q.header ? `<span class="ask-qhead">${escapeHtml(q.header)}</span>` : ''}
+      <div class="ask-qtext">${escapeHtml(q.question)}${multi ? ' <span class="ask-multi">(可多选)</span>' : ''}</div>
+      <div class="ask-opts">${opts}</div>
+    </div>`;
+  }).join('');
+  return `<div class="perm-card ask-card" data-req="${escapeAttr(p.requestId)}">
+    <div class="pc-tool">💬 claude 想问你</div>
+    ${body}
+    <div class="pc-actions">
+      <button class="btn btn-primary" onclick="mbSubmitAnswers('${escapeAttr(p.requestId)}')">提交</button>
+      <button class="btn" onclick="mbRespond('${escapeAttr(p.requestId)}', false)">跳过</button>
+    </div></div>`;
+}
+
+// 收集 AskUserQuestion 选择 → answers{问题:选项(多选逗号分隔)} → 走 /respond 的 answers 通道
+window.mbSubmitAnswers = (requestId) => {
+  if (!mb) return;
+  const card = document.querySelector(`.ask-card[data-req="${requestId}"]`);
+  if (!card) return;
+  const answers = {};
+  card.querySelectorAll('.ask-q').forEach((qel) => {
+    const q = qel.getAttribute('data-q');
+    const checked = [...qel.querySelectorAll('input:checked')].map((i) => i.value);
+    if (checked.length) answers[q] = checked.join(', ');
+  });
+  if (!Object.keys(answers).length) { customAlert({ title: '请先选择', message: '至少选一个选项再提交' }); return; }
+  mb.perms = mb.perms.filter((x) => x.requestId !== requestId);
+  mbRenderBody();
+  api(`/api/session/respond?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId, allow: true, answers }) })
+    .catch((e) => customAlert({ title: '提交失败', message: escapeHtml(e.message) }));
+};
+
+// 逐字增量：只改 #mbLive 文本，不整刷（不存在则整刷一次建出来）
+function mbUpdateLive() {
+  const el = document.getElementById('mbLive');
+  if (!el) { mbRenderBody(); return; }
+  el.textContent = mb.liveText;
+  const body = $('sessionBody');
+  if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 120) body.scrollTop = body.scrollHeight;
+}
+
+async function mbSend() {
+  if (!mb) return;
+  const ta = $('sessionInput'); const msg = ta.value.trim();
+  if (!msg) return;
+  ta.value = ''; $('sessionCount').textContent = '0 字';
+  mb.transcript.push({ type: 'user', message: { role: 'user', content: msg } });   // 乐观回显
+  mb.state = 'running'; mbRenderBody(); mbRenderHead();
+  const r = await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }));
+  if (!r.ok) customAlert({ title: '发送失败', message: escapeHtml(r.error || '') });
+}
+window.mbRespond = async (requestId, allow) => {
+  if (!mb) return;
+  mb.perms = mb.perms.filter((p) => p.requestId !== requestId);
+  mbRenderBody();
+  const r = await api(`/api/session/respond?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId, allow }) }).catch((e) => ({ ok: false, error: e.message }));
+  if (!r.ok) customAlert({ title: (allow ? '允许' : '拒绝') + '失败', message: escapeHtml(r.error || '') });
+};
+window.mbCloseSession = async () => {
+  if (!mb) return;
+  const id = mb.id;
+  await api(`/api/session/close?id=${encodeURIComponent(id)}`, { method: 'POST' }).catch(() => {});
+  location.hash = '#/board';
+};
+$('sessionSendBtn').addEventListener('click', mbSend);
+$('sessionInterruptBtn').addEventListener('click', () => { if (mb) api(`/api/session/interrupt?id=${encodeURIComponent(mb.id)}`, { method: 'POST' }).catch(() => {}); });
+$('sessionInput').addEventListener('input', (e) => { $('sessionCount').textContent = `${e.target.value.length} 字`; });
+$('sessionInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); mbSend(); } });
 
 // ---- init ----
 initReplyModelSelector();

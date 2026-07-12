@@ -99,6 +99,10 @@ function parseCcSession(jsonlText) {
     if (e.type === 'result') { lastResult = e; continue; }
     if (e.type !== 'user' && e.type !== 'assistant') continue;
     if (onDeadBranch(e) && !e.isMeta) continue;   // 撤回的死分支消息不展示（对齐 resume 上下文）
+    // 每个 content block 带上所在 jsonl 行的 timestamp（_ts）：assistant 的 tool_use 与 user 的
+    // tool_result 各在自己那行落盘，据此前端可算每步耗时（tool_use._ts → tool_result._ts）。
+    const stamp = e.timestamp || e.at || null;
+    const withTs = (c) => { if (c && typeof c === 'object' && c._ts == null) c._ts = stamp; return c; };
     if (e.type === 'user') {
       currentAsst = null;
       const msg = e.message || {};
@@ -110,6 +114,7 @@ function parseCcSession(jsonlText) {
       } else {
         contentArr = [];
       }
+      contentArr.forEach(withTs);
       messages.push({
         role: 'user',
         at: e.timestamp || e.at || null,
@@ -128,7 +133,7 @@ function parseCcSession(jsonlText) {
             x.type === c.type &&
             (x.text === c.text || (x.name && x.name === c.name && JSON.stringify(x.input) === JSON.stringify(c.input)))
           );
-          if (!already) currentAsst.content.push(c);
+          if (!already) currentAsst.content.push(withTs(c));
         }
         // usage 用最新的
         if (msg.usage) currentAsst.usage = msg.usage;
@@ -138,7 +143,7 @@ function parseCcSession(jsonlText) {
           at: e.timestamp || e.at || null,
           messageId: mid,
           model: msg.model || null,
-          content: [...(msg.content || [])],
+          content: (msg.content || []).map(withTs),
           usage: msg.usage || null,
         };
         messages.push(currentAsst);
@@ -191,6 +196,23 @@ function filterCcByProcessingWindow(cc, prevEndedAt, roundStartedAt) {
     if (endMs !== null && t > endMs) return false;
     return true;
   });
+}
+
+// S10 收养：全局定位 sessionId 的 jsonl，解析出历史消息 + cwd + model，供 Mode B --resume 续接
+// （消息 content block 已带 _ts，历史每步计时同样可显示）。返回 { ok, messages, cwd, model, jsonlPath }。
+export function readCcSessionForAdopt(sessionId) {
+  if (!sessionId || !/^[a-f0-9-]{36}$/.test(String(sessionId))) return { ok: false, error: 'invalid sessionId' };
+  const found = _collectCli.locateJsonlBySid(sessionId);
+  if (!found || !found.jsonlPath || !fs.existsSync(found.jsonlPath)) return { ok: false, error: 'session jsonl 未找到（终端会话文件已不存在？）' };
+  let parsed;
+  try { parsed = parseCcSession(fs.readFileSync(found.jsonlPath, 'utf8')); } catch (e) { return { ok: false, error: `解析失败: ${e.message}` }; }
+  return {
+    ok: true,
+    messages: parsed.messages || [],
+    cwd: parsed.cwd || parsed.systemInit?.cwd || null,
+    model: parsed.summary?.model || parsed.systemInit?.model || null,
+    jsonlPath: found.jsonlPath,
+  };
 }
 
 // 独立入口：从 sessionId 对应的 CC jsonl 提取真人 cc:（供 collect.js 每任务展示卡片用）
@@ -472,6 +494,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
     taskKey,
     safeKey,
     isArchive: dir === archiveDir,
+    state: state?.state || null,   // SSE 判收敛 / 前端指纹用（state 已在上方从 state.json 读出）
     rounds,
     hasInflight: !!inflight,
     runnerLogTail: readLast(runnerLogFile, 50),
