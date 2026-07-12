@@ -488,17 +488,24 @@ window.approveTaskAction = approveTaskAction;
 let currentModalData = null;
 let lastModalFp = null;             // poll 内容指纹：没新内容不重画 DOM（保住滚动位置和 details 展开态）
 
-// 卡片点击入口：有活跃 Mode B 会话（运行中/暖着）→ 跳实时会话面 #/session/<mbSessionId>；
-// 否则跳只读详情 #/task/<key>（历史 + 回复框；回复会自动 --resume 续起会话）
-window.openTaskModal = (taskKey) => {
-  const t = findTaskInState(taskKey);
-  if (t?.mbSessionId) location.hash = '#/session/' + encodeURIComponent(t.mbSessionId);
-  else location.hash = '#/task/' + encodeURIComponent(taskKey);
-};
+// 卡片点击入口：统一进详情 #/task/<key>。详情内部按任务是否有活 Mode B 会话分派——
+// 有活会话 → 连 live SSE（逐字 / 权限 / 打断）；无 → 读磁盘 jsonl 只读历史 + 回复框。
+window.openTaskModal = (taskKey) => { location.hash = '#/task/' + encodeURIComponent(taskKey); };
 
 async function loadTaskDetail(taskKey) {
   modalOpen = true;
   modalPollTaskKey = taskKey;
+  const t = findTaskInState(taskKey);
+  // 分派：有活 Mode B 会话 → 详情接 live SSE（逐字 / 权限卡 / 打断，渲染进 #modalBody + renderTaskSide + composer）；
+  // 无活会话 → 读磁盘 jsonl 只读历史（processing 时块级 SSE 兜底）。二者对同一次详情加载互斥。
+  if (t?.mbSessionId) {
+    closeModalLive();
+    currentModalData = null;
+    renderTaskSide(taskKey);            // 先出侧栏，body 由 loadSession 连上后渲染
+    loadSession(t.mbSessionId);
+    return;
+  }
+  if (mb) mbDetach();                    // 从 live 任务切到只读任务：断开旧 live SSE
   // 标题现在渲染在右侧「任务信息」块内（renderTaskSide），详情页顶部 header 已移除（req4）
   $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">正在拼 CC jsonl…</div>';
   lastModalFp = null;
@@ -661,45 +668,55 @@ function renderModalBody(keepScroll = false) {
   body.scrollTop = keepScroll ? (wasAtBottom ? body.scrollHeight : prevScroll) : body.scrollHeight;
 }
 
+// stateData 里按 mbSessionId 反查任务 key（旧 #/session/<id> 链接重定向用）
+function findTaskKeyBySession(sid) {
+  if (!stateData?.lifecycle) return null;
+  for (const bucket of Object.values(stateData.lifecycle)) {
+    for (const t of bucket) if (t.mbSessionId === sid) return t.taskKey;
+  }
+  return null;
+}
+
 // ---- hash 路由：#/board · #/archive · #/dashboard · #/settings · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
-const ROUTE_VIEWS = ['board', 'archive', 'dashboard', 'settings', 'task', 'session'];
+// 详情页已归一：#/session/<id>（历史链接）重定向到其归属任务的 #/task/<taskKey>。
+const ROUTE_VIEWS = ['board', 'archive', 'dashboard', 'settings', 'task'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
   let taskKey = null;
-  let sessionId = null;
   const mTask = /^#\/task\/([^/]+)(?:\/(?:overview|detail|timeline))?$/.exec(h);
   const mSession = /^#\/session\/([^/]+)$/.exec(h);
+  if (mSession) {
+    // 旧会话链接 → 重定向到归属任务详情（找不到归属则回看板）
+    const owner = findTaskKeyBySession(decodeURIComponent(mSession[1]));
+    location.hash = owner ? '#/task/' + encodeURIComponent(owner) : '#/board';
+    return;
+  }
   if (mTask) {
     view = 'task';
     taskKey = decodeURIComponent(mTask[1]);
-  } else if (mSession) {
-    view = 'session';
-    sessionId = decodeURIComponent(mSession[1]);
   } else if (h.startsWith('#/archive')) view = 'archive';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
   else if (h.startsWith('#/settings')) view = 'settings';
 
-  const fullBleed = view === 'task' || view === 'session';   // 满宽满高布局（pageWrap 外）
-  for (const v of ROUTE_VIEWS) { const el = $(`view-${v}`); if (el) el.style.display = v === view ? ((v === 'task' || v === 'session') ? 'flex' : '') : 'none'; }
+  const fullBleed = view === 'task';   // 满宽满高布局（pageWrap 外）
+  for (const v of ROUTE_VIEWS) { const el = $(`view-${v}`); if (el) el.style.display = v === view ? (v === 'task' ? 'flex' : '') : 'none'; }
   $('pageWrap').style.display = fullBleed ? 'none' : '';
   document.querySelectorAll('.topnav a').forEach((a) => {
     a.classList.toggle('active', a.dataset.nav === view || (fullBleed && a.dataset.nav === 'board'));
   });
 
-  // 离开详情页：停详情实时通道（SSE + 兜底轮询）+ 立即刷一次看板并重置计时
+  // 离开详情页：停详情实时通道（SSE + 兜底轮询）+ 断开 live 会话前端 SSE（后端进程继续跑）+ 刷看板重置计时
   if (view !== 'task' && modalOpen) {
     modalOpen = false;
     modalPollTaskKey = null;
     closeModalLive();
+    if (mb) mbDetach();
     $('modalReplyBox').style.display = 'none';
     refreshState();
     scheduleStateRefresh();
   }
-  // 离开交互会话：只关前端 SSE（不 close 后端进程，会话继续跑，可再进来）
-  if (view !== 'session' && mb) { mbDetach(); }
   if (view === 'task' && taskKey) loadTaskDetail(taskKey);
-  if (view === 'session' && sessionId) loadSession(sessionId);
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', router);
@@ -739,6 +756,30 @@ function updateReplyBoxAvailability(taskKey) {
   restartBtn.onclick = null;
   text.onkeydown = null;
   text.oninput = null;
+  const interruptBtn = $('modalReplyInterrupt');
+  if (interruptBtn) { interruptBtn.style.display = 'none'; interruptBtn.onclick = null; }
+
+  // 有活 Mode B 会话 → 实时 composer：常开输入 + 打断 + 发送走 mbSend；处理中也能插话/打断（D-c，去掉旧"处理中禁发"）。
+  // 不清空 text.value（本函数可能在 live 中多次调，保住用户正在输入的内容）。
+  if (t?.mbSessionId) {
+    replyBody.style.display = 'flex';
+    text.disabled = false; send.disabled = false;
+    if (mb && mb.id === t.mbSessionId) {
+      const running = mb.state === 'running' || mb.state === 'starting';
+      stateTag.className = 'tag ' + (running ? 'tag-amber' : 'tag-jade');
+      stateTag.textContent = running ? '生成中 · 可插话/打断' : '实时会话 · 可继续';
+      if (interruptBtn) { interruptBtn.style.display = ''; interruptBtn.disabled = !running; interruptBtn.onclick = () => mbInterrupt(); }
+    } else {
+      stateTag.textContent = '连接实时会话…';
+    }
+    hint.innerHTML = '看板持有的实时会话（Mode B）· 逐字 / 权限确认 / 打断，<b>处理中也能插话</b><span id="mbLiveTokens" style="margin-left:8px;font-family:var(--mono);color:var(--dim)"></span>';
+    updateReplyCount(text.value.length, countEl);
+    mbUpdateLiveTokens();
+    send.onclick = () => mbSend();
+    text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); mbSend(); } };
+    text.oninput = () => updateReplyCount(text.value.length, countEl);
+    return;
+  }
 
   // CLI 会话三态：终端占用 → 只读；正在算 → 等；空闲无进程 → 可从看板回复（headless --resume）
   if (isCli) {
@@ -903,13 +944,17 @@ async function sendCliContinue(taskKey) {
   if (t?.state === 'processing') { showReplyToast('会话仍在运行——先退出终端再续接，避免两个进程同写一个会话', 'err'); return; }
   send.disabled = true; text.disabled = true; send.textContent = '续接中…';
   try {
-    const body = model ? { sessionId, model } : { sessionId };
+    // taskKey 透传 → 收养会话绑该 CLI 任务，详情靠 mbSessionId 进 live 模式（不再有独立会话视图）
+    const body = model ? { sessionId, model, taskKey } : { sessionId, taskKey };
     const r = await api('/api/session/adopt', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
-    pendingCliMessage = msg;                                    // 会话视图 synced 后自动发出
-    location.hash = '#/session/' + encodeURIComponent(r.id);    // → Mode B 会话视图（含历史 + 实时续接）
+    pendingCliMessage = msg;                                    // 详情连上 live 会话 synced 后自动发出
+    await refreshState();                                       // 让 mbSessionId 现身，详情才能分派到 live
+    const target = '#/task/' + encodeURIComponent(taskKey);
+    if (location.hash === target) loadTaskDetail(taskKey);      // 已在该详情：hash 不变，直接重载进 live
+    else location.hash = target;                                // 否则触发 router → loadTaskDetail
   } catch (e) {
     showReplyToast(e.message, 'err');
   } finally {
@@ -1554,9 +1599,9 @@ $('newTaskSubmit').addEventListener('click', async () => {
       return;
     }
     closeNewTaskModal();
-    // queued → 已自动起会话执行（r.sessionUiId）：跳实时会话面看逐字 / 权限 / 打断。
+    // queued → 已自动起会话执行：跳任务详情 #/task/<key>，详情见 mbSessionId 自动进 live（逐字 / 权限 / 打断）。
     // plan → 待确认，留在看板由用户「确认执行」。
-    if (r.sessionUiId) location.hash = '#/session/' + encodeURIComponent(r.sessionUiId);
+    if (r.sessionUiId && r.taskKey) { await refreshState(); location.hash = '#/task/' + encodeURIComponent(r.taskKey); }
     else await refreshState();
   } catch (e) {
     errBox.textContent = e.message;
@@ -1821,25 +1866,26 @@ function scheduleStateRefresh() {
 // ==== Mode B 交互会话（S5：看板持有的 claude 会话 · 逐字 / 权限确认 / 打断）====
 let mb = null;   // { id, sse, transcript:[], liveText, perms:[], info, state, syncing }
 
-// 交互会话不再有独立入口——统一由「新建任务」创建（任务进 queued 即自动起绑定会话执行）。
-// 本视图（#/session/<mbSessionId>）只作为「运行中任务」的实时会话面（逐字 / 权限 / 打断），从任务卡进入。
+// 交互会话不再有独立视图——统一渲染进任务详情 #/task/<key>（loadTaskDetail 见 mbSessionId 时调本函数）。
+// 逐字 / 权限卡 / 打断 / 状态行渲染进 #modalBody；会话状态并入右侧 renderTaskSide；composer 走 #modalReplyBox。
 
-// 只关前端 SSE，不 close 后端进程（离开视图 / 切会话时用；会话继续跑）
+// 只关前端 SSE，不 close 后端进程（离开详情 / 切任务时用；会话继续跑，再进来重连回放）
 function mbDetach() { mbStopStatusTimer(); if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
 
 function loadSession(id) {
   if (mb && mb.id === id && mb.sse) return;   // 已在该会话，避免重复连
   mbDetach();
   mb = { id, sse: null, transcript: [], liveText: '', perms: [], info: {}, state: 'starting', syncing: true, liveUsage: null, turnStartedAt: null, gerundSeed: 0 };
-  $('sessionBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">连接会话…</div>';
-  mbRenderHead();
+  $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">连接实时会话…</div>';
+  mbSyncLiveHead();
   const es = new EventSource(`/api/session/stream?id=${encodeURIComponent(id)}`);
   mb.sse = es;
-  es.addEventListener('info', (e) => { try { mb.info = JSON.parse(e.data); mb.state = mb.info.state || mb.state; mbRenderHead(); } catch { /* ignore */ } });
+  es.addEventListener('info', (e) => { try { mb.info = JSON.parse(e.data); mb.state = mb.info.state || mb.state; mbSyncLiveHead(); } catch { /* ignore */ } });
   es.addEventListener('synced', () => {
-    mb.syncing = false; mbRenderBody(); mbRenderHead();
+    mb.syncing = false; mbRenderBody(); mbSyncLiveHead();
+    updateReplyBoxAvailability(modalPollTaskKey);   // 装配 live composer（常开输入 + 打断 + mbSend）
     // 从 CLI 详情「发送消息」收养而来：历史回放完成后自动发出用户那条消息（mbSend 乐观回显 → 可见）
-    if (pendingCliMessage) { const m = pendingCliMessage; pendingCliMessage = null; $('sessionInput').value = m; mbSend(); }
+    if (pendingCliMessage) { const m = pendingCliMessage; pendingCliMessage = null; $('modalReplyText').value = m; mbSend(); }
   });
   es.onmessage = (e) => { let o; try { o = JSON.parse(e.data); } catch { return; } mbOnEvent(o); };
   // EventSource 断线自动重连；重连后服务端会重发 info + 回放 transcript
@@ -1876,9 +1922,9 @@ function mbOnEvent(ev) {
     }
     case 'assistant': mb.transcript.push(ev); mb.liveText = ''; if (!mb.syncing) mbRenderBody(); return;
     case 'user': mb.transcript.push(ev); if (!mb.syncing) mbRenderBody(); return;
-    case 'result': mb.liveText = ''; mb.state = 'idle'; mb.turnStartedAt = null; if (mb.liveUsage) { mb.liveUsage.active = false; mb.liveUsage.thinking = false; } if (!mb.syncing) { mbRenderBody(); mbRenderHead(); } return;
+    case 'result': mb.liveText = ''; mb.state = 'idle'; mb.turnStartedAt = null; if (mb.liveUsage) { mb.liveUsage.active = false; mb.liveUsage.thinking = false; } if (!mb.syncing) { mbRenderBody(); mbSyncLiveHead(); } return;
     case 'system':
-      if (ev.subtype === 'init') { if (ev.session_id) mb.info.claudeSessionId = ev.session_id; mb.state = 'running'; if (!mb.syncing) mbRenderHead(); }
+      if (ev.subtype === 'init') { if (ev.session_id) mb.info.claudeSessionId = ev.session_id; mb.state = 'running'; if (!mb.syncing) mbSyncLiveHead(); }
       return;
     case 'control_request':
       if (ev.request && ev.request.subtype === 'can_use_tool') {
@@ -1886,8 +1932,8 @@ function mbOnEvent(ev) {
         if (!mb.syncing) mbRenderBody();
       }
       return;
-    case 'closed': mb.state = 'closed'; if (!mb.syncing) { mbRenderHead(); mbRenderBody(); } return;
-    case 'error': mb.state = 'error'; mb.lastError = ev.error; if (!mb.syncing) mbRenderHead(); return;
+    case 'closed': mb.state = 'closed'; if (!mb.syncing) { mbSyncLiveHead(); mbRenderBody(); } return;
+    case 'error': mb.state = 'error'; mb.lastError = ev.error; if (!mb.syncing) mbSyncLiveHead(); return;
     default: return;
   }
 }
@@ -1920,26 +1966,20 @@ function mbToRounds() {
     }
   }
   const inflight = mb.state === 'running' || mb.state === 'starting';
-  return [{ round: 1, sessionId: mb.info?.claudeSessionId || null, inflight, messages, ccSummary: {}, humanCc: [] }];
+  return [{ round: 1, sessionId: mb.info?.claudeSessionId || null, inflight, messages, ccSummary: { model: mb.info?.model || null }, humanCc: [] }];
 }
 
-function mbRenderHead() {
+// live 会话状态并入右侧任务信息块（renderTaskSide 读 currentModalData 展示 live 轮次/token/● 实时）+
+// 同步打断按钮 disabled 与 composer 状态徽章。不再有独立会话头部 / 结束会话按钮（D-b：生命周期由任务态驱动）。
+function mbSyncLiveHead() {
   if (!mb) return;
-  const el = $('sessionHead'); if (!el) return;
-  const cid = mb.info?.claudeSessionId ? mb.info.claudeSessionId.slice(0, 8) : '—';
-  const colors = { starting: 'var(--mut)', running: 'var(--amber)', idle: 'var(--cyan)', closed: 'var(--dim)', error: 'var(--coral)' };
-  const stTag = `<span class="tag" style="color:${colors[mb.state] || 'var(--mut)'}">${escapeHtml(mb.state)}${mb.state === 'running' ? ' <span style="animation:pulse 1.4s infinite">●</span>' : ''}</span>`;
-  const tk = mb.info?.taskKey;
-  el.innerHTML = `
-    <button class="btn" onclick="location.hash='#/board'" title="返回看板（会话继续在后台跑）">← 看板</button>
-    ${tk ? `<span><span class="sh-k">任务</span><span class="sh-v" title="${escapeAttr(tk)}">${escapeHtml(tk)}</span></span>` : ''}
-    <span><span class="sh-k">会话</span><span class="sh-v">${escapeHtml(cid)}</span></span>
-    ${stTag}
-    <span><span class="sh-k">模型</span><span class="sh-v">${escapeHtml(mb.info?.model || '—')}</span></span>
-    ${mb.info?.cwd ? `<span><span class="sh-k">cwd</span><span class="sh-v" title="${escapeAttr(mb.info.cwd)}">${escapeHtml(mb.info.cwd)}</span></span>` : ''}
-    <span id="mbLiveTokens" class="sh-v" style="color:var(--dim)"></span>
-    <button class="btn" style="margin-left:auto" onclick="mbCloseSession()">结束会话</button>`;
-  const ib = $('sessionInterruptBtn'); if (ib) ib.disabled = mb.state !== 'running';
+  if (modalPollTaskKey) renderTaskSide(modalPollTaskKey);
+  const ib = $('modalReplyInterrupt'); if (ib) ib.disabled = mb.state !== 'running';
+  const st = $('modalReplyState');
+  if (st && mb.id && findTaskInState(modalPollTaskKey)?.mbSessionId === mb.id) {
+    st.className = 'tag ' + (mb.state === 'running' ? 'tag-amber' : 'tag-jade');
+    st.textContent = mb.state === 'running' ? '生成中 · 可插话/打断' : '实时会话 · 可继续';
+  }
   mbUpdateLiveTokens();
 }
 
@@ -1990,9 +2030,11 @@ function mbStopStatusTimer() { if (mbStatusTimer) { clearInterval(mbStatusTimer)
 
 function mbRenderBody() {
   if (!mb) return;
-  const body = $('sessionBody'); if (!body) return;
+  const body = $('modalBody'); if (!body) return;
   const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   const rounds = mbToRounds();
+  // 供右侧 renderTaskSide 读 live 轮次/token/● 实时（live 模式不走 /api/worker-log，currentModalData 由此喂）
+  currentModalData = { rounds, hasInflight: mb.state === 'running' || mb.state === 'starting' };
   let html = rounds[0].messages.length ? renderDetailTab({ rounds }, true) : '<div style="color:var(--dim);padding:12px 0">等待 claude 响应…</div>';
   if (mb.liveText) html += `<div class="cc-line cc-text"><span class="cc-dot">⏺</span><div class="mb-live" id="mbLive">${escapeHtml(mb.liveText)}</div></div>`;
   const running = mb.state === 'running' || mb.state === 'starting';
@@ -2062,18 +2104,18 @@ function mbUpdateLive() {
   const el = document.getElementById('mbLive');
   if (!el) { mbRenderBody(); return; }
   el.textContent = mb.liveText;
-  const body = $('sessionBody');
+  const body = $('modalBody');
   if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 120) body.scrollTop = body.scrollHeight;
 }
 
 async function mbSend() {
   if (!mb) return;
-  const ta = $('sessionInput'); const msg = ta.value.trim();
+  const ta = $('modalReplyText'); const msg = ta.value.trim();
   if (!msg) return;
-  ta.value = ''; $('sessionCount').textContent = '0 字';
+  ta.value = ''; updateReplyCount(0);
   mb.transcript.push({ type: 'user', message: { role: 'user', content: msg } });   // 乐观回显
   mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); mb.liveUsage = null;   // 从发送即开始计时（CC 风格）
-  mb.state = 'running'; mbRenderBody(); mbRenderHead();
+  mb.state = 'running'; mbRenderBody(); mbSyncLiveHead();
   // 任务绑定会话 → 走 /api/task/reply（内部 sendUserMessage + 置任务 state=processing）；
   // 未绑定（CLI 收养会话）→ 直接 /api/session/send
   const tk = mb.info?.taskKey;
@@ -2089,16 +2131,9 @@ window.mbRespond = async (requestId, allow) => {
   const r = await api(`/api/session/respond?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId, allow }) }).catch((e) => ({ ok: false, error: e.message }));
   if (!r.ok) customAlert({ title: (allow ? '允许' : '拒绝') + '失败', message: escapeHtml(r.error || '') });
 };
-window.mbCloseSession = async () => {
-  if (!mb) return;
-  const id = mb.id;
-  await api(`/api/session/close?id=${encodeURIComponent(id)}`, { method: 'POST' }).catch(() => {});
-  location.hash = '#/board';
-};
-$('sessionSendBtn').addEventListener('click', mbSend);
-$('sessionInterruptBtn').addEventListener('click', () => { if (mb) api(`/api/session/interrupt?id=${encodeURIComponent(mb.id)}`, { method: 'POST' }).catch(() => {}); });
-$('sessionInput').addEventListener('input', (e) => { $('sessionCount').textContent = `${e.target.value.length} 字`; });
-$('sessionInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); mbSend(); } });
+// 打断当前轮（interrupt control_request）；由 live 模式 composer 的「■ 打断」按钮调用
+// （按钮显隐/绑定在 updateReplyBoxAvailability 的 live 分支装配）。无「结束会话」入口（D-b：生命周期随任务态）。
+window.mbInterrupt = () => { if (mb) api(`/api/session/interrupt?id=${encodeURIComponent(mb.id)}`, { method: 'POST' }).catch(() => {}); };
 
 // ---- init ----
 initReplyModelSelector();

@@ -205,3 +205,12 @@ export function closeSession(id) {
 
 export function getSession(id) { return sessions.get(id) || null; }
 export function listSessions() { return [...sessions.values()].map((s) => s.info()); }
+
+// 按 taskKey 反查活着的会话 id（收养会话未经 task-runner.bind 注册 registry，靠会话自记的 taskKey 找回）
+export function getSessionIdByTaskKey(taskKey) {
+  if (!taskKey) return null;
+  for (const s of sessions.values()) {
+    if (s.taskKey === taskKey && s.state !== 'closed' && s.state !== 'error') return s.id;
+  }
+  return null;
+}
