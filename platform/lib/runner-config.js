@@ -16,9 +16,3 @@ export function writeConfig(patch) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
   return cfg;
 }
-
-// 暂停/恢复全局派发
-export function setPauseInvestigation(paused) {
-  writeConfig({ pauseInvestigation: !!paused });
-  return { ok: true, pauseInvestigation: !!paused };
-}

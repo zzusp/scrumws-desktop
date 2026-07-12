@@ -3,17 +3,16 @@ import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { P, ROOT } from './paths.js';
 import { fmt } from './timeutil.js';
-import { readRegistry, scriptFileOf, logFileOf, ensureScriptFile, CHECKER, checkerEnabled, checkerIntervalSec } from './dispatchers.js';
+import { CHECKER, checkerEnabled, checkerIntervalSec } from './jobs/checker-meta.js';
 import { pidAlive } from './lease.js';
 
-// 看板进程内调度器（2026-07-10 派发链 Node 化，替代 Windows 计划任务）：
+// 看板进程内调度器（2026-07-12 去派发器后只调度平台守护 Runner Checker 一个 job）：
 // · 每 job 一个 interval 定时器；tick = fork 子进程跑 run-job.js（隔离——脚本写崩不拖死看板）
 // · 上一轮未结束 → 本轮跳过（= 原 schtasks IgnoreNew 语义）
-// · tick 超时（默认 240s）→ 杀直接子进程（不 /T——tick 内 detach 出去的 worker 不能陪葬；
-//   ctx.exec 每个 CLI 调用自带超时，正常挂不满 240s）
-// · 单实例锁 runtime/scheduler.lock（pid 判活）：防双看板实例双 tick 双 spawn；
+// · tick 超时（默认 240s）→ 杀直接子进程（ctx.exec 每个 CLI 调用自带超时，正常挂不满 240s）
+// · 单实例锁 runtime/scheduler.lock（pid 判活）：防双看板实例双 tick；
 //   测试实例用 DASHBOARD_NO_SCHEDULER=1 起（只看不调度）
-// · job stdout/stderr → runtime/job-<id>.out.log（每 tick 覆写，崩溃排障用；业务日志脚本自己写 dispatch-*.log）
+// · job stdout/stderr → runtime/job-<id>.out.log（每 tick 覆写，崩溃排障用）
 
 const LOCK_FILE = path.join(P.tmpDir, 'scheduler.lock');
 // run-job.js 是应用代码资产，跟随本模块所在目录解析（ROOT 现在是数据根，不再指向代码目录）
@@ -120,19 +119,10 @@ function upsertJob(desired) {
   return job;
 }
 
-// 注册表 / 配置变更后调：对齐 jobs 表与定时器
+// 配置变更后调：对齐 jobs 表与定时器（去派发器后只有平台守护 Runner Checker 一个 job）
 export function reload() {
   const desired = new Map();
   if (mode === 'running' || mode === 'stopped') {
-    const reg = readRegistry();
-    for (const d of reg.dispatchers) {
-      let scriptFile;
-      try { scriptFile = ensureScriptFile(d); } catch { scriptFile = scriptFileOf(d.id); }
-      desired.set(d.id, {
-        id: d.id, kind: 'dispatcher', label: d.label, enabled: d.enabled,
-        intervalSec: d.intervalSec, scriptFile, logFile: logFileOf(d),
-      });
-    }
     desired.set(CHECKER.id, {
       id: CHECKER.id, kind: 'checker', label: CHECKER.label, enabled: checkerEnabled(),
       intervalSec: checkerIntervalSec(), scriptFile: CHECKER.script, logFile: CHECKER.logFile,

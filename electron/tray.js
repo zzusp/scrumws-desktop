@@ -19,7 +19,7 @@ export function createTray({ onShow, onQuit, port }) {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开看板', click: onShow },
     { type: 'separator' },
-    { label: '退出（派发将停止）', click: onQuit },
+    { label: '退出（后台守护将停止）', click: onQuit },
   ]));
   tray.on('double-click', onShow);
   return tray;

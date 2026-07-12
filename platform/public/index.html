@@ -482,11 +482,6 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <svg class="ic" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
         <span class="sb-label">归档</span>
       </a>
-      <div class="sb-group">编排</div>
-      <a href="#/dispatcher" data-nav="dispatcher">
-        <svg class="ic" viewBox="0 0 24 24"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
-        <span class="sb-label">派发器</span>
-      </a>
       <div class="sb-group">平台</div>
       <a href="#/dashboard" data-nav="dashboard">
         <svg class="ic" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
@@ -506,7 +501,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
     <div id="authBanner" class="auth-alert" style="display:none" role="alert">
       <svg class="ic auth-alert-ic" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.73-2Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
       <div class="auth-alert-text">
-        <span class="auth-alert-title">dws 授权失效 · 派发链熔断中</span>
+        <span class="auth-alert-title">dws 授权失效 · 需重新登录</span>
         <span id="authBannerReason" class="auth-alert-reason">—</span>
         <span id="authBannerMeta" class="auth-alert-meta">—</span>
       </div>
@@ -531,36 +526,6 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         </div>
       </header>
       <div id="pageWrap">
-
-        <!-- ============ 页面 1：派发器（注册表驱动 + 运行日志）============ -->
-        <div id="view-dispatcher" class="view" style="display:none">
-          <section class="card" style="margin-bottom:var(--gap)">
-            <div class="sec-head">
-              <h2>派发器</h2>
-              <span class="sec-sub">Node 脚本 · 看板进程内调度 · 注册表 runtime/dispatchers.json + 脚本 runtime/dispatchers/&lt;id&gt;.mjs</span>
-              <button class="btn btn-primary" id="newDispatcherBtn" style="margin-left:auto;font-size:11.5px;padding:5px 13px" title="按场景来源新建派发器（脚本内容按模板预填、可编辑）">+ 新建派发器</button>
-            </div>
-            <div id="tasksGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
-              <div style="color:var(--dim);font-size:12.5px">加载中…</div>
-            </div>
-          </section>
-
-          <section class="card">
-            <div class="sec-head" style="margin-bottom:12px">
-              <div>
-                <h2>运行日志</h2>
-                <div id="logsStats" class="sec-sub" style="margin-top:2px">dispatch-chat.log + dispatch-issue.log + runner-checker.log · 近 8h</div>
-              </div>
-              <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
-                <label style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);cursor:pointer"><input type="checkbox" id="logsActionOnly">仅有动作</label>
-                <button class="btn" id="logsRefreshBtn">刷新</button>
-              </div>
-            </div>
-            <div id="logsList" style="max-height:560px;overflow:auto;display:flex;flex-direction:column;gap:1px;font-family:var(--mono);font-size:11.5px">
-              <div style="color:var(--dim);padding:8px 0">加载中…</div>
-            </div>
-          </section>
-        </div>
 
         <!-- ============ 页面 2：任务看板（筛选工具行 + 状态列）============ -->
         <!-- 状态色语义：processing→warning · done→info · awaiting-human→destructive · queued→muted -->
@@ -649,13 +614,6 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <span class="sec-sub">运行控制 · 本地偏好（存本机 localStorage，不影响其他实例）</span>
             </div>
             <div class="set-list">
-              <label class="set-row" title="暂停派发（dispatcher 仍建 queued 但不 spawn；runner-checker 兜底孤儿不受影响）">
-                <span class="set-main">
-                  <span class="set-name">派发开关 · <span id="pauseLabel">派发中</span></span>
-                  <span class="set-desc">暂停后 dispatcher 仍建 queued 但不 spawn；runner-checker 兜底不受影响</span>
-                </span>
-                <span class="switch"><input type="checkbox" id="pauseSwitch"><span class="slider"></span></span>
-              </label>
               <label class="set-row" title="自动刷新（关闭则暂停 15s 轮询）">
                 <span class="set-main">
                   <span class="set-name">自动刷新</span>
@@ -671,7 +629,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <section class="card" style="max-width:640px">
             <div class="sec-head">
               <h2>平台守护</h2>
-              <span class="sec-sub">看板平台自身的守护组件（不是派发器）· 孤儿任务收纳 + 授权熔断复查</span>
+              <span class="sec-sub">看板平台自身的守护组件 · 孤儿任务收纳 + 授权熔断复查</span>
             </div>
             <div id="checkerGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
               <div style="color:var(--dim);font-size:12.5px">加载中…</div>
@@ -798,44 +756,6 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
     </div>
   </div>
 
-  <!-- ===== 新建 / 编辑派发器 Modal ===== -->
-  <div id="newDispatcherModal" class="overlay" style="display:none" onclick="if(event.target===this)closeNewDispatcherModal()">
-    <div class="modal-card" style="max-width:860px;max-height:90vh">
-      <div class="modal-head">
-        <h2 id="newDispTitle">新建派发器</h2>
-        <span class="modal-x" onclick="closeNewDispatcherModal()">×</span>
-      </div>
-      <div class="modal-hint">Node 脚本 · export default async function tick(ctx) · 看板进程内调度（上一轮未结束自动跳过）</div>
-      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0">
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <label class="field" style="flex:1;min-width:180px">
-            <span class="f-label">场景来源</span>
-            <select id="newDispType" class="field-input"></select>
-          </label>
-          <label class="field" style="flex:1;min-width:180px">
-            <span class="f-label">名称（看板显示）</span>
-            <input type="text" id="newDispLabel" class="field-input" maxlength="40">
-          </label>
-          <label class="field" style="width:130px">
-            <span class="f-label">间隔（秒）</span>
-            <input type="number" id="newDispInterval" class="field-input mono" min="5" max="86400">
-          </label>
-        </div>
-        <span id="newDispTypeHint" style="font-size:11px;color:var(--dim);font-family:var(--mono)">—</span>
-        <label class="field" style="flex:1;min-height:0">
-          <span class="f-label">脚本内容（按场景模板预填，可改；保存即生效）</span>
-          <textarea id="newDispScript" class="field-input mono" rows="16" spellcheck="false" style="white-space:pre;overflow-x:auto"></textarea>
-        </label>
-      </div>
-      <div id="newDispErr" class="form-err" style="max-height:120px;overflow:auto"></div>
-      <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex:none">
-        <span id="newDispTaskName" style="font-size:11px;color:var(--dim);font-family:var(--mono);flex:1">—</span>
-        <button class="btn" onclick="closeNewDispatcherModal()">取消</button>
-        <button class="btn btn-primary" id="newDispSubmit">创建</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ===== 添加本机 CLI 会话 Modal ===== -->
   <div id="addCliModal" class="overlay" style="display:none">
     <div class="modal-card" style="max-width:820px;max-height:88vh">
@@ -898,8 +818,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         { label: key, id: 'crumbLast' },
       ];
     }
-    var name = h.indexOf('#/dispatcher') === 0 ? '派发器'
-      : h.indexOf('#/dashboard') === 0 ? '数据看板'
+    var name = h.indexOf('#/dashboard') === 0 ? '数据看板'
       : h.indexOf('#/archive') === 0 ? '归档'
       : h.indexOf('#/settings') === 0 ? '设置'
       : '任务看板';

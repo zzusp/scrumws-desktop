@@ -5,7 +5,7 @@ import path from 'node:path';
 const DEFAULTS = {
   port: 8799,                  // 独立端口，避撞旧看板 8788（goal.md D4 双开防护）
   dataRoot: 'D:\\baibu-agent', // runtime/、scripts/ 所在根（goal.md D2 数据不搬家）
-  schedulerEnabled: false,     // 开发/验证期默认关闭，防与旧看板双派发（D4）；即使开启也有 scheduler.lock 兜底互斥
+  schedulerEnabled: false,     // 开发/验证期默认关闭（关闭时 Runner Checker 也不跑）；即使开启也有 scheduler.lock 兜底互斥单实例
   autoStart: false,            // 开机自启（仅打包版生效；切换接管时置 true，见 docs/ops/cutover.md）
 };
 

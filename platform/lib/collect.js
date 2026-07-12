@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
 import { fmt, parse, ago } from './timeutil.js';
-import * as dispatcherLib from './dispatchers.js';
+import { CHECKER, checkerEnabled, checkerIntervalSec } from './jobs/checker-meta.js';
 import * as scheduler from './scheduler.js';
 import { extractHumanCcFromSession } from './logs.js';
 import { readConfig } from './runner-config.js';
@@ -151,7 +151,7 @@ function collectAll(now) {
       const task = collectOne(name, dir, now, isArchive);
       if (!task) continue;
       // 「真正处理过」判据：只过滤阶段 2 迁移进来的历史（outcomeDetail.migratedFrom 有值 = migration by 标记）
-      // 新 dispatcher spawn 的任务（无论跑成功/中/失败）都要显示——processing/queued 阶段无 meta 也是"正在处理"
+      // 新建/运行中的任务（无论跑成功/中/失败）都要显示——processing/queued 阶段无 meta 也是"正在处理"
       if (task.outcomeDetail?.migratedFrom) continue;
       if (isArchive) { buckets.archived.push(task); continue; }
       const s = task.state;
@@ -181,7 +181,7 @@ function collectAll(now) {
 }
 
 // ---------- /api/state 主入口 ----------
-// job 实况卡（2026-07-10 派发链 Node 化：注册表 + 进程内调度器实况 + 心跳日志）
+// job 实况卡（进程内调度器实况 + 心跳日志）——去派发器后仅 Runner Checker 用
 function liveJobCard(id, logFile, enabled, intervalSec, sched, now) {
   // 心跳：读对应 log 末行时间（跨看板重启仍可信；调度器 lastTick 是本进程内存值）
   let heartbeatAt = null;
@@ -212,29 +212,12 @@ export async function collectState() {
   const now = new Date();
   const sched = scheduler.status();
 
-  // 派发器卡：注册表 ∪ 调度器实况 ∪ 场景模板
-  const reg = dispatcherLib.readRegistry();
-  const dispatchers = reg.dispatchers.map((d) => {
-    const tpl = dispatcherLib.DISPATCHER_TYPES[d.type] || {};
-    return {
-      id: d.id,
-      type: d.type,
-      label: d.label,
-      hint: tpl.hint || '',
-      url: tpl.url || null,
-      createdAt: d.createdAt || null,
-      scriptFile: `runtime/dispatchers/${d.id}.mjs`,
-      ...liveJobCard(d.id, dispatcherLib.logFileOf(d), d.enabled, d.intervalSec, sched, now),
-    };
-  });
-
-  // 平台守护卡（Runner Checker，数据看板页）
+  // 平台守护卡（Runner Checker，数据看板页）——去派发器后调度器只剩这一个 job
   const checker = {
-    id: dispatcherLib.CHECKER.id,
-    label: dispatcherLib.CHECKER.label,
-    hint: dispatcherLib.CHECKER.hint,
-    ...liveJobCard(dispatcherLib.CHECKER.id, dispatcherLib.CHECKER.logFile,
-      dispatcherLib.checkerEnabled(), dispatcherLib.checkerIntervalSec(), sched, now),
+    id: CHECKER.id,
+    label: CHECKER.label,
+    hint: CHECKER.hint,
+    ...liveJobCard(CHECKER.id, CHECKER.logFile, checkerEnabled(), checkerIntervalSec(), sched, now),
   };
 
   const buckets = collectAll(now);
@@ -261,9 +244,7 @@ export async function collectState() {
   return {
     now: fmt(now),
     scheduler: { mode: sched.mode, lockPid: sched.lockPid },
-    dispatchers,
     checker,
-    dispatcherTypes: dispatcherLib.listTypes(),
     lifecycle: {
       plan: buckets.plan,
       processing: buckets.processing,

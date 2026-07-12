@@ -9,7 +9,7 @@ let quitting = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  // 已有实例在跑：把焦点交给它（second-instance 事件），自己退出，防双派发
+  // 已有实例在跑：把焦点交给它（second-instance 事件），自己退出，防双实例
   app.quit();
 } else {
   app.on('second-instance', () => {

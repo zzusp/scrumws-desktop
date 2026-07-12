@@ -1,8 +1,8 @@
-// 小小鹏 · 运行看板 · 前端交互（阶段 3 重写版）
-// 三页：① 派发器（注册表驱动卡片 + 新建/调度/删除 + 运行日志）· ② 任务看板（状态分区 + 归档）· ③ 数据看板（平台守护 Runner Checker + 运营洞察）
+// ScrumWS · 运行看板 · 前端交互
+// 页面：任务看板（状态分区）· 归档 · 数据看板 · 设置（含平台守护 Runner Checker）
+// 任务由外部来源经 CLI / API（/api/task/create）或看板「新建任务」按钮推入，落 plan/queued 桶
 
 const REFRESH_STATE_MS = 15000;
-const REFRESH_LOGS_MS  = 60000;
 
 const $ = (id) => document.getElementById(id);
 
@@ -29,14 +29,12 @@ tickClock(); setInterval(tickClock, 1000);
 
 // ---- 状态 ----
 let stateData = null;
-let logsFilter = false;
 let autoRefresh = true;
 // modal 打开时暂停看板刷新 —— 用户焦点在 modal 上、看板轮询 5s 刷 detail；关闭时立即 refreshState + 重置 15s 计时
 let modalOpen = false;
 let modalPollTimer = null;
 let modalPollTaskKey = null;
 let stateTimer = null;
-let logsTimer = null;
 const MODAL_POLL_MS = 5000;
 
 // ---- API ----
@@ -45,8 +43,8 @@ async function api(url, opts) {
   return r.json();
 }
 
-// ---- 面板 ① 派发器（Node 脚本 + 进程内调度，2026-07-10 Node 化）+ 数据看板页平台守护卡 ----
-// job 实况卡的公共 HTML（派发器卡 / checker 卡共用）
+// ---- 平台守护卡（设置页 Runner Checker）----
+// job 实况卡的公共 HTML（去派发器后仅 checker 卡用）
 function liveJobCardHtml(t, { title, mono, hint, actions = '' }) {
   const stateTag = !t.enabled
     ? '<span class="tag tag-coral">Disabled</span>'
@@ -81,56 +79,13 @@ function liveJobCardHtml(t, { title, mono, hint, actions = '' }) {
   `;
 }
 
-function renderDispatchers(dispatchers) {
-  const grid = $('tasksGrid');
-  grid.innerHTML = '';
-  if (!dispatchers.length) {
-    grid.innerHTML = '<div style="color:var(--dim);font-size:13px">还没有派发器 — 点右上「+ 新建派发器」按场景来源创建</div>';
-    return;
-  }
-  for (const d of dispatchers) {
-    const title = d.url
-      ? `<a href="${d.url}" target="_blank" rel="noopener" title="打开当前检查的列表" style="font-weight:600;font-size:13px;color:var(--ink2);text-decoration:none;border-bottom:1px dashed var(--hair)">${escapeHtml(d.label)} <span style="font-size:10px;color:var(--mut)">↗</span></a>`
-      : `<div style="font-weight:600;font-size:13px;color:var(--ink2)">${escapeHtml(d.label)}</div>`;
-    const actions = [
-      `<button class="btn" data-disp-edit="${escapeAttr(d.id)}" style="font-size:10.5px;padding:2px 8px" title="编辑名称 / 间隔 / 脚本内容">编辑</button>`,
-      `<button class="btn" data-disp-delete="${escapeAttr(d.id)}" style="font-size:10.5px;padding:2px 8px;color:var(--coral)" title="停止调度并移出注册表（脚本文件保底改名）">删除</button>`,
-    ].join('');
-    grid.insertAdjacentHTML('beforeend', liveJobCardHtml(d, {
-      title,
-      mono: `${escapeHtml(d.scriptFile)} · ${escapeHtml(d.type)}`,
-      hint: escapeHtml(d.hint || ''),
-      actions: `<span style="margin-left:auto;display:inline-flex;gap:6px">${actions}</span>`,
-    }));
-  }
-  bindLiveJobSwitches(grid, (id) => `/api/dispatcher/{action}?id=${encodeURIComponent(id)}`);
-  grid.querySelectorAll('[data-disp-edit]').forEach((btn) => {
-    btn.addEventListener('click', () => openDispatcherModal('edit', btn.dataset.dispEdit));
-  });
-  grid.querySelectorAll('[data-disp-delete]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.dispDelete;
-      const d = (stateData?.dispatchers || []).find((x) => x.id === id);
-      const okGo = await customConfirm({
-        title: '删除派发器',
-        message: `停止调度并从注册表移除「${escapeHtml(d?.label || id)}」？<br>脚本文件会保底改名（<code>.deleted-*</code>）；已 spawn 的 worker 不受影响；之后可从「+ 新建派发器」重建。`,
-        confirmText: '删除', tone: 'danger',
-      });
-      if (!okGo) return;
-      const r = await api(`/api/dispatcher/delete?id=${encodeURIComponent(id)}`, { method: 'POST' });
-      if (!r.ok) await customAlert({ title: '删除失败', message: escapeHtml(r.error || '未知错误') });
-      await refreshState();
-    });
-  });
-}
-
-// 数据看板页：平台守护卡（Runner Checker 不是派发器——平台内置 Node job）
+// 数据看板页：平台守护卡（Runner Checker —— 平台内置 Node job，去派发器后调度器唯一的 job）
 function renderChecker(checker) {
   const grid = $('checkerGrid');
   if (!grid || !checker) return;
   grid.innerHTML = liveJobCardHtml(checker, {
     title: `<div style="font-weight:600;font-size:13px;color:var(--ink2)">${escapeHtml(checker.label)}</div>`,
-    mono: 'dashboard/lib/jobs/runner-checker.js · 平台内置',
+    mono: 'platform/lib/jobs/runner-checker.js · 平台内置',
     hint: escapeHtml(checker.hint || ''),
   });
   bindLiveJobSwitches(grid, () => '/api/checker/{action}');
@@ -153,84 +108,6 @@ function bindLiveJobSwitches(rootEl, urlFor) {
   });
 }
 
-// ---- 新建 / 编辑派发器 modal（脚本内容直接在表单里写）----
-let dispModalMode = 'create';   // 'create' | 'edit'
-let dispModalId = null;
-async function openDispatcherModal(mode, id = null) {
-  dispModalMode = mode; dispModalId = id;
-  const types = stateData?.dispatcherTypes || {};
-  const sel = $('newDispType');
-  const err = $('newDispErr');
-  err.style.display = 'none';
-  if (mode === 'create') {
-    $('newDispTitle').textContent = '新建派发器';
-    $('newDispSubmit').textContent = '创建';
-    sel.disabled = false;
-    sel.innerHTML = Object.entries(types).map(([type, t]) => {
-      const gone = t.singleton && t.exists;
-      return `<option value="${type}" ${gone ? 'disabled' : ''}>${escapeHtml(t.label)}（${type}）${gone ? ' · 已存在' : ''}</option>`;
-    }).join('');
-    const firstFree = Object.entries(types).find(([, t]) => !(t.singleton && t.exists));
-    if (firstFree) sel.value = firstFree[0];
-    await syncDispatcherForm();
-  } else {
-    const d = (stateData?.dispatchers || []).find((x) => x.id === id);
-    if (!d) return;
-    $('newDispTitle').textContent = `编辑派发器 · ${d.label}`;
-    $('newDispSubmit').textContent = '保存';
-    sel.disabled = true;
-    sel.innerHTML = `<option value="${escapeAttr(d.type)}">${escapeHtml(types[d.type]?.label || d.type)}（${escapeHtml(d.type)}）</option>`;
-    $('newDispLabel').value = d.label;
-    $('newDispInterval').value = d.intervalSec;
-    $('newDispTypeHint').textContent = types[d.type]?.hint || '—';
-    $('newDispTaskName').textContent = `脚本：${d.scriptFile}`;
-    $('newDispScript').value = '加载脚本中…';
-    const r = await api(`/api/dispatcher/script?id=${encodeURIComponent(id)}`);
-    $('newDispScript').value = r.ok ? r.content : `// 读取失败：${r.error || '未知错误'}`;
-  }
-  $('newDispatcherModal').style.display = 'flex';
-}
-window.closeNewDispatcherModal = () => { $('newDispatcherModal').style.display = 'none'; };
-async function syncDispatcherForm() {
-  const type = $('newDispType').value;
-  const t = (stateData?.dispatcherTypes || {})[type];
-  if (!t) { $('newDispTypeHint').textContent = '—'; $('newDispTaskName').textContent = '—'; return; }
-  $('newDispTypeHint').textContent = t.hint;
-  $('newDispLabel').value = t.label;
-  $('newDispInterval').value = t.defaultIntervalSec;
-  $('newDispTaskName').textContent = `脚本将存为：runtime/dispatchers/${type}.mjs`;
-  $('newDispScript').value = '加载模板中…';
-  const r = await api(`/api/dispatcher/template?type=${encodeURIComponent(type)}`);
-  $('newDispScript').value = r.ok ? r.content : `// 模板读取失败：${r.error || '未知错误'}`;
-}
-$('newDispType').addEventListener('change', syncDispatcherForm);
-$('newDispatcherBtn').addEventListener('click', () => openDispatcherModal('create'));
-$('newDispSubmit').addEventListener('click', async () => {
-  const err = $('newDispErr');
-  err.style.display = 'none';
-  const btn = $('newDispSubmit');
-  const saving = dispModalMode === 'edit';
-  btn.disabled = true; btn.textContent = saving ? '保存中…' : '创建中…';
-  try {
-    const payload = {
-      label: $('newDispLabel').value,
-      intervalSec: Number($('newDispInterval').value),
-      script: $('newDispScript').value,
-    };
-    const url = saving
-      ? `/api/dispatcher/update?id=${encodeURIComponent(dispModalId)}`
-      : '/api/dispatcher/create';
-    if (!saving) payload.type = $('newDispType').value;
-    const r = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (!r.ok) { err.textContent = r.error || '失败'; err.style.display = 'block'; return; }
-    closeNewDispatcherModal();
-    await refreshState();
-  } catch (e) {
-    err.textContent = e.message; err.style.display = 'block';
-  } finally {
-    btn.disabled = false; btn.textContent = saving ? '保存' : '创建';
-  }
-});
 
 // ---- 面板 ② 任务生命周期 ----
 // 把毫秒时长格式化为「Xh Ym / Xm Ys / Xs」
@@ -374,40 +251,6 @@ $('archivedHeader').addEventListener('click', () => {
   const isOpen = list.style.display !== 'none';
   list.style.display = isOpen ? 'none' : 'flex';
   caret.textContent = isOpen ? '▸' : '▾';
-});
-
-// ---- 面板 ③ 运行日志 ----
-function renderLogs(payload) {
-  $('logsStats').textContent = `${payload.entries.length} 行 · 动作 ${payload.stats.action} · 异常 ${payload.stats.error} · 近 ${payload.stats.windowHours}h`;
-  const list = $('logsList');
-  const entries = logsFilter ? payload.entries.filter((e) => e.action) : payload.entries;
-  if (entries.length === 0) {
-    list.innerHTML = `<div style="color:var(--dim);padding:8px 0">无日志</div>`;
-    return;
-  }
-  const html = entries.map((e) => {
-    const color = e.kind === 'error' ? 'var(--coral)'
-                : e.kind === 'checker' ? 'var(--amber)'
-                : e.kind === 'spawn' ? 'var(--jade)'
-                : e.kind === 'quota' ? 'var(--coral)'
-                : e.kind === 'complete' ? 'var(--jade)'
-                : 'var(--ink2)';
-    const srcTag = e.source === 'chat' ? 'tag-cyan' : e.source === 'issue' ? 'tag-amber' : 'tag-mut';
-    return `
-      <div class="logrow">
-        <span style="color:var(--dim);font-size:10.5px;min-width:60px">${e.time}</span>
-        <span class="tag ${srcTag}" style="min-width:44px;text-align:center">${e.source}</span>
-        <span style="color:${color};flex:1;line-height:1.5;word-break:break-all">${escapeHtml(e.msg)}</span>
-      </div>
-    `;
-  }).join('');
-  list.innerHTML = html;
-}
-
-$('logsRefreshBtn').addEventListener('click', () => refreshLogs());
-$('logsActionOnly').addEventListener('change', (e) => {
-  logsFilter = e.target.checked;
-  if (stateData?.logsCache) renderLogs(stateData.logsCache);
 });
 
 // ---- 自定义 confirm 弹窗（替代原生 confirm，Promise-based）----
@@ -562,7 +405,7 @@ window.archiveTask = archiveTask;
 async function cancelTaskAction(taskKey) {
   const ok = await customConfirm({
     title: '中断任务',
-    message: `强杀 worker 进程、state 改为 <code>awaiting-human</code>（outcome=cancelled）。<br>已产生的副作用（commit / 发出的消息）<b>不会回滚</b>。<br>之后可在 detail 里继续对话恢复（<code>--resume</code>）、或直接归档清走。<br><b>该会话的自动派发会暂停</b>，归档 / 重新发起后恢复。<br><br>目标：<code>${escapeHtml(taskKey)}</code>`,
+    message: `强杀 worker 进程、state 改为 <code>awaiting-human</code>（outcome=cancelled）。<br>已产生的副作用（commit / 发出的消息）<b>不会回滚</b>。<br>之后可在 detail 里继续对话恢复（<code>--resume</code>）、或直接归档清走。<br><br>目标：<code>${escapeHtml(taskKey)}</code>`,
     confirmText: '中断任务',
     tone: 'danger',
   });
@@ -722,8 +565,8 @@ function renderModalBody(keepScroll = false) {
   body.scrollTop = keepScroll ? (wasAtBottom ? body.scrollHeight : prevScroll) : body.scrollHeight;
 }
 
-// ---- hash 路由：#/dispatcher · #/board · #/dashboard · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
-const ROUTE_VIEWS = ['dispatcher', 'board', 'archive', 'dashboard', 'settings', 'task'];
+// ---- hash 路由：#/board · #/archive · #/dashboard · #/settings · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
+const ROUTE_VIEWS = ['board', 'archive', 'dashboard', 'settings', 'task'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
@@ -732,8 +575,7 @@ function router() {
   if (mTask) {
     view = 'task';
     taskKey = decodeURIComponent(mTask[1]);
-  } else if (h.startsWith('#/dispatcher')) view = 'dispatcher';
-  else if (h.startsWith('#/archive')) view = 'archive';
+  } else if (h.startsWith('#/archive')) view = 'archive';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
   else if (h.startsWith('#/settings')) view = 'settings';
 
@@ -776,7 +618,7 @@ function updateReplyBoxAvailability(taskKey) {
   const hasSid = !!(t?.meta?.sessionId);
   const processing = t?.state === 'processing';
   const isCli = t?.source === 'cli';
-  // queued 场景 = quota 后回排队 / spawn 失败（manual 无派发器全靠人工拉起）；lease 存活 = worker 在起，不给重发
+  // queued 场景 = 新建入队 / 中断后回排队；由用户从看板拉起（重新发起）；lease 存活 = worker 在起，不给重发
   const canRestart = !hasSid && ['awaiting-human', 'queued'].includes(t?.state) && !t?.lease?.alive && !t?.isArchive;
   const canReply = hasSid && !processing && !isCli;
 
@@ -946,7 +788,7 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function escapeAttr(s) { return escapeHtml(s); }
-// 用户消息展示前剥掉钉钉链的指令前缀（cc: 是派发机制的触发词，任务视图里不出现这种用法）
+// 用户消息展示前剥掉钉钉链的指令前缀（cc: 是 dws 群聊的触发词，任务视图里不出现这种用法）
 function stripDirectivePrefix(s) { return String(s || '').replace(/^\s*cc[:：]\s*/i, ''); }
 
 // ---- 右侧信息栏：任务信息 kv / 描述 / 快捷操作（参考 detail-side）----
@@ -1433,22 +1275,15 @@ function renderUserTurn(m) {
 async function refreshState() {
   try {
     stateData = await api('/api/state');
-    renderDispatchers(stateData.dispatchers || []);
     renderChecker(stateData.checker);
     renderLifecycle(stateData.lifecycle);
     renderAuthBanner(stateData.authBlock);
-    // 同步暂停开关状态（避免与真实 config 脱节）
-    if (stateData.runnerConfig) {
-      const paused = !!stateData.runnerConfig.pauseInvestigation;
-      $('pauseSwitch').checked = paused;
-      updatePauseUI(paused);
-    }
   } catch (e) { console.error('state error:', e); }
 }
 
 // ---- dws 授权失效提示（authBlock 有值 → 显示；恢复正常 → 隐藏）----
 // 用户手动关闭 → 按 writtenAt 持久化到 localStorage：刷新后不再弹同一条；
-// 授权恢复（ab 为空，checker/派发已清 sentinel）→ 清记录，下次「新一条」失效仍会提示
+// 授权恢复（ab 为空，checker 复查已清 sentinel）→ 清记录，下次「新一条」失效仍会提示
 const AUTH_DISMISS_KEY = 'auth-dismissed-at';
 function renderAuthBanner(ab) {
   const banner = $('authBanner');
@@ -1479,15 +1314,6 @@ $('authBannerCopy').addEventListener('click', async () => {
     setTimeout(() => { btn.textContent = '复制'; }, 1500);
   }
 });
-async function refreshLogs() {
-  try {
-    const payload = await api('/api/logs?hours=8');
-    if (!stateData) stateData = {};
-    stateData.logsCache = payload;
-    renderLogs(payload);
-  } catch (e) { console.error('logs error:', e); }
-}
-
 $('autoRefreshSwitch').addEventListener('change', (e) => { autoRefresh = e.target.checked; });
 
 // ---- 新建任务 Modal ----
@@ -1572,21 +1398,16 @@ $('newTaskSubmit').addEventListener('click', async () => {
     const r = await api('/api/task/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, prompt, model, description, planFirst, cwd }),
+      body: JSON.stringify({ title, prompt, model, description, plan: planFirst, cwd }),
     });
     if (!r.ok) {
       errBox.textContent = r.error || '未知错误';
       errBox.style.display = 'block';
       return;
     }
-    if (!r.spawned && r.reason) {
-      warnBox.textContent = `任务已建（${r.taskKey}）但未 spawn：${r.reason}`;
-      warnBox.style.display = 'block';
-      setTimeout(() => { closeNewTaskModal(); refreshState(); }, 3000);
-    } else {
-      closeNewTaskModal();
-      await refreshState();
-    }
+    // 入队式：任务落 plan/queued 桶，不自动执行（在看板确认/重新发起触发运行）
+    closeNewTaskModal();
+    await refreshState();
   } catch (e) {
     errBox.textContent = e.message;
     errBox.style.display = 'block';
@@ -1717,29 +1538,6 @@ window.removeCliSession = async (sid) => {
   } catch (e) { customAlert({ title: '移除失败', message: escapeHtml(e.message) }); }
 };
 
-// 暂停派发 toggle
-$('pauseSwitch').addEventListener('change', async (e) => {
-  const paused = e.target.checked;
-  try {
-    await api(`/api/runner/${paused ? 'pause' : 'resume'}`, { method: 'POST' });
-    updatePauseUI(paused);
-    await refreshState();
-  } catch (err) {
-    customAlert({ title: '切换失败', message: escapeHtml(err.message) });
-    e.target.checked = !paused;   // 回滚
-  }
-});
-function updatePauseUI(paused) {
-  const label = $('pauseLabel');
-  if (paused) {
-    label.textContent = '派发已暂停';
-    label.style.color = 'var(--coral)';
-  } else {
-    label.textContent = '派发中';
-    label.style.color = 'var(--mut)';
-  }
-}
-
 // ---- 自定义 model 下拉：填选项 + 事件绑定（隐藏的 <select> 承担 value 存储）----
 // 继续对话框用「继承任务 model」开头（value=''）；新建任务框不需要继承项，直接列出可选 model
 const INHERIT_OPTION = { value: '', name: '继承任务 model', desc: '默认 · 不覆盖任务原本的 model', tier: 'mut', tierLabel: '默认' };
@@ -1858,10 +1656,6 @@ function scheduleStateRefresh() {
   if (stateTimer) clearInterval(stateTimer);
   stateTimer = setInterval(() => { if (autoRefresh && !modalOpen) refreshState(); }, REFRESH_STATE_MS);
 }
-function scheduleLogsRefresh() {
-  if (logsTimer) clearInterval(logsTimer);
-  logsTimer = setInterval(() => { if (autoRefresh && !modalOpen) refreshLogs(); }, REFRESH_LOGS_MS);
-}
 
 // ---- init ----
 initReplyModelSelector();
@@ -1879,6 +1673,4 @@ refreshState().then(() => {
   }
   router();   // 初始路由（含刷新时停留在任意 hash 页）
 });
-refreshLogs();
 scheduleStateRefresh();
-scheduleLogsRefresh();

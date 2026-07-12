@@ -13,11 +13,11 @@ const PWSH_CANDIDATES = [
 ];
 const PWSH_EXE = PWSH_CANDIDATES.find((p) => fs.existsSync(p)) || 'pwsh';
 
-// 生成 manual 任务的 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）
-function genManualSlug() {
+// 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
+function genSlug() {
   const d = new Date();
   const p = (n, w = 2) => String(n).padStart(w, '0');
-  const ts = `m${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   const rand = Math.floor(Math.random() * 900 + 100);
   return `${ts}-${rand}`;
 }
@@ -30,23 +30,6 @@ const ALLOWED_MODELS = new Set([
   'claude-haiku-4-5-20251001',
   'claude-fable-5',
 ]);
-
-// 检查全局并发上限（不算 pause——pause 时也允许 manual 建 queued 但不 spawn）
-// 判据走 lease.js 单份实现（此前本函数只看 pid 无 TTL，与展示判据打架：僵尸 worker 永久占并发位）
-function countAliveLeases() {
-  let count = 0;
-  let dirs = [];
-  try { dirs = fs.readdirSync(P.runnerRoot); } catch { return 0; }
-  for (const name of dirs) {
-    const leaseFile = path.join(P.runnerRoot, name, 'lease.json');
-    if (!fs.existsSync(leaseFile)) continue;
-    try {
-      const l = JSON.parse(fs.readFileSync(leaseFile, 'utf8'));
-      if (leaseAlive(l)) count++;
-    } catch { /* */ }
-  }
-  return count;
-}
 
 // 手动中断任务（标 awaiting-human + outcome=cancelled + kill worker pid；独立 cancelled 态 2026-07-10 废除，
 // "谁按的停止键"由 outcome 记录，state 统一走 awaiting-human → 归档即人工处理完毕的出口）
@@ -101,7 +84,7 @@ export function cancelTask({ taskKey }) {
           killedPid = pid;
         } catch (e) { /* pid 已死、跳过 */ }
       }
-      // 删 lease 避免 dispatcher 判据混乱
+      // 删 lease 避免存活判据混乱
       try { fs.unlinkSync(leaseFile); } catch { }
     }
   } catch (e) { /* lease 读失败、忽略 */ }
@@ -184,7 +167,7 @@ export function replyToTask({ taskKey, message, model }) {
 
 // 重新发起任务：把 awaiting-human/queued 归零回 queued，直接 spawn 对应 source 的 worker 脚本一次
 // 与 replyToTask 的区别：不走 meta.sessionId --resume（无 sessionId 场景专用）；
-// queued 场景 = quota 后回排队 / spawn 失败排队中（manual 无派发器，全靠这里人工拉起；
+// queued 场景 = 新建入队 / 中断后回排队（推送式无自动执行，全靠用户从看板拉起）；
 // state.pendingResumeSessionId 经 ...base spread 保留，worker 起来会自动 --resume 续）
 // approve=true：plan → queued 的用户确认动作（同样立即 spawn），history 记 user-approve
 export function restartTask({ taskKey, approve = false }) {
@@ -252,7 +235,7 @@ export function restartTask({ taskKey, approve = false }) {
     return { ok: false, error: `重置 state 失败: ${e.message}` };
   }
 
-  // ③ spawn 对应 worker（不等 dispatcher tick、直接立即起）
+  // ③ spawn 对应 worker（用户从看板触发，直接立即起）
   const spawnLog = path.join(P.tmpDir, 'manual-spawn.log');
   try {
     const errFd = fs.openSync(spawnLog, 'a');
@@ -293,9 +276,13 @@ export function taskCwds() {
   return [...seen];
 }
 
-// 创建 manual 任务 + 立即 spawn manual-worker（planFirst 时只存 plan 不 spawn）
-// cwd（可选）：claude 的工作目录，校验存在且是目录后写进 task.json.cwd，供 worker Set-Location
-export function createManualTask({ title, prompt, model, description, planFirst, cwd }) {
+// 新增任务（推送式）：任意来源调 API / CLI 把任务推进来 —— 只入队，不 spawn、不占 lease。
+// state 由任务信息决定：plan(需用户确认) / queued(可跑)；真正跑起来靠 run 侧（用户从看板触发 restart/approve）。
+// source（缺省 manual）：任意 [A-Za-z0-9_-] 标签，承载在 taskKey 前缀（<source>:<slug>），仅作展示/回复路由。
+// cwd（可选）：claude 工作目录，校验存在且是目录后写进 task.json.cwd。
+export function createTask({ source, title, prompt, model, description, plan, cwd }) {
+  const src = String(source || 'manual').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
   const t = String(title || '').trim();
   const p = String(prompt || '').trim();
   const m = String(model || readConfig().defaultModel || 'claude-opus-4-7').trim();
@@ -313,82 +300,38 @@ export function createManualTask({ title, prompt, model, description, planFirst,
     cwdFinal = path.resolve(cwdRaw);
   }
 
-  const cfg = readConfig();
-  const max = cfg.maxConcurrentRunners || 5;
-  const paused = !!cfg.pauseInvestigation;
-  const alive = countAliveLeases();
-
-  const slug = genManualSlug();
-  const taskKey = `manual:${slug}`;
-  const safeTaskKey = `manual__${slug}`;
+  const slug = genSlug();
+  const taskKey = `${src}:${slug}`;
+  const safeTaskKey = `${src}__${slug}`;   // 对齐 safeKey 约定：taskKey 的 ':' 折成 '__'
   const taskDir = path.join(P.runnerRoot, safeTaskKey);
   // 用本地时间（与 PowerShell 侧的 yyyy-MM-dd HH:mm:ss 对齐；避免 UTC 偏差）
   const now = new Date();
   const p2 = (n) => String(n).padStart(2, '0');
   const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
 
+  // state = plan(需确认) / queued(可跑)：由 plan 标志或 runner-config.planSources 含该 source 决定
+  const cfg = readConfig();
+  const planFirst = !!plan || (Array.isArray(cfg.planSources) && cfg.planSources.includes(src));
   const initState = planFirst ? 'plan' : 'queued';
+
   try {
     fs.mkdirSync(taskDir, { recursive: true });
     // task.json（description = 纯用户备注，不进 prompt）
     const taskJson = {
-      taskKey, source: 'manual', title: t, prompt: p, model: m,
+      taskKey, source: src, title: t, prompt: p, model: m,
       mode: 'single', metaMode: 'overwrite', createdAt: nowStr,
     };
     if (cwdFinal) taskJson.cwd = cwdFinal;
     if (desc) taskJson.description = desc;
     fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
-    // state.json = plan（先计划，用户确认后排队）或 queued
+    // state.json = plan（先计划，用户确认后排队）或 queued —— 入队即止，不占 lease、不 spawn
     fs.writeFileSync(path.join(taskDir, 'state.json'), JSON.stringify({
       state: initState, enteredAt: nowStr, outcome: null, resolvedAt: null,
       outcomeDetail: { quotaResetAt: null, failureReason: null, checkerExhausted: false },
-      history: [{ state: initState, at: nowStr, by: 'user-manual' }],
+      history: [{ state: initState, at: nowStr, by: `create:${src}` }],
     }, null, 2), 'utf8');
-    // lease.json 占位（pid=0，worker 起来自补）；plan 不 spawn、不占 lease
-    if (!planFirst) {
-      fs.writeFileSync(path.join(taskDir, 'lease.json'), JSON.stringify({
-        taskKey, claimedAt: nowStr, pid: 0, heartbeatAt: nowStr,
-      }), 'utf8');
-    }
   } catch (e) {
     return { ok: false, error: `建任务包失败: ${e.message}` };
   }
-
-  // plan：存为计划、等看板确认，不 spawn
-  if (planFirst) {
-    return { ok: true, taskKey, spawned: false, reason: '已存为计划（state=plan）；在看板确认排队后才会执行' };
-  }
-
-  // 判 pause / 上限：任一命中则不 spawn、任务留 queued
-  if (paused) {
-    return { ok: true, taskKey, spawned: false, reason: 'pauseInvestigation=true（当前派发已暂停、任务已建 queued 但未 spawn；恢复派发后会自动被下一 tick 处理）' };
-  }
-  if (alive >= max) {
-    return { ok: true, taskKey, spawned: false, reason: `全局 processing=${alive} ≥ 上限 ${max}（任务已建 queued 但未 spawn）` };
-  }
-
-  // spawn manual-worker（detached 隐藏窗口）
-  const spawnLog = path.join(P.tmpDir, 'manual-spawn.log');
-  try {
-    const errFd = fs.openSync(spawnLog, 'a');
-    fs.writeSync(errFd, `\n[${new Date().toISOString()}] spawn ${taskKey} via ${PWSH_EXE}\n`);
-    // 关键：Windows 下 detached:true + stdio ignore 会让 pwsh 立即退出（观察到 spawn 成功但 -File 未执行）
-    // 改用 detached:false + unref()：pwsh 独立跑但 Node 不 wait；进程仍长跑到 runner 结束
-    const psi = spawn(PWSH_EXE, [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-File', path.join(ROOT, 'scripts', 'manual-worker.ps1'),
-      '-TaskKey', taskKey,
-    ], {
-      cwd: ROOT,
-      detached: false,
-      stdio: ['ignore', errFd, errFd],
-      windowsHide: true,
-      shell: PWSH_EXE === 'pwsh',
-    });
-    psi.unref();
-    fs.closeSync(errFd);
-  } catch (e) {
-    return { ok: true, taskKey, spawned: false, reason: `spawn 失败: ${e.message}（任务已建 queued）` };
-  }
-  return { ok: true, taskKey, spawned: true };
+  return { ok: true, taskKey, state: initState, spawned: false };
 }

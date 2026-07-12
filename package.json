@@ -6,10 +6,12 @@
   "author": "zzusp <peng_zzu@163.com>",
   "type": "module",
   "main": "electron/main.js",
+  "bin": { "scrumws-task": "platform/cli.js" },
   "engines": { "node": ">=20.11" },
   "scripts": {
     "start": "electron .",
     "start:web": "node platform/standalone.js",
+    "task": "node platform/cli.js",
     "dist": "electron-builder --win"
   },
   "devDependencies": {

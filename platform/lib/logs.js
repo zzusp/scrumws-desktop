@@ -57,68 +57,6 @@ function findOrphanInflight(claimedAt, knownSids) {
   return candidates[0].sid;
 }
 
-// 一行日志格式：`[yyyy-MM-dd HH:mm:ss] message`
-const LINE_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s?(.*)$/s;
-
-function tail(file, bytes) {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const { size } = fs.fstatSync(fd);
-    const start = Math.max(0, size - bytes);
-    const buf = Buffer.alloc(size - start);
-    fs.readSync(fd, buf, 0, buf.length, start);
-    return { text: buf.toString('utf8'), truncated: start > 0 };
-  } finally { fs.closeSync(fd); }
-}
-
-function classify(msg, source) {
-  if (/ERROR|失败|崩溃|exception|出错/i.test(msg)) return { kind: 'error', label: '异常', action: true };
-  if (/认领\+spawn|spawn|回收陈旧租约|defer/.test(msg)) return { kind: 'spawn', label: '派发', action: true };
-  if (/额度受限|quota-block/.test(msg)) return { kind: 'quota', label: '额度', action: true };
-  if (/唤 (runner|claude)|round \d/.test(msg)) return { kind: 'worker', label: 'worker', action: true };
-  if (/verdict=/.test(msg)) return { kind: 'checker', label: 'checker', action: true };
-  if (/completed session=/.test(msg)) return { kind: 'complete', label: '完成', action: true };
-  if (/本轮巡检|quick check/.test(msg)) {
-    const idle = /无新 cc|无 .*新 cc|跳过/.test(msg);
-    return { kind: idle ? 'idle' : 'dispatch', label: '巡检', action: !idle };
-  }
-  if (/无孤儿任务/.test(msg)) return { kind: 'idle', label: 'checker', action: false };
-  return { kind: 'other', label: source, action: false };
-}
-
-// 合并 3 个 log（dispatch-chat / dispatch-issue / runner-checker），按时间序返回
-export function readLogs(hours = 8) {
-  const sources = [
-    { file: P.dispatchChatLog,  source: 'chat' },
-    { file: P.dispatchIssueLog, source: 'issue' },
-    { file: P.runnerCheckerLog, source: 'checker' },
-  ];
-  const cutoff = new Date(Date.now() - hours * 3600 * 1000);
-  const entries = [];
-  const stats = { total: 0, action: 0, error: 0, windowHours: hours };
-  for (const { file, source } of sources) {
-    if (!fs.existsSync(file)) continue;
-    const { text, truncated } = tail(file, 1024 * 1024);
-    let lines = text.split(/\r?\n/);
-    if (truncated && lines.length) lines = lines.slice(1);
-    for (const line of lines) {
-      const m = LINE_RE.exec(line);
-      if (!m) continue;
-      const at = m[1];
-      const d = parse(at);
-      if (!d || d < cutoff) continue;
-      const msg = (m[2] || '').trim();
-      const c = classify(msg, source);
-      stats.total++;
-      if (c.action) stats.action++;
-      if (c.kind === 'error') stats.error++;
-      entries.push({ at, atMs: d.getTime(), time: at.slice(11, 19), source, kind: c.kind, label: c.label, action: c.action, msg });
-    }
-  }
-  entries.sort((a, b) => b.atMs - a.atMs); // 新的在前
-  return { entries, stats, ok: true };
-}
-
 // 解析 CC 官方 session jsonl 为一问一答的 message pair 列表。
 // 保留结构化字段供前端展示 sessionId / usage / thinking / tool_use / tool_result。
 function parseCcSession(jsonlText) {

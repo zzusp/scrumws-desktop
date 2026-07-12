@@ -1,5 +1,5 @@
-// 平台守护 · 孤儿任务收纳器 —— scripts/runner-checker.ps1 的 Node 移植（2026-07-10 派发链 Node 化）
-// 平台内置 job（不进派发器注册表、不可表单编辑），由看板调度器每 intervalSec 秒 fork 一次。
+// 平台守护 · 孤儿任务收纳器 —— scripts/runner-checker.ps1 的 Node 移植
+// 平台内置 job（不可表单编辑），由看板进程内调度器每 intervalSec 秒 fork 一次（去派发器后是调度器唯一的 job）。
 // 流程（纯脚本层，不启 claude、不消耗 API 额度）：
 //   ① 共享 quota-block 在效 → 全轮跳过
 //   ② 扫 runner-state/ 找孤儿（lease 死 + resolvedAt=null + state 不在 awaiting-human/queued/plan 跳过名单）
@@ -12,8 +12,8 @@ export default async function tick(ctx) {
   const { P, join, log, out, dryRun, fmt } = ctx;
   const now = () => fmt(new Date());
 
-  // ---- ⓪ 授权熔断复查（平台兜底，与派发器/quota 无关）----
-  // 派发器全关时 dwsAuthGate 不再跑，auth-block 靠这里自愈：sentinel 存在且 dws 授权已恢复 → 清除。
+  // ---- ⓪ 授权熔断复查（平台兜底）----
+  // auth-block sentinel 由 scripts 侧 .ps1 worker 链写；平台侧靠这里自愈：sentinel 存在且 dws 授权已恢复 → 清除。
   try { await ctx.recheckAuthBlock(); } catch (e) { log(`授权复查出错：${e.message}`); }
 
   // ---- ① 共享 quota-block ----
@@ -39,7 +39,7 @@ export default async function tick(ctx) {
     if (!ctx.exists(stateFile)) continue;
     const s = ctx.readJson(stateFile);
     if (!s) continue;
-    // 跳过名单：awaiting-human 人工兜底中；queued 待派态归 dispatcher/人工；plan 待确认（从未 spawn）
+    // 跳过名单：awaiting-human 人工兜底中；queued 待运行（用户从看板触发）；plan 待确认（从未 spawn）
     if (['awaiting-human', 'queued', 'plan'].includes(String(s.state))) continue;
     if (s.resolvedAt) continue;
     orphans.push({ dir, taskKey: s.taskKey || null, stateFile, metaFile: join(dir, 'meta.json'), safeKey: name });

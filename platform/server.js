@@ -2,11 +2,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { collectState } from './lib/collect.js';
-import { readLogs, readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask } from './lib/logs.js';
-import { writeConfig, setPauseInvestigation } from './lib/runner-config.js';
-import { createManualTask, replyToTask, cancelTask, restartTask, taskCwds } from './lib/task-actions.js';
+import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask } from './lib/logs.js';
+import { writeConfig } from './lib/runner-config.js';
+import { createTask, replyToTask, cancelTask, restartTask, taskCwds } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
-import { createDispatcher, updateDispatcher, deleteDispatcher, findDispatcher, readScript, readTemplate, readRegistry } from './lib/dispatchers.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
 
@@ -43,15 +42,6 @@ function sendJson(res, code, obj) {
   res.end(body);
 }
 
-// 读 JSON body（新端点用；老端点保留各自 inline 写法）
-function readBody(req, limit = 16 * 1024) {
-  return new Promise((resolve) => {
-    let body = '';
-    req.on('data', (c) => { body += c; if (body.length > limit) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(body || '{}')); } catch { resolve(null); } });
-  });
-}
-
 function serveStatic(req, res) {
   let rel = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (rel === '/') rel = '/index.html';
@@ -68,63 +58,10 @@ const server = http.createServer(async (req, res) => {
   const { pathname, searchParams } = new URL(req.url, 'http://x');
   try {
     if (pathname === '/api/state') return sendJson(res, 200, await collectState());
-    if (pathname === '/api/logs') {
-      const hours = Number(searchParams.get('hours')) || 8;
-      return sendJson(res, 200, readLogs(hours));
-    }
     if (pathname === '/api/worker-log') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
       return sendJson(res, 200, readWorkerLog(taskKey));
-    }
-    // ---- 派发器平台 v2（2026-07-10 派发链 Node 化：进程内调度 + 表单脚本）----
-    // 新建：body {type, label?, intervalSec?, script?}（id=type 单例；script 缺省用场景模板）
-    if (req.method === 'POST' && pathname === '/api/dispatcher/create') {
-      const payload = await readBody(req, 512 * 1024);
-      if (!payload) return sendJson(res, 400, { ok: false, error: 'invalid json' });
-      const r = await createDispatcher(payload);
-      if (r.ok) scheduler.reload();
-      return sendJson(res, r.ok ? 200 : 400, r);
-    }
-    // 更新：body {label?, intervalSec?, script?}
-    if (req.method === 'POST' && pathname === '/api/dispatcher/update') {
-      const id = searchParams.get('id');
-      if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
-      const payload = await readBody(req, 512 * 1024);
-      if (!payload) return sendJson(res, 400, { ok: false, error: 'invalid json' });
-      const r = await updateDispatcher(id, payload);
-      if (r.ok) scheduler.reload();
-      return sendJson(res, r.ok ? 200 : 400, r);
-    }
-    // 删除：注册表条目移除 + 脚本文件保底改名
-    if (req.method === 'POST' && pathname === '/api/dispatcher/delete') {
-      const id = searchParams.get('id');
-      if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
-      const r = deleteDispatcher(id);
-      if (r.ok) scheduler.reload();
-      return sendJson(res, r.ok ? 200 : 400, r);
-    }
-    // 读脚本内容（编辑表单）/ 读场景模板（新建表单预填）
-    if (pathname === '/api/dispatcher/script') {
-      const id = searchParams.get('id');
-      const content = id ? readScript(id) : null;
-      if (content == null) return sendJson(res, 404, { ok: false, error: `脚本不存在：${id}` });
-      return sendJson(res, 200, { ok: true, content });
-    }
-    if (pathname === '/api/dispatcher/template') {
-      const type = searchParams.get('type');
-      const content = type ? readTemplate(type) : null;
-      if (content == null) return sendJson(res, 404, { ok: false, error: `未知场景来源：${type}` });
-      return sendJson(res, 200, { ok: true, content });
-    }
-    // 派发器启停 = 注册表 enabled 开关 + 调度器 reload
-    const dispMatch = pathname.match(/^\/api\/dispatcher\/(start|stop)$/);
-    if (req.method === 'POST' && dispMatch) {
-      const id = searchParams.get('id');
-      if (!id || !findDispatcher(id)) return sendJson(res, 400, { ok: false, error: `unknown dispatcher: ${id}` });
-      const r = await updateDispatcher(id, { enabled: dispMatch[1] === 'start' });
-      if (r.ok) scheduler.reload();
-      return sendJson(res, r.ok ? 200 : 400, r);
     }
     // 平台守护 Runner Checker 启停（数据看板页；runner-config.json.checkerEnabled）
     const checkerMatch = pathname.match(/^\/api\/checker\/(start|stop)$/);
@@ -133,27 +70,12 @@ const server = http.createServer(async (req, res) => {
       scheduler.reload();
       return sendJson(res, 200, { ok: true, checkerEnabled: checkerMatch[1] === 'start' });
     }
-    // 全体启停（向后兼容）＝注册表全体 + checker
-    if (req.method === 'POST' && (pathname === '/api/twin/start' || pathname === '/api/twin/stop')) {
-      const on = pathname.endsWith('/start');
-      for (const d of readRegistry().dispatchers) await updateDispatcher(d.id, { enabled: on });
-      writeConfig({ checkerEnabled: on });
-      scheduler.reload();
-      return sendJson(res, 200, { ok: true, enabled: on });
-    }
     // 归档 done 任务
     if (req.method === 'POST' && pathname === '/api/archive') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
       const r = archiveTask(taskKey);
       return sendJson(res, r.ok ? 200 : 400, r);
-    }
-    // 全局暂停 / 恢复派发（写 runner-config.json.pauseInvestigation）
-    if (req.method === 'POST' && pathname === '/api/runner/pause') {
-      return sendJson(res, 200, setPauseInvestigation(true));
-    }
-    if (req.method === 'POST' && pathname === '/api/runner/resume') {
-      return sendJson(res, 200, setPauseInvestigation(false));
     }
     // 已知工作目录列表（新建任务「选已有目录」下拉）：现有任务 cwd + 近 30 天 CLI session cwd，去重
     if (pathname === '/api/task/cwds') {
@@ -179,14 +101,15 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: false, error: `目录选择失败：${e.message}` });
       }
     }
-    // 手动新建 manual 任务：body = {title, prompt, model, description, planFirst, cwd}
+    // 新增任务（推送式，任意来源）：body = {source?, title, prompt, model?, description?, plan?, cwd?}
+    // 只入队（state=plan/queued），不 spawn；看板新建按钮与外部 CLI/API 共用此端点
     if (req.method === 'POST' && pathname === '/api/task/create') {
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 32 * 1024) req.destroy(); });
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const r = createManualTask(payload || {});
+        const r = createTask(payload || {});
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;

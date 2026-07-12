@@ -1,11 +1,11 @@
 import { pathToFileURL } from 'node:url';
 import { buildCtx } from './ctx.js';
 
-// 派发 job 子进程入口：调度器每 tick fork 一个本进程（隔离——脚本写崩不拖死看板）。
+// job 子进程入口：调度器每 tick fork 一个本进程（隔离——脚本写崩不拖死看板）。
 //   node run-job.js <scriptPath> <jobId> <logFile> [--dry-run]
 // 脚本契约：export default async function tick(ctx)。exit 0=本轮正常收敛，非 0=异常（调度器记 lastOutcome=error）。
 // 也可手动跑（DryRun 决策对比 / 排障）：
-//   node dashboard/lib/jobs/run-job.js runtime/dispatchers/chat-watch.mjs chat-watch runtime/dispatch-chat.log --dry-run
+//   node platform/lib/jobs/run-job.js platform/lib/jobs/runner-checker.js runner-checker runtime/runner-checker.log --dry-run
 
 // Electron 宿主 fork 本进程时置了 ELECTRON_RUN_AS_NODE；入口即清除，防经 pwsh 扩散到 worker/claude 后代
 delete process.env.ELECTRON_RUN_AS_NODE;
