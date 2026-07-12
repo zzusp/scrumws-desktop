@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { collectState } from './lib/collect.js';
-import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt } from './lib/logs.js';
+import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, restartTask, taskCwds } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
@@ -246,9 +246,7 @@ const server = http.createServer(async (req, res) => {
         const hist = readCcSessionForAdopt(sessionId);
         if (!hist.ok) return sendJson(res, 400, hist);
         // 历史消息 → Mode B 事件形状（content block 已带 _ts）
-        const seed = hist.messages.map((m) => m.role === 'assistant'
-          ? { type: 'assistant', message: { id: m.messageId || null, content: m.content || [], usage: m.usage || null, model: m.model || null } }
-          : { type: 'user', message: { content: m.content || [] } });
+        const seed = ccMessagesToModeBSeed(hist.messages);
         const r = createSession({ cwd: hist.cwd, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null });
         sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
       });

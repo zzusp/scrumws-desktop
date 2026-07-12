@@ -215,6 +215,14 @@ export function readCcSessionForAdopt(sessionId) {
   };
 }
 
+// CC 历史消息 → Mode B 事件形状（seedTranscript 用）：assistant 带 id/usage/model，user 只需 content。
+// 复用点：session/adopt（收养终端会话）与 task reply 的 --resume 重挂都要回放历史，避免两处 map 走样。
+export function ccMessagesToModeBSeed(messages) {
+  return (messages || []).map((m) => m.role === 'assistant'
+    ? { type: 'assistant', message: { id: m.messageId || null, content: m.content || [], usage: m.usage || null, model: m.model || null } }
+    : { type: 'user', message: { content: m.content || [] } });
+}
+
 // 独立入口：从 sessionId 对应的 CC jsonl 提取真人 cc:（供 collect.js 每任务展示卡片用）
 export function extractHumanCcFromSession(ccProjectDir, sessionId) {
   if (!sessionId || !/^[a-f0-9-]{36}$/.test(String(sessionId))) return [];

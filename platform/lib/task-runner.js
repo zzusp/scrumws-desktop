@@ -8,6 +8,7 @@ import path from 'node:path';
 import { P } from './paths.js';
 import { fmt } from './timeutil.js';
 import { createSession, sendUserMessage, getSession, closeSession, getSessionIdByTaskKey } from './session-manager.js';
+import { readCcSessionForAdopt, ccMessagesToModeBSeed } from './logs.js';
 
 // taskKey → 内存会话 id（reply 复用 / 详情接 live SSE / 判活）
 const registry = new Map();
@@ -154,7 +155,12 @@ export function replyTask(taskKey, message, model) {
   const state = readJson(path.join(dir, 'state.json'));
   const sid = meta?.sessionId || state?.outcomeDetail?.resumeSessionId || null;
   if (!sid) return { ok: false, error: '无 sessionId 可 --resume（会话从未成功起过，请重新发起）' };
-  const r = createSession({ taskKey, cwd: task?.cwd || undefined, model: model || task?.model || undefined, effort: task?.effort || undefined, resume: sid, prompt: msg, bypass: true });
+  // 会话进程已死（用户取消 / 服务重启）→ --resume 重挂。喂回历史 transcript + 这条 reply 回显作 seed，
+  // 否则详情连上 live 会话时 transcript 只有新一轮、历史全丢（与 adopt 同款 seed 机制）。
+  const hist = readCcSessionForAdopt(sid);
+  const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
+  seed.push({ type: 'user', message: { content: msg } });
+  const r = createSession({ taskKey, cwd: task?.cwd || undefined, model: model || task?.model || undefined, effort: task?.effort || undefined, resume: sid, prompt: msg, seedTranscript: seed, bypass: true });
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);

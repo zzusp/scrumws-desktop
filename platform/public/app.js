@@ -917,8 +917,11 @@ async function sendReply(taskKey) {
     if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
     text.value = '';
     updateReplyCount(0);
-    showReplyToast('已提交、runner 在处理中… 10s 后自动刷新 detail', 'ok');
-    setTimeout(async () => { await refreshState(); loadTaskDetail(taskKey); }, 10000);
+    // reply 走 --resume 重挂了一个绑定该任务的 Mode B 会话（后端已 seed 历史 + 这条回复）。
+    // 立即刷 state 让 mbSessionId 现身、重载详情进 live（连 SSE 回放 seed → 历史 + 这条继续即时可见），
+    // 不再死等 10s（旧 setTimeout 期间消息不显示 + 页面冻在旧只读历史，体验差）。
+    await refreshState();
+    if (modalOpen && modalPollTaskKey === taskKey) loadTaskDetail(taskKey);
   } catch (e) {
     showReplyToast(e.message, 'err');
   } finally {
