@@ -4,10 +4,10 @@ import { P } from './paths.js';
 import { fmt, parse, ago } from './timeutil.js';
 import { CHECKER, checkerEnabled, checkerIntervalSec } from './jobs/checker-meta.js';
 import * as scheduler from './scheduler.js';
-import { extractHumanCcFromSession } from './logs.js';
 import { readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
 import { collectCliSessions } from './collect-cli.js';
+import { getTaskSessionId } from './task-runner.js';
 
 // ---------- 通用小工具 ----------
 function pidAlive(pid) {
@@ -43,18 +43,11 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
   // 无 state 就跳（还没跑过的空目录）——除非有 lease（刚 spawn 未写 state）
   if (!state && !lease) return null;
 
-  // taskKey：state 里可能没有、从 task.json 或 safeKey 逆推
+  // taskKey：state 里可能没有、从 task.json 或 safeKey 逆推（<source>__<slug> → <source>:<slug>）
   let taskKey = task?.taskKey || null;
-  if (!taskKey) {
-    if (safeTaskKey.startsWith('chat__')) taskKey = 'chat:' + safeTaskKey.slice(6);
-    else if (safeTaskKey.startsWith('issue__')) {
-      const m = /^issue__(.+)_(\d+)$/.exec(safeTaskKey);
-      if (m) taskKey = `issue:${m[1]}#${m[2]}`;
-    }
-    if (!taskKey) taskKey = safeTaskKey;
-  }
+  if (!taskKey) taskKey = safeTaskKey.includes('__') ? safeTaskKey.replace('__', ':') : safeTaskKey;
 
-  const source = task?.source || (taskKey.startsWith('chat:') ? 'chat' : taskKey.startsWith('issue:') ? 'issue' : 'unknown');
+  const source = task?.source || (taskKey.includes(':') ? taskKey.split(':')[0] : 'unknown');
   const kind = task?.kind || null;
 
   // lease 信息
@@ -81,17 +74,11 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
     ? Math.max(0, (parse(endAt)?.getTime() ?? 0) - (parse(startAt)?.getTime() ?? 0))
     : null;
 
-  // 真人 cc:（chat 侧从 CC jsonl 提取）。固定用第一轮 sessionId——标题取"第一条 cc:"，
-  // 若跟着 meta.sessionId（最新一轮）走，drain 轮进 / resume 时 sessionId 变化会让标题跳变
-  let humanCc = [];
-  const firstSid = (Array.isArray(meta?.sessionHistory) && meta.sessionHistory[0]?.sessionId) || meta?.sessionId || null;
-  if (firstSid && source === 'chat') {
-    humanCc = extractHumanCcFromSession(P.ccProjectDir, firstSid);
-  }
+  // chat 侧真人 cc: 提取已随分身链移除；交互任务标题走 task.title（字段保留 [] 供前端 schema 兼容）
+  const humanCc = [];
 
-  // 标题优先级：用户 customTitle（rename 写入）> 第一条真人 cc:（去掉 cc: 前缀）> issue title > taskKey
-  const firstCc = humanCc[0]?.text?.trim().replace(/^\s*cc[:：]\s*/i, '').split(/\r?\n/)[0] || null;
-  const title = task?.customTitle || firstCc || task?.title || taskKey;
+  // 标题优先级：用户 customTitle（rename 写入）> task.title > taskKey
+  const title = task?.customTitle || task?.title || taskKey;
 
   return {
     taskKey,
@@ -111,6 +98,8 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
     durationMs,
     lease: leaseInfo,
     humanCc,
+    // 内存中活跃 Mode B 会话 id（有则详情页接 /api/session/stream 实时渲染；无=会话已收敛/未起）
+    mbSessionId: getTaskSessionId(taskKey),
     // meta 关键字段
     meta: meta ? {
       sessionId: meta.sessionId || null,
@@ -223,24 +212,6 @@ export async function collectState() {
   const buckets = collectAll(now);
   const cfg = readConfig();
 
-  // dws 授权熔断 sentinel（由 scripts/lib/dws-auth.ps1 落盘 / 恢复时清除）
-  let authBlock = null;
-  if (fs.existsSync(P.authBlk)) {
-    const j = readJson(P.authBlk);
-    if (j) {
-      authBlock = {
-        writtenAt: j.writtenAt || null,
-        reason: j.reason || 'dws 授权失效',
-        authenticated: !!j.authenticated,
-        tokenValid: !!j.tokenValid,
-        refreshTokenValid: !!j.refreshTokenValid,
-        expiresAt: j.expiresAt || null,
-        hint: j.hint || '在本机跑一次：dws auth login',
-        source: j.source || null,
-      };
-    }
-  }
-
   return {
     now: fmt(now),
     scheduler: { mode: sched.mode, lockPid: sched.lockPid },
@@ -254,9 +225,7 @@ export async function collectState() {
       archived: buckets.archived,
     },
     runnerConfig: {
-      pauseInvestigation: !!cfg.pauseInvestigation,
       maxConcurrentRunners: cfg.maxConcurrentRunners ?? 5,
     },
-    authBlock,
   };
 }

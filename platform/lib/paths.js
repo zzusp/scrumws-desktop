@@ -15,9 +15,6 @@ export const P = {
   runnerRoot:        path.join(ROOT, 'runtime', 'runner-state'),
   archiveRoot:       path.join(ROOT, 'runtime', 'runner-archive'),
   runnerCheckerLog:  path.join(ROOT, 'runtime', 'runner-checker.log'),
-  // quota-block / auth-block sentinel 仍由 scripts 侧 .ps1 worker 链写在 runtime/dispatch-chat/ 下，checker 读侧复用
-  quotaBlk:          path.join(ROOT, 'runtime', 'dispatch-chat', 'quota-block'),
-  authBlk:           path.join(ROOT, 'runtime', 'dispatch-chat', 'auth-block'),
   // CC 官方 session jsonl 目录（worker-log 端点从这里读）
   ccProjectDir:      path.join(os.homedir(), '.claude', 'projects', ccProjectName),
 };

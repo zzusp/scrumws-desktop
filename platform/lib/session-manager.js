@@ -23,8 +23,9 @@ const sessions = new Map();    // id → Session
 function nowStr() { return new Date().toISOString(); }
 
 class Session {
-  constructor({ id, cwd, model, effort }) {
+  constructor({ id, cwd, model, effort, taskKey }) {
     this.id = id;                    // 看板内部句柄
+    this.taskKey = taskKey || null;  // 绑定的文件任务 key（task-runner 起的会话有值；CLI 收养会话为 null）
     this.claudeSessionId = null;     // CC 侧 session_id（system/init 里拿，用于 --resume / 关联磁盘 jsonl）
     this.cwd = cwd || null;
     this.model = model || null;
@@ -52,7 +53,7 @@ class Session {
 
   info() {
     return {
-      id: this.id, claudeSessionId: this.claudeSessionId, cwd: this.cwd, model: this.model, effort: this.effort,
+      id: this.id, taskKey: this.taskKey, claudeSessionId: this.claudeSessionId, cwd: this.cwd, model: this.model, effort: this.effort,
       state: this.state, createdAt: this.createdAt, transcriptLen: this.transcript.length,
       truncated: this.truncated, pendingPermissions: this.pendingPermissions.size, lastError: this.lastError,
     };
@@ -119,7 +120,7 @@ function writeStdin(s, obj) {
 
 // ---- 对外 API ----
 
-export function createSession({ cwd, model, effort, resume, prompt, seedTranscript } = {}) {
+export function createSession({ cwd, model, effort, resume, prompt, seedTranscript, taskKey } = {}) {
   if (cwd) {
     try { if (!fs.statSync(cwd).isDirectory()) return { ok: false, error: `cwd 不是目录：${cwd}` }; }
     catch { return { ok: false, error: `cwd 不存在：${cwd}` }; }
@@ -137,7 +138,7 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
   delete env.ELECTRON_RUN_AS_NODE;   // 防经宿主扩散到 claude 后代（README 宿主适配点 1）
 
   const id = randomUUID();
-  const s = new Session({ id, cwd, model, effort });
+  const s = new Session({ id, cwd, model, effort, taskKey });
   // S10 收养：预置历史 transcript（终端会话的既往对话）→ SSE 连上即回放，续接体验连续
   if (Array.isArray(seedTranscript) && seedTranscript.length) {
     s.transcript = seedTranscript.slice(-TRANSCRIPT_CAP);
