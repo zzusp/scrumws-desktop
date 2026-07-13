@@ -1802,9 +1802,30 @@ async function doCliSearch() {
 $('addCliSearchBtn').addEventListener('click', doCliSearch);
 $('addCliSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doCliSearch(); } });
 
+// 命中片段高亮：逐段转义后把关键词包 <mark>（大小写不敏感），复用会话内高亮的视觉风格
+function highlightKeywords(text, keywords) {
+  const kws = (keywords || []).filter(Boolean);
+  if (!kws.length) return escapeHtml(text);
+  const re = new RegExp('(' + kws.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
+  let out = '';
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    out += escapeHtml(text.slice(last, m.index))
+      + `<mark style="background:color-mix(in oklab, var(--success) 25%, transparent);color:var(--ink);padding:0 2px;border-radius:3px">${escapeHtml(m[0])}</mark>`;
+    last = m.index + m[0].length;
+    if (m.index === re.lastIndex) re.lastIndex++;   // 防零宽匹配死循环
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
 function renderCliCandidateRow(c) {
   const short = c.sid.slice(0, 8);
   const msg = c.firstUserMsg ? escapeHtml(c.firstUserMsg) : '<span style="color:var(--dim);font-style:italic">（无真人 user message · 可能是 subagent 会话）</span>';
+  // 关键字搜索命中片段：单独一行展示命中词 + 前后上下文，高亮命中词（sid 前缀搜索 / 无命中文本时不展示）
+  const matchLine = c.matchSnippet
+    ? `<div style="font-size:11.5px;color:var(--mut);line-height:1.6;background:var(--card2);border-radius:6px;padding:5px 9px;word-break:break-word"><span style="color:var(--dim);font-size:10px;font-family:var(--mono);margin-right:7px">匹配</span>${highlightKeywords(c.matchSnippet, c.matchKeywords)}</div>`
+    : '';
   const btn = c.alreadyAdded
     ? '<span class="tag tag-jade" style="margin-left:auto;flex:none">已在看板</span>'
     : `<button class="btn btn-primary" style="font-size:11px;padding:5px 12px;margin-left:auto;flex:none" onclick="addCliFromSearch('${escapeAttr(c.sid)}')">+ 添加</button>`;
@@ -1816,6 +1837,7 @@ function renderCliCandidateRow(c) {
         <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-left:auto">${c.mtime} · ${c.sizeMb} MB</span>
       </div>
       <div style="font-size:12.5px;color:var(--ink2);line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(c.firstUserMsg || '')}">${msg}</div>
+      ${matchLine}
       <div style="display:flex;align-items:center;gap:8px">
         <span style="font-size:10.5px;color:var(--dim);font-family:var(--mono)">git: ${escapeHtml(c.gitBranch || '—')}</span>
         ${btn}

@@ -82,6 +82,55 @@ function jsonlMatchesKeywords(jsonlPath, keywords) {
   } catch { return false; }
 }
 
+// 命中词前后取一小段上下文（earliest 命中居中，附省略号），供搜索结果展示「为什么命中」
+function windowAround(text, keywords, before, after) {
+  const lower = text.toLowerCase();
+  let hit = -1;
+  let hitLen = 0;
+  for (const kw of keywords) {
+    const i = lower.indexOf(kw);
+    if (i >= 0 && (hit < 0 || i < hit)) { hit = i; hitLen = kw.length; }
+  }
+  if (hit < 0) return null;
+  const start = Math.max(0, hit - before);
+  const end = Math.min(text.length, hit + hitLen + after);
+  return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+}
+
+// 关键字命中片段：与过滤同一语料（head 32KB），保证每个命中行都能给出上下文。
+// 两级取值：① 优先从可读对话正文（user/assistant 文本，跳过命令/系统注入）取——命中在对话里给干净片段；
+//          ② 回退从原始 head 文本取并清洗 JSON 转义——命中落在工具结果/元数据时也能展示上下文。
+function extractMatchSnippet(jsonlPath, keywords, { bytes = 32768, before = 50, after = 90 } = {}) {
+  let raw = '';
+  const parts = [];
+  try {
+    const fd = fs.openSync(jsonlPath, 'r');
+    try {
+      const { size } = fs.fstatSync(fd);
+      const buf = Buffer.alloc(Math.min(bytes, size));
+      fs.readSync(fd, buf, 0, buf.length, 0);
+      raw = buf.toString('utf8');
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        let e;
+        try { e = JSON.parse(line); } catch { continue; }
+        if ((e.type !== 'user' && e.type !== 'assistant') || e.isMeta) continue;
+        const c = typeof e.message?.content === 'string' ? e.message.content
+                : Array.isArray(e.message?.content) ? e.message.content.map((x) => x?.text || '').join(' ')
+                : '';
+        const s = c.replace(/\s+/g, ' ').trim();
+        if (s && !/^<local-command-|^<command-name>|^<system-reminder>|^<user-prompt-submit-hook>/.test(s)) parts.push(s);
+      }
+    } finally { fs.closeSync(fd); }
+  } catch { return null; }
+  // ① 可读对话正文
+  const pretty = windowAround(parts.join('  ·  '), keywords, before, after);
+  if (pretty) return pretty;
+  // ② 回退：原始 head 清洗后取窗口（消掉 JSON 转义与多余空白）
+  const cleaned = raw.replace(/\\u[0-9a-fA-F]{4}/g, ' ').replace(/\\[nrt"\\/]/g, ' ').replace(/\s+/g, ' ').trim();
+  return windowAround(cleaned, keywords, before, after);
+}
+
 const HEX_RE = /^[a-f0-9-]{6,}$/i;
 
 // POST /api/cli/search
@@ -93,12 +142,14 @@ export function searchCliSessions({ q, limit = 20 } = {}) {
   if (!query) return { ok: false, error: 'q required' };
   const addedSet = new Set(Object.keys(watchlist.readWatchlist().sessions));
   const items = listAllJsonl({ maxAgeDays: 30 });
+  const isHex = HEX_RE.test(query);
+  let keywords = [];
   let candidates;
-  if (HEX_RE.test(query)) {
+  if (isHex) {
     const qLower = query.toLowerCase();
     candidates = items.filter((it) => it.sid.toLowerCase().startsWith(qLower) || it.sid.toLowerCase().includes(qLower));
   } else {
-    const keywords = query.toLowerCase().split(/\s+/).filter(Boolean);
+    keywords = query.toLowerCase().split(/\s+/).filter(Boolean);
     candidates = items.filter((it) => jsonlMatchesKeywords(it.jsonlPath, keywords));
   }
   candidates = candidates.slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
@@ -110,6 +161,9 @@ export function searchCliSessions({ q, limit = 20 } = {}) {
       cwd: head.cwd,
       gitBranch: head.gitBranch,
       firstUserMsg: head.firstUserMsg,
+      // 关键字搜索时给出命中上下文片段 + 命中词，供前端高亮展示（sid 前缀搜索无此需求）
+      matchSnippet: isHex ? null : extractMatchSnippet(it.jsonlPath, keywords),
+      matchKeywords: isHex ? null : keywords,
       mtime: fmt(new Date(it.mtimeMs)),
       sizeMb: +(it.size / 1024 / 1024).toFixed(3),
       jsonlPath: it.jsonlPath,
