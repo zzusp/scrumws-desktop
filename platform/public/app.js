@@ -1042,7 +1042,6 @@ function renderTaskSide(taskKey) {
   if (!t) { el.innerHTML = ''; return; }
   const rounds = (r?.rounds || []).filter((x) => !x.error);
   const meta = t.meta || {};
-  const usage = meta.usage || {};
   const lastOk = rounds[rounds.length - 1] || null;
   const isCli = t.source === 'cli';
   const model = isCli ? (t.meta?.model || '—') : (lastOk?.ccSummary?.model || lastOk?.systemInit?.model || '—');
@@ -1118,19 +1117,24 @@ function renderTaskSide(taskKey) {
         </div>
       </div>`;
   }).join('');
-  // CLI 独有字段块（cwd / gitBranch / version / mode / pendingBg / jsonl 大小）
-  const cliBlock = isCli ? `
-      ${kv('cwd', escapeHtml(t.cli?.cwd || '—'))}
-      ${kv('git', escapeHtml(t.cli?.gitBranch || '—'))}
-      ${(t.cli?.mode && t.cli.mode !== 'normal') ? kv('权限模式', escapeHtml(t.cli.mode)) : ''}
-      ${kv('后台 agent', t.cli?.pendingBackgroundAgentCount || 0)}
-      ${kv('jsonl 大小', t.cli?.jsonlBytes ? (t.cli.jsonlBytes / 1024 / 1024).toFixed(2) + ' MB' : '—')}
-  ` : '';
-  const sideTitle = t.title || t.taskKey;
-  const canRename = !isCli && !t.isArchive;   // 重命名走 /api/task/rename（改 task.json），仅分身非归档任务
-  // 运行时工作目录（分身：最新一轮 systemInit.cwd；CLI 的 cwd 已在 cliBlock）——原详情页 header 的 modalCwd 迁到此
+  // 统一字段值：所有任务(CLI/分身)的「任务信息」按 CLI 字段集展示——共有字段各取自己的值；
+  // CLI 独有(git/后台agent/jsonl大小)分身无数据显 —；分身独有(轮次/成本/tokens/缓存读)按决策不展示。
+  // 分身工作目录取运行时最新一轮 systemInit.cwd（原详情页 header 的 modalCwd 迁到此）。
   const rtCwds = isCli ? [] : [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
   const rtCwd = rtCwds[rtCwds.length - 1] || null;
+  const cwdVal = isCli ? (t.cli?.cwd || '—') : (rtCwd || '—');
+  const gitVal = isCli ? (t.cli?.gitBranch || '—') : '—';
+  const permMode = (isCli && t.cli?.mode && t.cli.mode !== 'normal') ? t.cli.mode : null;   // 仅 CLI 非 normal 权限模式才显
+  const bgAgent = isCli ? (t.cli?.pendingBackgroundAgentCount || 0) : '—';
+  const jsonlVal = isCli
+    ? (t.cli?.jsonlBytes ? (t.cli.jsonlBytes / 1024 / 1024).toFixed(2) + ' MB' : '—')
+    : '—';
+  // 最近活动：CLI = 心跳；分身 = 心跳(存活时) → 末轮时间 → 结束时间兜底（等价语义，避免收敛后恒显 —）
+  const lastActive = isCli
+    ? (t.lease?.heartbeatAt || '—')
+    : (t.lease?.heartbeatAt || meta.lastRoundAt || t.resolvedAt || '—');
+  const sideTitle = t.title || t.taskKey;
+  const canRename = !isCli && !t.isArchive;   // 重命名走 /api/task/rename（改 task.json），仅分身非归档任务
   el.innerHTML = `
     <div class="side-block">
       <h3>任务信息</h3>
@@ -1142,16 +1146,15 @@ function renderTaskSide(taskKey) {
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0">${tags}</div>
       ${kv('taskKey', escapeHtml(t.taskKey))}
       ${kv('来源', escapeHtml(srcTxt))}
-      ${cliBlock}
-      ${!isCli && rtCwd ? kv('工作目录', escapeHtml(rtCwd)) : ''}
+      ${kv('cwd', escapeHtml(cwdVal))}
+      ${kv('git', escapeHtml(gitVal))}
+      ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
       ${kv('模型', escapeHtml(model))}
-      ${isCli ? '' : kv('轮次', meta.rounds || rounds.length || 0)}
       ${kv('turns', fmtNum(meta.numTurns))}
-      ${isCli ? '' : kv('成本', meta.totalCostUsd ? '$' + (+meta.totalCostUsd).toFixed(4) : '—')}
-      ${isCli ? '' : kv('tokens', `${fmtNum(usage.inputTokens ?? 0)} / ${fmtNum(usage.outputTokens ?? 0)}`)}
-      ${isCli ? '' : kv('缓存读', fmtNum(usage.cacheReadTokens ?? 0))}
+      ${kv('后台 agent', bgAgent)}
+      ${kv('jsonl 大小', jsonlVal)}
       ${kv('创建', escapeHtml(t.createdAt || '—'))}
-      ${kv(isCli ? '最近活动' : '结束', escapeHtml(isCli ? (t.lease?.heartbeatAt || '—') : (t.resolvedAt || '—')))}
+      ${kv('最近活动', escapeHtml(lastActive))}
       ${kv('总耗时', fmtDuration(t.durationMs))}
       ${kv('工作时长', workMs > 0 ? fmtDuration(workMs) : '—')}
       ${failureHtml}
@@ -1171,30 +1174,9 @@ function renderTaskSide(taskKey) {
   if (crumbLast) crumbLast.textContent = sideTitle;
 }
 
-// 每轮上/下行 token（从已解析的 message.usage 聚合）：
-//   上行 = 最后一条 assistant 的 input+cache_read+cache_creation（本轮上下文峰值，快照口径）
-//   下行 = 本轮所有 assistant 消息 output_tokens 之和（累计生成）
-//   缓存 = 最后一条的 cache_read（上下文里命中缓存的部分，与上行同为快照口径，不跨消息累加）
-// 老数据/归档 messages 无 usage 时退回 ccSummary.tokens / metaUsage（那是最后一条的 usage，单条口径）。
-function roundTokenStats(round) {
-  const asst = (round.messages || []).filter((m) => m.role === 'assistant' && m.usage);
-  if (asst.length) {
-    let down = 0;
-    for (const m of asst) down += (m.usage || {}).output_tokens || 0;
-    const last = asst[asst.length - 1].usage || {};
-    const up = (last.input_tokens || 0) + (last.cache_read_input_tokens || 0) + (last.cache_creation_input_tokens || 0);
-    return { up, down, cacheRead: last.cache_read_input_tokens || 0 };
-  }
-  const t = round.ccSummary?.tokens || round.metaUsage;
-  if (!t) return null;
-  const up = (t.input_tokens || 0) + (t.cache_read_input_tokens || 0) + (t.cache_creation_input_tokens || 0);
-  return { up, down: t.output_tokens || 0, cacheRead: t.cache_read_input_tokens || 0 };
-}
-
 function renderDetailTab(r, liveMb) {
   const rounds = r.rounds || [];
   if (rounds.length === 0) return '<div style="color:var(--dim);padding:12px 0">无会话数据</div>';
-  const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
   const parts = [];
   rounds.forEach((round) => {
     if (round.error) {
@@ -1232,15 +1214,11 @@ function renderDetailTab(r, liveMb) {
         if (ats.length >= 2) roundDur = new Date(ats[ats.length - 1]) - new Date(ats[0]);
       }
     }
-    const tk = roundTokenStats(round);
     const durTxt = (roundDur > 0 && !isNaN(roundDur)) ? `Worked for ${fmtDuration(roundDur)} in total${round.inflight ? '（进行中）' : ''}` : '';
     if (liveMb && round.inflight) {
       // 实时会话进行中：本轮统计汇总不显示，改由 mbRenderBody 底部 mbStatus 实时状态行承载
-    } else if (durTxt || tk) {
-      const tokTxt = tk
-        ? `<span style="margin-left:${durTxt ? '10px' : '0'};color:var(--dim)" title="上行=本轮上下文峰值(含缓存命中，送入模型量) · 下行=本轮累计生成 · 缓存=cache_read 命中量">↑ ${fmtNum(tk.up)} / ↓ ${fmtNum(tk.down)}${tk.cacheRead ? ` · 缓存 ${fmtNum(tk.cacheRead)}` : ''}</span>`
-        : '';
-      parts.push(`<div class="cc-dur cc-dur-total"><span>✻</span><span>${durTxt}</span>${tokTxt}</div>`);
+    } else if (durTxt) {
+      parts.push(`<div class="cc-dur cc-dur-total"><span>✻</span><span>${durTxt}</span></div>`);
     }
   });
   return parts.join('');
