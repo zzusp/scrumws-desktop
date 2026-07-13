@@ -1171,7 +1171,7 @@ function renderTaskSide(taskKey) {
   // 分身工作目录取运行时最新一轮 systemInit.cwd（原详情页 header 的 modalCwd 迁到此）。
   const rtCwds = isCli ? [] : [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
   const rtCwd = rtCwds[rtCwds.length - 1] || null;
-  const cwdVal = isCli ? (t.cli?.cwd || '—') : (rtCwd || '—');
+  const cwdVal = isCli ? (t.cli?.cwd || '—') : (rtCwd || t.cwd || '—');
   const gitVal = isCli ? (t.cli?.gitBranch || '—') : (lastOk?.gitBranch || '—');
   const permMode = (isCli && t.cli?.mode && t.cli.mode !== 'normal') ? t.cli.mode : null;   // 仅 CLI 非 normal 权限模式才显
   const bgAgent = isCli ? (t.cli?.pendingBackgroundAgentCount || 0) : '—';
@@ -2103,7 +2103,25 @@ function mbToRounds() {
     }
   }
   const inflight = mb.state === 'running' || mb.state === 'starting';
-  return [{ round: 1, sessionId: mb.info?.claudeSessionId || null, inflight, messages, ccSummary: { model: mb.info?.model || null }, humanCc: [] }];
+  // 侧栏「任务信息」字段：live 会话不走 /api/worker-log，这里补齐 worker-log round 同款字段——
+  // cwd 取 session info（Session.cwd）；gitBranch 扫 transcript 事件（仿 logs.js）；
+  // 工作时长 Mode B jsonl 无 turn_duration → 每轮墙钟（user→本轮末 assistant 的 _ts 差）累加，不含用户输入间隔。
+  let gitBranch = mb.info?.gitBranch || null;   // resume/收养源分支（session info 带）；live 流事件通常不带 gitBranch
+  for (const ev of mb.transcript) { if (ev.gitBranch) gitBranch = ev.gitBranch; }
+  let workMs = 0;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role !== 'user' || !messages[i].at) continue;
+    const start = new Date(messages[i].at).getTime();
+    let end = null;
+    for (let j = i + 1; j < messages.length && messages[j].role !== 'user'; j++) if (messages[j].at) end = new Date(messages[j].at).getTime();
+    if (end && end > start) workMs += end - start;
+  }
+  return [{
+    round: 1, sessionId: mb.info?.claudeSessionId || null, inflight, messages,
+    cwd: mb.info?.cwd || null, gitBranch,
+    ccSummary: { model: mb.info?.model || null, workMs: workMs > 0 ? workMs : null },
+    humanCc: [],
+  }];
 }
 
 // live 会话状态并入右侧任务信息块（renderTaskSide 读 currentModalData 展示 live 轮次/token/● 实时）+

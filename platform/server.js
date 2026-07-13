@@ -252,7 +252,7 @@ const server = http.createServer(async (req, res) => {
         if (!hist.ok) return sendJson(res, 400, hist);
         // 历史消息 → Mode B 事件形状（content block 已带 _ts）
         const seed = ccMessagesToModeBSeed(hist.messages);
-        const r = createSession({ cwd: hist.cwd, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null });
+        const r = createSession({ cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null });
         sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
       });
       return;

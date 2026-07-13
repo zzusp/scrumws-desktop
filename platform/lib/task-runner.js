@@ -160,7 +160,7 @@ export function replyTask(taskKey, message, model) {
   const hist = readCcSessionForAdopt(sid);
   const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
   seed.push({ type: 'user', message: { content: msg } });
-  const r = createSession({ taskKey, cwd: task?.cwd || undefined, model: model || task?.model || undefined, effort: task?.effort || undefined, resume: sid, prompt: msg, seedTranscript: seed, bypass: true });
+  const r = createSession({ taskKey, cwd: task?.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: model || task?.model || undefined, effort: task?.effort || undefined, resume: sid, prompt: msg, seedTranscript: seed, bypass: true });
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);

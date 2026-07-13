@@ -216,7 +216,7 @@ function filterCcByProcessingWindow(cc, prevEndedAt, roundStartedAt) {
 }
 
 // S10 收养：全局定位 sessionId 的 jsonl，解析出历史消息 + cwd + model，供 Mode B --resume 续接
-// （消息 content block 已带 _ts，历史每步计时同样可显示）。返回 { ok, messages, cwd, model, jsonlPath }。
+// （消息 content block 已带 _ts，历史每步计时同样可显示）。返回 { ok, messages, cwd, gitBranch, model, jsonlPath }。
 export function readCcSessionForAdopt(sessionId) {
   if (!sessionId || !/^[a-f0-9-]{36}$/.test(String(sessionId))) return { ok: false, error: 'invalid sessionId' };
   const found = _collectCli.locateJsonlBySid(sessionId);
@@ -227,6 +227,7 @@ export function readCcSessionForAdopt(sessionId) {
     ok: true,
     messages: parsed.messages || [],
     cwd: parsed.cwd || parsed.systemInit?.cwd || null,
+    gitBranch: parsed.gitBranch || null,
     model: parsed.summary?.model || parsed.systemInit?.model || null,
     jsonlPath: found.jsonlPath,
   };
