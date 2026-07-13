@@ -242,8 +242,11 @@ function taskCardHtml(t, section) {
         ? '<span class="tag" style="background:var(--brandS);color:var(--brand)">CLI</span>'
         : '<span class="tag tag-mut">' + (t.source || '?') + '</span>';
 
-  // 按钮（底部 ghost 化，卡片 hover 提亮）：✎ 描述常驻；plan=确认排队+归档；processing/queued=中断；done/awaiting-human=归档
+  // 按钮（底部 ghost 化，卡片 hover 提亮）：非 plan=✎ 描述；plan=✎ 编辑（改 title/prompt/model/目录/描述）；plan 还有确认排队+归档
+  const isPlan = section === 'plan';
   const descBtn = `<button class="btn" onclick="event.stopPropagation();editTaskDesc('${escapeAttr(t.taskKey)}')" title="${t.description ? '编辑' : '添加'}任务描述（自己看的备注，不发给 claude）">✎ 描述</button>`;
+  // plan 态任务：整任务可编辑（prompt 是确认排队后真正发给 claude 的指令）——顶掉「✎ 描述」
+  const editBtn = `<button class="btn" onclick="event.stopPropagation();openEditTask('${escapeAttr(t.taskKey)}')" title="编辑任务（标题 / prompt / 模型 / 工作目录 / 描述）">✎ 编辑</button>`;
   let actionBtn = '';
   if (isCli) {
     // CLI 卡片只读：awaiting-human 仅可归档；归档后（archived）才可「移除」+ 取消归档；
@@ -270,9 +273,9 @@ function taskCardHtml(t, section) {
   } else if (section === 'done') {
     actionBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
   }
-  // 任务描述（用户备注）：有则显示一行截断，点击直接编辑
+  // 任务描述（用户备注）：有则显示一行截断，点击直接编辑（plan 态点击进整任务编辑，与「✎ 编辑」按钮一致）
   const descLine = t.description
-    ? `<div style="font-size:11px;color:var(--ink2);margin-top:6px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="点击编辑描述：${escapeAttr(t.description)}" onclick="event.stopPropagation();editTaskDesc('${escapeAttr(t.taskKey)}')"><span style="color:var(--dim)">✎</span> ${escapeHtml(t.description)}</div>`
+    ? `<div style="font-size:11px;color:var(--ink2);margin-top:6px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="点击编辑${isPlan ? '任务' : '描述'}：${escapeAttr(t.description)}" onclick="event.stopPropagation();${isPlan ? 'openEditTask' : 'editTaskDesc'}('${escapeAttr(t.taskKey)}')"><span style="color:var(--dim)">✎</span> ${escapeHtml(t.description)}</div>`
     : '';
 
   // 标题：优先 customTitle > 第一条真人 cc: > taskKey；customTitle 有加"★"标记（已重命名）
@@ -291,7 +294,7 @@ function taskCardHtml(t, section) {
       <div class="card-foot">
         ${sourceTag}${manualDoneTag}
         <span class="card-key" title="${escapeAttr(t.taskKey)}">${escapeHtml(shortTaskKey(t.taskKey))}</span>
-        <span class="cardbtns">${descBtn}${actionBtn}</span>
+        <span class="cardbtns">${isPlan ? editBtn : descBtn}${actionBtn}</span>
       </div>
     </div>
   `;
@@ -1569,8 +1572,16 @@ async function refreshState() {
 
 $('autoRefreshSwitch').addEventListener('change', (e) => { autoRefresh = e.target.checked; });
 
-// ---- 新建任务 Modal ----
+// ---- 新建任务 Modal（同一弹窗兼作 plan 任务「编辑」：editingTaskKey 非空即编辑模式）----
+const NEWTASK_HEAD = '新建 manual 任务';
+const NEWTASK_HINT = 'source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 默认存为 plan，在看板确认后才执行';
+let editingTaskKey = null;   // null=新建；非空=正在编辑该 plan 任务，提交走 /api/task/edit
 $('newTaskBtn').addEventListener('click', () => {
+  editingTaskKey = null;
+  $('newTaskModal').querySelector('.modal-head h2').textContent = NEWTASK_HEAD;
+  $('newTaskModal').querySelector('.modal-hint').textContent = NEWTASK_HINT;
+  $('newTaskPlanFirst').closest('label').style.display = '';   // 新建才显示「先计划」勾选
+  $('newTaskSubmit').textContent = '提交';
   $('newTaskModal').style.display = 'flex';
   $('newTaskTitle').value = '';
   $('newTaskPrompt').value = '';
@@ -1583,6 +1594,30 @@ $('newTaskBtn').addEventListener('click', () => {
   $('newTaskWarn').style.display = 'none';
   setTimeout(() => $('newTaskTitle').focus(), 100);
 });
+
+// plan 任务「编辑」：复用新建弹窗，先拉 /api/task/detail 回填，提交走 /api/task/edit（仅 plan 可编辑）
+async function openEditTask(taskKey) {
+  let r;
+  try { r = await api(`/api/task/detail?taskKey=${encodeURIComponent(taskKey)}`); }
+  catch (e) { return customAlert({ title: '打不开编辑', message: escapeHtml(e.message) }); }
+  if (!r || !r.ok) return customAlert({ title: '打不开编辑', message: escapeHtml(r?.error || '读取任务失败') });
+  editingTaskKey = taskKey;
+  $('newTaskModal').querySelector('.modal-head h2').textContent = '编辑任务';
+  $('newTaskModal').querySelector('.modal-hint').textContent = `source=${r.source} · ${taskKey} · plan 态可编辑；prompt 是确认排队后真正发给 claude 的指令`;
+  $('newTaskPlanFirst').closest('label').style.display = 'none';   // 编辑不改变 plan 态，隐藏「先计划」勾选
+  $('newTaskSubmit').textContent = '保存';
+  $('newTaskModal').style.display = 'flex';
+  $('newTaskTitle').value = r.title || '';
+  $('newTaskPrompt').value = r.prompt || '';
+  $('newTaskDesc').value = r.description || '';
+  $('newTaskCwd').value = r.cwd || '';
+  loadNewTaskCwds();
+  newTaskModelCtl?.setValue(r.model || 'claude-opus-4-8');
+  $('newTaskErr').style.display = 'none';
+  $('newTaskWarn').style.display = 'none';
+  setTimeout(() => $('newTaskPrompt').focus(), 100);
+}
+window.openEditTask = openEditTask;
 
 // req3/req1：工作目录 自定义下拉（不用原生 datalist）+ 浏览按钮
 let newTaskCwdOptions = [];
@@ -1631,7 +1666,10 @@ $('newTaskCwdBrowse').addEventListener('click', async () => {
     errBox.textContent = e.message; errBox.style.display = 'block';
   } finally { btn.disabled = false; }
 });
-window.closeNewTaskModal = () => { $('newTaskModal').style.display = 'none'; };
+window.closeNewTaskModal = () => {
+  $('newTaskModal').style.display = 'none';
+  editingTaskKey = null;   // 关闭即回落新建模式基线，下次「新建」打开干净
+};
 $('newTaskSubmit').addEventListener('click', async () => {
   const title = $('newTaskTitle').value.trim();
   const prompt = $('newTaskPrompt').value.trim();
@@ -1645,9 +1683,22 @@ $('newTaskSubmit').addEventListener('click', async () => {
   warnBox.style.display = 'none';
   if (!title) { errBox.textContent = 'Title 必填'; errBox.style.display = 'block'; return; }
   if (!prompt) { errBox.textContent = 'Prompt 必填'; errBox.style.display = 'block'; return; }
+  const editing = editingTaskKey;
   const btn = $('newTaskSubmit');
-  btn.disabled = true; btn.textContent = '提交中…';
+  btn.disabled = true; btn.textContent = editing ? '保存中…' : '提交中…';
   try {
+    // 编辑模式：改写 plan 任务 task.json（不 spawn、留在 plan 待确认），刷新看板即回原位
+    if (editing) {
+      const r = await api(`/api/task/edit?taskKey=${encodeURIComponent(editing)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, prompt, model, description, cwd }),
+      });
+      if (!r.ok) { errBox.textContent = r.error || '未知错误'; errBox.style.display = 'block'; return; }
+      closeNewTaskModal();
+      await refreshState();
+      return;
+    }
     const r = await api('/api/task/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1667,7 +1718,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
     errBox.textContent = e.message;
     errBox.style.display = 'block';
   } finally {
-    btn.disabled = false; btn.textContent = '提交';
+    btn.disabled = false; btn.textContent = editing ? '保存' : '提交';
   }
 });
 

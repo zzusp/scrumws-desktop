@@ -4,7 +4,7 @@ import path from 'node:path';
 import { collectState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, completeTask, restartTask, taskCwds } from './lib/task-actions.js';
+import { createTask, replyToTask, cancelTask, completeTask, restartTask, taskCwds, readTaskEdit, editTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import * as scheduler from './lib/scheduler.js';
@@ -274,6 +274,13 @@ const server = http.createServer(async (req, res) => {
       for (const c of sessionCwds({ limit: 80 })) { if (!seen.has(c)) { seen.add(c); cwds.push({ cwd: c, source: 'cli' }); } }
       return sendJson(res, 200, { ok: true, cwds: cwds.slice(0, 60) });
     }
+    // 读 plan 态任务可编辑字段（看板「编辑」弹窗回填）：仅 plan 可编辑，非 plan 返回 400
+    if (pathname === '/api/task/detail') {
+      const taskKey = searchParams.get('taskKey');
+      if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
+      const r = readTaskEdit(taskKey);
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
     // 系统目录选择（新建任务「直接选电脑目录」）：仅桌面端（Electron dialog）；web 模式回退提示手填
     if (req.method === 'POST' && pathname === '/api/pick-dir') {
       if (!process.versions?.electron) {
@@ -369,6 +376,20 @@ const server = http.createServer(async (req, res) => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
         const r = renameTask(taskKey, payload && payload.title);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    // 编辑 plan 态任务（body: {title, prompt, model, description?, cwd?}）：改写 task.json，仅 plan 可编辑
+    if (req.method === 'POST' && pathname === '/api/task/edit') {
+      const taskKey = searchParams.get('taskKey');
+      if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 32 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = editTask({ taskKey, ...(payload || {}) });
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;

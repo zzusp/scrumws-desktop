@@ -243,3 +243,71 @@ export function createTask({ source, title, prompt, model, description, plan, cw
   }
   return { ok: true, taskKey, state: initState, spawned: false };
 }
+
+// 读 plan 态任务的可编辑字段（看板「编辑」弹窗回填用）：仅 plan 且非归档可编辑。
+// title 取生效标题（customTitle 优先，与卡片展示一致）；prompt/model/cwd/description 原样回填。
+export function readTaskEdit(taskKey) {
+  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
+  let state = null; let task = {};
+  try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
+  try { task = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')); } catch { }
+  if (state?.state !== 'plan') return { ok: false, error: `只有 plan 态任务可编辑（当前 ${state?.state || '未知'}）` };
+  return {
+    ok: true,
+    taskKey,
+    source: task.source || String(taskKey).split(':')[0] || 'manual',
+    state: state.state,
+    title: task.customTitle || task.title || '',
+    prompt: task.prompt || '',
+    model: task.model || '',
+    cwd: task.cwd || '',
+    description: task.description || '',
+  };
+}
+
+// 编辑 plan 态任务：改写 task.json 的 title/prompt/model/cwd/description（prompt 是确认排队后真正发给 claude 的指令）。
+// 仅 plan 且非归档可编辑（已 queued/processing/收敛的任务不给改）。复用 createTask 同套校验（model 白名单、cwd 必须存在目录）。
+// 编辑后 title 落 task.title 且清 customTitle（编辑即权威标题）；effort 表单不涉及、保留原值不动。
+export function editTask({ taskKey, title, prompt, model, description, cwd }) {
+  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
+  let state = null;
+  try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
+  if (state?.state !== 'plan') return { ok: false, error: `只有 plan 态任务可编辑（当前 ${state?.state || '未知'}）` };
+
+  const t = String(title || '').trim();
+  const p = String(prompt || '').trim();
+  const m = String(model || '').trim();
+  const desc = String(description || '').trim().slice(0, 2000);
+  if (!t) return { ok: false, error: 'title required' };
+  if (!p) return { ok: false, error: 'prompt required' };
+  if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
+  // cwd 可选：给了就必须存在且是目录（对齐 createTask，避免改出跑不起来的任务）
+  let cwdFinal = null;
+  const cwdRaw = String(cwd || '').trim();
+  if (cwdRaw) {
+    let st = null;
+    try { st = fs.statSync(cwdRaw); } catch { return { ok: false, error: `工作目录不存在：${cwdRaw}` }; }
+    if (!st.isDirectory()) return { ok: false, error: `工作目录不是文件夹：${cwdRaw}` };
+    cwdFinal = path.resolve(cwdRaw);
+  }
+
+  const taskFile = path.join(taskDir, 'task.json');
+  let task = {};
+  try { task = JSON.parse(fs.readFileSync(taskFile, 'utf8')); } catch { }
+  task.title = t;
+  delete task.customTitle;   // 编辑弹窗的标题即权威值，避免 rename 写的 customTitle 遮盖
+  task.prompt = p;
+  task.model = m;
+  if (desc) task.description = desc; else delete task.description;
+  if (cwdFinal) task.cwd = cwdFinal; else delete task.cwd;
+  task.taskKey = task.taskKey || taskKey;
+  try { fs.writeFileSync(taskFile, JSON.stringify(task, null, 2), 'utf8'); }
+  catch (e) { return { ok: false, error: `写 task.json 失败: ${e.message}` }; }
+  return { ok: true, taskKey, state: 'plan' };
+}
