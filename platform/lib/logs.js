@@ -13,7 +13,8 @@ import * as _collectCli from './collect-cli.js';
 
 // 扫全库 sessionId（runner-state + runner-archive 下每个任务包的 meta.sessionHistory + meta.sessionId），
 // 用于 in-flight 检测："孤儿"jsonl = 出现在 CC 项目目录、但不属于任何已知任务的 session。
-function collectKnownSessionIds() {
+// 也供 CLI 添加弹窗判「已在看板」：分身/adopt 任务的会话 sid 都在这里（含跨轮 sessionHistory）。
+export function collectKnownSessionIds() {
   const ids = new Set();
   for (const root of [P.runnerRoot, P.archiveRoot]) {
     let names = [];
@@ -336,6 +337,7 @@ function readCliWorkerLog(taskKey) {
       toolsCount: Array.isArray(parsed.systemInit.tools) ? parsed.systemInit.tools.length : null,
     } : null,
     cwd: parsed.cwd || parsed.systemInit?.cwd || null,
+    gitBranch: parsed.gitBranch || null,   // 与分身 round 同构：详情侧栏统一从 round 取 git，不再按来源分叉
     // 会话正在生成 → 前端加 pulse "● 实时" + "（进行中）"
     inflight: active,
   };
@@ -564,6 +566,17 @@ export function setTaskDescription(taskKey, newDesc) {
 
 // 重命名任务：写 task.json.customTitle（优先级：customTitle > 首条用户消息 > issue title > taskKey）
 export function renameTask(taskKey, newTitle) {
+  // CLI 走独立分支：改标题 = watchlist 写 customTitle（CLI 会话无任务包，不落 task.json）——与 archiveTask 同构
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:')) {
+    const shortSid = taskKey.slice(4);
+    const w = _cliWatchlist.readWatchlist();
+    const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
+    if (!entry) return { ok: false, error: 'cli session not in watchlist' };
+    const customTitle = String(newTitle || '').trim().slice(0, 200);
+    const r = _cliWatchlist.upsertWatchlist(entry[0], { customTitle });
+    if (!r.ok) return r;
+    return { ok: true, taskKey, customTitle: r.entry.customTitle || null };
+  }
   const safeKey = safeKeyOf(taskKey);
   if (!safeKey) return { ok: false, error: 'invalid taskKey' };
   let dir = null;

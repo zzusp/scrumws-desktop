@@ -170,6 +170,24 @@ function extractTailInfo(tailLines) {
   return { last, lastTurn, lastAssistant, lastUser, lastMode, lastEnv };
 }
 
+// 反读 jsonl 的后台 agent 计数（subagent/background）。pendingBackgroundAgentCount 只挂在
+// system/turn_duration 事件上，且其后 CC 恒追加 last-prompt/ai-title/mode 元事件——取末行事件
+// 永远拿不到，必须取最后一条 turn_duration。返回值 >0 = 主 agent 让出后仍有后台 agent 在跑。
+export function readBackgroundAgentCount(jsonlPath) {
+  try {
+    const { tail } = readLinesSplit(jsonlPath);
+    const { lastTurn } = extractTailInfo(tail);
+    return Number(lastTurn?.pendingBackgroundAgentCount) || 0;
+  } catch { return 0; }
+}
+
+// 经 sessionId 定位 jsonl 再读后台计数——runner-state 任务无 jsonlPath，靠 meta.sessionId 反查。
+export function backgroundAgentCountBySid(sid) {
+  if (!sid) return 0;
+  const found = locateJsonlBySid(sid);
+  return found ? readBackgroundAgentCount(found.jsonlPath) : 0;
+}
+
 // 单个 watchlist entry → 卡片对象；jsonl 缺失时返回 stub 卡片（提示"文件已消失"）
 // attached / replyRunners 由调用方传入（避免每个 sid 重扫注册表）
 function collectOneCli(sidEntry, now, attached, replyRunners, board) {
@@ -195,6 +213,7 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
         source: 'cli',
         kind: null,
         state: 'awaiting-human',
+        backgroundAgentCount: 0,
         outcome: 'jsonl-missing',
         outcomeDetail: { failureReason: 'jsonl 文件已消失（可能被清理）' },
         enteredAt: sidEntry.addedAt,
@@ -206,7 +225,7 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
         humanCc: [],
         meta: { sessionId: sid, sessionHistoryLen: 0, rounds: 0, totalCostUsd: 0, numTurns: 0, usage: null, lastRoundAt: null },
         business: null,
-        cli: { cwd: null, gitBranch: null, version: null, pendingBackgroundAgentCount: 0, mode: null, jsonlPath: null, jsonlBytes: 0, projectDir: null, attachedPid: null, attachedStatus: null },
+        cli: { cwd: null, gitBranch: null, version: null, mode: null, jsonlPath: null, jsonlBytes: 0, projectDir: null, attachedPid: null, attachedStatus: null },
         resolvedAgo: '—',
         resolvedAgoSec: null,
         queuedAgeMin: null,
@@ -245,6 +264,10 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   // 看板持有的 Mode B 会话在跑=权威 processing 信号（sdk-cli 进程不写 att.status，只能靠它判在跑）。
   // running/starting=正在生成回复 → processing；idle=一轮收敛等下一条 → awaiting-human。
   const boardState = board ? (board.bySid.get(sid) || board.byTask.get(`cli:${sid.slice(0, 8)}`) || null) : null;
+  // 后台 agent 计数（统一维度，见 readBackgroundAgentCount）。会话进程活着才算数——后台 agent 是该
+  // 进程的子进程，进程死则后台必随之结束，pbg 便是陈旧历史值。
+  const backgroundAgentCount = Number(lastTurn?.pendingBackgroundAgentCount) || 0;
+  const sessionAlive = !!(boardState || att || replyRunnerPid);
   let state;
   if (sidEntry.archivedAt) state = 'archived';
   else if (doneAt) state = 'done';
@@ -252,6 +275,9 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   else if (att) state = att.status === 'busy' ? 'processing' : 'awaiting-human';
   else if (replyRunnerPid) state = 'processing';
   else state = 'awaiting-human';
+  // 后台维度：主 agent 已收敛(awaiting-human)但会话活 + 仍有后台 agent 在跑 → 整体仍 processing。
+  // 主进程只是让出等后台完成（CC 自动注入 <task-notification> 唤醒续跑），任务未结束。
+  if (state === 'awaiting-human' && sessionAlive && backgroundAgentCount > 0) state = 'processing';
 
   const createdAt = first?.timestamp ? fmt(new Date(first.timestamp)) : sidEntry.addedAt;
   const lastActivity = last?.timestamp ? fmt(new Date(last.timestamp)) : fmt(new Date(mtimeMs));
@@ -260,7 +286,6 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   const cwd = att?.cwd || lastEnv?.cwd || firstEnv?.cwd || null;
   const gitBranch = lastEnv?.gitBranch || firstEnv?.gitBranch || null;
   const version = lastEnv?.version || firstEnv?.version || null;
-  const pendingBg = Number(last?.pendingBackgroundAgentCount) || 0;
   const mode = lastMode?.mode || 'normal';
 
   // title：customTitle > 真人首条 user 首行（保留完整，仅上限 200 防超长；显示端再截断）> cli:<short>
@@ -313,6 +338,8 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
     source: 'cli',
     kind: 'interactive',
     state,
+    // 统一后台维度（runner/cli 同字段）：>0 = 该会话仍有后台 agent 在跑，卡片/详情据此渲染
+    backgroundAgentCount,
     outcome: state === 'done' ? 'success' : null,
     enteredAt: createdAt,
     resolvedAt: state === 'archived' ? lastActivity : state === 'done' ? doneAt : null,
@@ -339,7 +366,6 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
       cwd,
       gitBranch,
       version,
-      pendingBackgroundAgentCount: pendingBg,
       mode,
       jsonlPath,
       jsonlBytes: stat.size,

@@ -6,6 +6,15 @@ import os from 'node:os';
 import { fmt } from './timeutil.js';
 import * as watchlist from './cli-watchlist.js';
 import { locateJsonlBySid, isCliSessionActive } from './collect-cli.js';
+import { collectKnownSessionIds } from './logs.js';
+
+// 「已在看板」判据：候选 sid 命中 watchlist（显式加入的 CLI 会话）∪ 全库任务包的 sessionId/sessionHistory
+// （分身 / adopt 到 Mode B 的任务，其会话 sid 不落 watchlist）。按 sessionId 判，避免同一会话被重复添加成两张卡。
+function boardSessionIds() {
+  const set = collectKnownSessionIds();
+  for (const sid of Object.keys(watchlist.readWatchlist().sessions)) set.add(sid);
+  return set;
+}
 
 const CC_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const SID_FILE_RE = /^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i;
@@ -140,7 +149,7 @@ const HEX_RE = /^[a-f0-9-]{6,}$/i;
 export function searchCliSessions({ q, limit = 20 } = {}) {
   const query = String(q || '').trim();
   if (!query) return { ok: false, error: 'q required' };
-  const addedSet = new Set(Object.keys(watchlist.readWatchlist().sessions));
+  const addedSet = boardSessionIds();
   const items = listAllJsonl({ maxAgeDays: 30 });
   const isHex = HEX_RE.test(query);
   let keywords = [];
@@ -177,7 +186,7 @@ export function searchCliSessions({ q, limit = 20 } = {}) {
 // 复用 listAllJsonl（已按 mtime 倒序）+ head 预览，返回结构与 searchCliSessions 的 candidates 一致
 export function recentCliSessions({ withinMinutes = 30, limit = 30 } = {}) {
   const mins = Math.max(1, Math.min(1440, Number(withinMinutes) || 30));
-  const addedSet = new Set(Object.keys(watchlist.readWatchlist().sessions));
+  const addedSet = boardSessionIds();
   const cutoff = Date.now() - mins * 60 * 1000;
   const items = listAllJsonl({ maxAgeDays: 1 }).filter((it) => it.mtimeMs >= cutoff);
   const picked = items.slice(0, Math.max(1, Math.min(50, Number(limit) || 30)));

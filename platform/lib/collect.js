@@ -8,7 +8,7 @@ import { CHECKER, checkerEnabled, checkerIntervalSec } from './jobs/checker-meta
 import * as scheduler from './scheduler.js';
 import { readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
-import { collectCliSessions, readAttachedSessions } from './collect-cli.js';
+import { collectCliSessions, readAttachedSessions, backgroundAgentCountBySid } from './collect-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { listSessions } from './session-manager.js';
 
@@ -34,6 +34,19 @@ function tailLine(file, bytes = 8192) {
   } catch { return ''; }
 }
 // lease alive：单份实现在 lease.js（pid 为主 + HardTTL，与 scripts/lib/runner-common.ps1 同语义）
+
+// 后台维度派生（runner/cli 统一语义）：主 agent 一轮收敛写 awaiting-human，但若会话进程仍活着
+// (mbSessionId 非空) 且该 CC session 还有后台 agent 在跑 → 整体仍是 processing——主进程只是让出
+// 等后台完成（CC 会自动注入 <task-notification> 唤醒续跑），任务未结束。
+// 仅对"疑似空闲的活会话"读一次 jsonl 探测：其他状态无需（processing 已在忙 / 终态无后台）；
+// 会话进程死则后台必随之结束（后台 agent 是该进程子进程），mbSessionId 短路避免用陈旧 pbg 误判。
+export function deriveBackgroundState(state, mbSessionId, sessionId) {
+  if (state !== 'awaiting-human' || !mbSessionId || !sessionId) {
+    return { backgroundAgentCount: 0, displayState: state };
+  }
+  const backgroundAgentCount = backgroundAgentCountBySid(sessionId);
+  return { backgroundAgentCount, displayState: backgroundAgentCount > 0 ? 'processing' : state };
+}
 
 // ---------- 采集单个任务包 ----------
 function collectOne(safeTaskKey, dir, now, isArchive = false) {
@@ -83,6 +96,11 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
   // 标题优先级：用户 customTitle（rename 写入）> task.title > taskKey
   const title = task?.customTitle || task?.title || taskKey;
 
+  // 内存中活跃 Mode B 会话 id（有=会话进程活，idle-but-alive 也在）
+  const mbSessionId = getTaskSessionId(taskKey);
+  // 后台维度（统一：与 cli 任务同字段 backgroundAgentCount）
+  const { backgroundAgentCount, displayState } = deriveBackgroundState(effectiveState, mbSessionId, meta?.sessionId);
+
   return {
     taskKey,
     safeTaskKey,
@@ -92,7 +110,8 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
     cwd: task?.cwd || null,                   // 任务配置的工作目录（新建/编辑时写入 task.json）；awaiting 卡片非失败态展示
     source,
     kind,
-    state: effectiveState,
+    state: displayState,
+    backgroundAgentCount,
     outcome: state?.outcome || null,
     enteredAt,
     resolvedAt,
@@ -103,7 +122,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
     lease: leaseInfo,
     humanCc,
     // 内存中活跃 Mode B 会话 id（有则详情页接 /api/session/stream 实时渲染；无=会话已收敛/未起）
-    mbSessionId: getTaskSessionId(taskKey),
+    mbSessionId,
     // meta 关键字段
     meta: meta ? {
       sessionId: meta.sessionId || null,

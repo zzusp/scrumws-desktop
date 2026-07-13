@@ -215,6 +215,8 @@ function taskCardHtml(t, section) {
   const cost = t.meta?.totalCostUsd ? '$' + t.meta.totalCostUsd.toFixed(4) : '';
   const rounds = t.meta?.rounds ? `${t.meta.rounds} 轮` : '';
   const totalDur = fmtDuration(t.durationMs);
+  // 统一后台维度徽章（runner/cli 同源 t.backgroundAgentCount）：主进程让出后仍在跑的后台 agent 数
+  const bgBadge = t.backgroundAgentCount > 0 ? ` · <span style="color:var(--amber)">后台×${t.backgroundAgentCount}</span>` : '';
 
   let statusLine = '';
   if (isCli) {
@@ -222,15 +224,14 @@ function taskCardHtml(t, section) {
     const cwd = t.cli?.cwd || '—';
     const cwdShort = cwd.length > 40 ? '…' + cwd.slice(-38) : cwd;
     const turns = t.meta?.numTurns ? `${t.meta.numTurns} turns` : '';
-    const pending = t.cli?.pendingBackgroundAgentCount > 0 ? ` · <span style="color:var(--amber)">bg×${t.cli.pendingBackgroundAgentCount}</span>` : '';
     const heartbeat = t.lease?.heartbeatAgo ? ` · 心跳 ${t.lease.heartbeatAgo}` : '';
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(cwd)}">${escapeHtml(cwdShort)}</div><div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">${turns} · 总耗时 ${totalDur}${heartbeat}${pending}</div>`;
+    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(cwd)}">${escapeHtml(cwdShort)}</div><div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">${turns} · 总耗时 ${totalDur}${heartbeat}${bgBadge}</div>`;
   } else if (section === 'plan') {
     statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">待确认 · 建于 ${escapeHtml(t.createdAt || t.enteredAt || '—')}</div>`;
   } else if (section === 'processing') {
     const durMin = t.lease?.durationMin ?? '?';
     const intent = t.lease?.intent ? `<div style="font-size:11.5px;color:var(--ink2);margin-top:4px;line-height:1.5">${escapeHtml(t.lease.intent)}</div>` : '';
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">已跑 ${durMin}min · 总耗时 ${totalDur} · 心跳 ${t.lease?.heartbeatAgo || '—'} · pid=${t.lease?.pid || '?'}</div>${intent}`;
+    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">已跑 ${durMin}min · 总耗时 ${totalDur} · 心跳 ${t.lease?.heartbeatAgo || '—'} · pid=${t.lease?.pid || '?'}${bgBadge}</div>${intent}`;
   } else if (section === 'queued') {
     const queuedAge = t.queuedAgeMin;
     const style = queuedAge != null && queuedAge > 2 ? 'color:var(--coral)' : 'color:var(--mut)';
@@ -293,17 +294,16 @@ function taskCardHtml(t, section) {
     ? `<div style="font-size:11px;color:var(--ink2);margin-top:6px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="点击编辑${isPlan ? '任务' : '描述'}：${escapeAttr(t.description)}" onclick="event.stopPropagation();${isPlan ? 'openEditTask' : 'editTaskDesc'}('${escapeAttr(t.taskKey)}')"><span style="color:var(--dim)">✎</span> ${escapeHtml(t.description)}</div>`
     : '';
 
-  // 标题：优先 customTitle > 第一条真人 cc: > taskKey；customTitle 有加"★"标记（已重命名）
+  // 标题：优先 customTitle > 第一条真人 cc: > taskKey
   const titleText = t.title || t.taskKey;
   const titleShort = titleText.length > 60 ? titleText.slice(0, 60) + '…' : titleText;
-  const titleBadge = t.hasCustomTitle ? '<span title="已重命名" style="color:var(--amber);font-size:10px;margin-right:4px">★</span>' : '';
   // 人工完成标：done 且 resolvedBy=user（区别于 worker 自动 done）
   const manualDoneTag = (section === 'done' && t.outcomeDetail?.resolvedBy === 'user')
     ? '<span class="tag tag-jade" title="人工确认完成（非 worker 自动收敛）">人工完成</span>' : '';
 
   return `
     <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="openTaskModal('${escapeAttr(t.taskKey)}')">
-      <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${titleBadge}${escapeHtml(titleShort)}</div>
+      <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${escapeHtml(titleShort)}</div>
       ${statusLine}
       ${descLine}
       <div class="card-foot">
@@ -715,6 +715,8 @@ async function renameTaskPrompt(taskKey) {
   });
   if (v === null) return;
   try {
+    // CLI 会话无 task.json，走 watchlist 改名接口；分身走 task.json 接口。两端均收 body {title}
+    // 统一走 /api/task/rename，后端 renameTask 按来源分派（分身写 task.json / CLI 写 watchlist）——前端不选端点
     const r = await api(`/api/task/rename?taskKey=${encodeURIComponent(taskKey)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1088,7 +1090,8 @@ function renderTaskSide(taskKey) {
   const meta = t.meta || {};
   const lastOk = rounds[rounds.length - 1] || null;
   const isCli = t.source === 'cli';
-  const model = isCli ? (t.meta?.model || '—') : (lastOk?.ccSummary?.model || lastOk?.systemInit?.model || '—');
+  // 模型/cwd/git/工作时长/最近活动：CLI 与分身统一从详情 round 取（readWorkerLog 对两类同构产出）——不按来源分叉
+  const model = lastOk?.ccSummary?.model || lastOk?.systemInit?.model || t.meta?.model || '—';
   const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const tags = [
@@ -1129,24 +1132,17 @@ function renderTaskSide(taskKey) {
     if ((t.resolvedAt || t.state === 'plan') && !t.isArchive) btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
   }
   const descText = t.description || '';
-  // 工作时长：claude 实际在算的时长（区别于创建→结束的墙钟总耗时）
-  // - CLI：ccSummary.workMs（turn_duration 事件 durationMs 累加，不含用户输入间隔）
-  // - 分身：各轮 rounds.jsonl 的 startedAt→endedAt 之和
+  // 工作时长：claude 实际在算的时长（区别于创建→结束墙钟）；CLI 单 round、分身多 round，累加逻辑通用。
+  // 优先 ccSummary.workMs（turn_duration 累加，无 rounds.jsonl 也有值）；退回本轮 startedAt→endedAt 墙钟。
   let workMs = 0;
-  if (isCli) {
-    workMs = rounds[0]?.ccSummary?.workMs || 0;
-  } else {
-    // 优先 ccSummary.workMs（turn_duration/每轮墙钟累加，无 rounds.jsonl 也有值）；
-    // 退回本轮 startedAt→endedAt 墙钟（需 rounds.jsonl 提供，缺失时为 0）
-    (r?.rounds || []).forEach((rd) => {
-      let d = rd.ccSummary?.workMs || 0;
-      if (!d && rd.startedAt && rd.endedAt) {
-        const w = new Date(rd.endedAt) - new Date(rd.startedAt);
-        if (w > 0 && !isNaN(w)) d = w;
-      }
-      workMs += d;
-    });
-  }
+  (r?.rounds || []).forEach((rd) => {
+    let d = rd.ccSummary?.workMs || 0;
+    if (!d && rd.startedAt && rd.endedAt) {
+      const w = new Date(rd.endedAt) - new Date(rd.startedAt);
+      if (w > 0 && !isNaN(w)) d = w;
+    }
+    workMs += d;
+  });
   // 动态：state 流转时间线（参考 cloud-team 右侧 timeline：竖线 + 彩点 + 间隔耗时）
   const TL_DOT = { plan: 'var(--dim)', queued: 'var(--mut)', processing: 'var(--amber)', done: 'var(--cyan)', 'awaiting-human': 'var(--coral)', cancelled: 'var(--coral)' };
   const history = Array.isArray(t.history) ? t.history : [];
@@ -1165,31 +1161,24 @@ function renderTaskSide(taskKey) {
         </div>
       </div>`;
   }).join('');
-  // 统一字段值：所有任务(CLI/分身)的「任务信息」按 CLI 字段集展示——共有字段各取自己的值；
-  // git 两侧都取自会话 jsonl 的 gitBranch（CLI 走 t.cli，分身走末轮 round.gitBranch）；
-  // 后台agent/jsonl大小 CLI 独有、分身无数据显 —；分身独有(轮次/成本/tokens/缓存读)按决策不展示。
-  // 分身工作目录取运行时最新一轮 systemInit.cwd（原详情页 header 的 modalCwd 迁到此）。
-  const rtCwds = isCli ? [] : [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
+  // 统一字段值：所有任务「任务信息」按同一字段集展示，共有字段（cwd/git/最近活动）一律取自详情 round
+  // （readWorkerLog 对 CLI/分身同构产出）+ t.cli/t.cwd 兜底，不按来源分叉；
+  // 权限模式/后台agent/jsonl大小是 CLI 会话独有真实数据，按 t.cli 存在性显（分身无 → 不显/—）。
+  const rtCwds = [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
   const rtCwd = rtCwds[rtCwds.length - 1] || null;
-  const cwdVal = isCli ? (t.cli?.cwd || '—') : (rtCwd || t.cwd || '—');
-  const gitVal = isCli ? (t.cli?.gitBranch || '—') : (lastOk?.gitBranch || '—');
-  const permMode = (isCli && t.cli?.mode && t.cli.mode !== 'normal') ? t.cli.mode : null;   // 仅 CLI 非 normal 权限模式才显
-  const bgAgent = isCli ? (t.cli?.pendingBackgroundAgentCount || 0) : '—';
-  const jsonlVal = isCli
-    ? (t.cli?.jsonlBytes ? (t.cli.jsonlBytes / 1024 / 1024).toFixed(2) + ' MB' : '—')
-    : '—';
-  // 最近活动：CLI = 心跳；分身 = 心跳(存活时) → 末轮时间 → 结束时间兜底（等价语义，避免收敛后恒显 —）
-  const lastActive = isCli
-    ? (t.lease?.heartbeatAt || '—')
-    : (t.lease?.heartbeatAt || meta.lastRoundAt || t.resolvedAt || '—');
+  const cwdVal = rtCwd || t.cli?.cwd || t.cwd || '—';
+  const gitVal = lastOk?.gitBranch || t.cli?.gitBranch || '—';
+  const permMode = (t.cli?.mode && t.cli.mode !== 'normal') ? t.cli.mode : null;   // CLI 非 normal 权限模式才显
+  const bgAgent = Number(t.backgroundAgentCount) || 0;   // 统一后台维度：>0 = 主进程让出后仍有后台 agent 在跑
+  const jsonlVal = t.cli?.jsonlBytes ? (t.cli.jsonlBytes / 1024 / 1024).toFixed(2) + ' MB' : '—';
+  const lastActive = t.lease?.heartbeatAt || meta.lastRoundAt || t.resolvedAt || '—';
   const sideTitle = t.title || t.taskKey;
-  const canRename = !isCli && !t.isArchive;   // 重命名走 /api/task/rename（改 task.json），仅分身非归档任务
+  const canRename = !t.isArchive;   // 非归档任务可重命名：统一走 /api/task/rename，后端按来源分派（分身写 task.json / CLI 写 watchlist）
   el.innerHTML = `
     <div class="side-block">
       <h3>任务信息</h3>
       <div class="side-title-row">
         <span class="side-title" title="${escapeAttr(sideTitle)}">${escapeHtml(sideTitle)}</span>
-        ${t.hasCustomTitle ? '<span title="已重命名" style="color:var(--amber);flex:none">★</span>' : ''}
         ${canRename ? `<button class="btn side-edit" title="重命名任务" onclick="renameTaskPrompt('${escapeAttr(t.taskKey)}')">✎</button>` : ''}
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0">${tags}</div>
@@ -1198,7 +1187,8 @@ function renderTaskSide(taskKey) {
       ${kv('git', escapeHtml(gitVal))}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
       ${kv('模型', escapeHtml(model))}
-      ${/* turns / 后台 agent / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / bgAgent / jsonlVal，待定放置位置）*/''}
+      ${bgAgent > 0 ? kv('后台 agent', `<span style="color:var(--amber)">${bgAgent} 个运行中（主进程已让出，等后台完成）</span>`) : ''}
+      ${/* turns / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / jsonlVal，待定放置位置）*/''}
       ${kv('创建', escapeHtml(t.createdAt || '—'))}
       ${kv('最近活动', escapeHtml(lastActive))}
       ${kv('总耗时', fmtDuration(t.durationMs))}
