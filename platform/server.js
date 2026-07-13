@@ -252,7 +252,8 @@ const server = http.createServer(async (req, res) => {
         if (!hist.ok) return sendJson(res, 400, hist);
         // 历史消息 → Mode B 事件形状（content block 已带 _ts）
         const seed = ccMessagesToModeBSeed(hist.messages);
-        const r = createSession({ cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null });
+        // CLI 会话续接 = bypass 权限（终端里本就是 bypass permissions 态，续到看板不该逐工具再授权）
+        const r = createSession({ cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null, bypass: true });
         sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
       });
       return;

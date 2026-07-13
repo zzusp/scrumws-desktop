@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fmt } from './timeutil.js';
 import * as watchlist from './cli-watchlist.js';
-import { locateJsonlBySid } from './collect-cli.js';
+import { locateJsonlBySid, isCliSessionActive } from './collect-cli.js';
 
 const CC_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const SID_FILE_RE = /^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i;
@@ -261,13 +261,12 @@ export function rewindCliSession({ taskKey, uuid, message } = {}) {
     jsonlPath = found.jsonlPath;
   }
 
-  // guard ②：60s 内有写入 = 可能有 headless 回复在跑
-  try {
-    const stat = fs.statSync(jsonlPath);
-    if (Date.now() - stat.mtimeMs < 60 * 1000) {
-      return { ok: false, error: 'session 一分钟内有活动（可能上一条回复还在跑），稍后再试' };
-    }
-  } catch { /* stat 失败不拦 */ }
+  // guard ②：真有活写者才拦——看板 Mode B 会话 running/starting、CC 注册表 busy、或 headless runner 存活。
+  // 不用 jsonl mtime 阈值：CC 在轮次结束后会异步补写 last-prompt/mode/ai-title 等元事件（可滞后数分钟），
+  // mtime 新 ≠ 回复在跑，会误拦已停会话（栽过：会话 16:46 停、16:51 才补 last-prompt，rewind 被误判"回复还在跑"）。
+  if (isCliSessionActive(sid)) {
+    return { ok: false, error: 'session 仍在运行（看板会话/终端/回复进程活着），停下后再 rewind' };
+  }
 
   // 按行读原 jsonl，找目标消息行
   let lines;
