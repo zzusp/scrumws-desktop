@@ -266,7 +266,7 @@ function taskCardHtml(t, section) {
       actionBtn = `<button class="btn" style="color:var(--mut)" onclick="event.stopPropagation();uncompleteCliTask('${escapeAttr(t.taskKey)}')" title="取消完成，回落存活自动判态">↺ 取消完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
     } else {
       // awaiting-human（终端空闲/退出）：可人工标完成 → done，或归档
-      actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
+      actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 确认完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
     }
   } else if (section === 'plan') {
     actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="不做了，直接归档">归档</button>`;
@@ -1080,7 +1080,7 @@ function renderTaskSide(taskKey) {
       btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     } else {
       // 终端已退出（非 processing）→ 可人工标完成 或 归档；续接对话走详情底部 composer（发消息即收养成 Mode B 实时会话）
-      btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button>`);
+      btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 确认完成</button>`);
       btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     }
   } else {
