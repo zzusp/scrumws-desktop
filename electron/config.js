@@ -6,7 +6,7 @@ import os from 'node:os';
 const DEFAULTS = {
   port: 8799,                  // 独立端口，避撞旧看板 8788（goal.md D4 双开防护）
   dataRoot: path.join(os.homedir(), '.scrumws'), // 运行时态根（绝对路径；旧默认是 Windows 相对路径，换 CWD 启动会丢数据）
-  schedulerEnabled: false,     // 开发/验证期默认关闭（关闭时 Runner Checker 也不跑）；即使开启也有 scheduler.lock 兜底互斥单实例
+  schedulerEnabled: true,      // 桌面已是主实例：开调度器，Runner Checker 才会跑（收 lease 死+未收尾的 processing 孤儿）；单实例靠 requestSingleInstanceLock + scheduler.lock（pid 判活）兜底互斥
   autoStart: false,            // 开机自启（仅打包版生效；切换接管时置 true，见 docs/ops/cutover.md）
 };
 
