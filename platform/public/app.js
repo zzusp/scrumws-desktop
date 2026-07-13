@@ -2007,7 +2007,7 @@ let mb = null;   // { id, sse, transcript:[], liveText, perms:[], info, state, s
 // 逐字 / 权限卡 / 打断 / 状态行渲染进 #modalBody；会话状态并入右侧 renderTaskSide；composer 走 #modalReplyBox。
 
 // 只关前端 SSE，不 close 后端进程（离开详情 / 切任务时用；会话继续跑，再进来重连回放）
-function mbDetach() { mbStopStatusTimer(); if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
+function mbDetach() { mbStopStatusTimer(); if (mbFlushRaf) { cancelAnimationFrame(mbFlushRaf); mbFlushRaf = null; } if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
 
 function loadSession(id) {
   if (mb && mb.id === id && mb.sse) return;   // 已在该会话，避免重复连
@@ -2036,12 +2036,12 @@ function mbOnEvent(ev) {
       if (!e) return;
       if (e.type === 'content_block_delta' && e.delta) {
         const d = e.delta;
-        if (d.type === 'text_delta') { mb.liveText += d.text || ''; if (!mb.syncing) mbUpdateLive(); }
+        if (d.type === 'text_delta') { mb.liveText += d.text || ''; mbScheduleLive(); }
         // thinking 态：thinking_delta 期间为真；正文/工具入参 delta 一来即结束（供底部实时状态行显示 " · thinking"）
         if (mb.liveUsage) { if (d.type === 'thinking_delta') mb.liveUsage.thinking = true; else if (d.type === 'text_delta' || d.type === 'input_json_delta') mb.liveUsage.thinking = false; }
         // 下行估算：累计所有 delta 文本长度（text/thinking/tool 入参），≈ output tokens（thinking 不可见但计费）
         const dl = (d.text || d.thinking || d.partial_json || '').length;
-        if (dl && mb.liveUsage) { mb.liveUsage.outChars += dl; if (!mb.syncing) mbUpdateLiveTokens(); }
+        if (dl && mb.liveUsage) { mb.liveUsage.outChars += dl; mbScheduleLive(); }
       } else if (e.type === 'message_start') {
         // 上行（input+cache）在开跑即知 → 即时真值；下行待末尾
         const u = e.message?.usage || {};
@@ -2141,7 +2141,7 @@ let mbStatusTick = 0;
 
 function mbFmtK(n) { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n); }
 
-function mbStatusText() {
+function mbStatusParts() {
   const u = mb && mb.liveUsage;
   const elapsed = (mb && mb.turnStartedAt) ? Math.max(0, Math.floor((Date.now() - mb.turnStartedAt) / 1000)) : 0;
   const glyph = MB_GLYPHS[mbStatusTick % MB_GLYPHS.length];
@@ -2153,14 +2153,16 @@ function mbStatusText() {
   }
   const eff = mb && mb.info && mb.info.effort;
   const think = (u && u.thinking) ? (eff ? ` · thinking with ${eff} effort` : ' · thinking') : '';
-  return `${glyph} ${gerund}… (${elapsed}s · ↓ ${downTxt} tokens${think})`;
+  return { glyph, rest: `${gerund}… (${elapsed}s · ↓ ${downTxt} tokens${think})` };
 }
+// glyph 每 300ms 循环切换，各装饰符号渲染宽度不一；用固定宽度 span 居中包裹，避免其后文本左右抖动
+function mbStatusHtml() { const { glyph, rest } = mbStatusParts(); return `<span class="mb-glyph">${glyph}</span> ${escapeHtml(rest)}`; }
 
 function mbTick() {
   if (!mb || (mb.state !== 'running' && mb.state !== 'starting')) { mbStopStatusTimer(); return; }
   mbStatusTick++;
   const el = document.getElementById('mbStatus');
-  if (el) el.textContent = mbStatusText();
+  if (el) el.innerHTML = mbStatusHtml();
 }
 function mbStartStatusTimer() { if (!mbStatusTimer) mbStatusTimer = setInterval(mbTick, 300); }
 function mbStopStatusTimer() { if (mbStatusTimer) { clearInterval(mbStatusTimer); mbStatusTimer = null; } }
@@ -2175,7 +2177,7 @@ function mbRenderBody() {
   let html = rounds[0].messages.length ? renderDetailTab({ rounds }, true) : '<div style="color:var(--dim);padding:12px 0">等待 claude 响应…</div>';
   if (mb.liveText) html += `<div class="cc-line cc-text"><span class="cc-dot">⏺</span><div class="mb-live" id="mbLive">${escapeHtml(mb.liveText)}</div></div>`;
   const running = mb.state === 'running' || mb.state === 'starting';
-  if (running) html += `<div class="cc-dur cc-dur-total mb-status" id="mbStatus">${escapeHtml(mbStatusText())}</div>`;
+  if (running) html += `<div class="cc-dur cc-dur-total mb-status" id="mbStatus">${mbStatusHtml()}</div>`;
   for (const p of mb.perms) {
     html += (p.toolName === 'AskUserQuestion' && Array.isArray(p.input?.questions))
       ? mbAskCardHtml(p)
@@ -2237,10 +2239,20 @@ window.mbSubmitAnswers = (requestId) => {
 };
 
 // 逐字增量：只改 #mbLive 文本，不整刷（不存在则整刷一次建出来）
-function mbUpdateLive() {
+// 高频 text_delta / token 增量合批到下一帧统一落地：原来每条 delta 都整写 DOM + 读 scrollHeight（强制同步 reflow），
+// 逐 token 推送下主线程被占满，正文与底部状态行一起卡顿。改为只标脏 + rAF，DOM 落地每帧至多一次、reflow 每帧至多一次。
+let mbFlushRaf = null;
+function mbScheduleLive() {
+  if (mbFlushRaf || !mb || mb.syncing) return;
+  mbFlushRaf = requestAnimationFrame(mbFlushLive);
+}
+function mbFlushLive() {
+  mbFlushRaf = null;
+  if (!mb) return;
   const el = document.getElementById('mbLive');
-  if (!el) { mbRenderBody(); return; }
+  if (!el) { if (mb.liveText) mbRenderBody(); return; }   // #mbLive 未建且有正文：整刷建结构；轮末 liveText 已清空则 no-op，免全量重渲染
   el.textContent = mb.liveText;
+  mbUpdateLiveTokens();
   const body = $('modalBody');
   if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 120) body.scrollTop = body.scrollHeight;
 }
