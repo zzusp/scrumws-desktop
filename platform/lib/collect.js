@@ -343,6 +343,7 @@ export async function collectState() {
     },
     runnerConfig: {
       maxConcurrentRunners: cfg.maxConcurrentRunners ?? 5,
+      proxyUrl: cfg.proxyUrl || '',                   // 平台出网代理（打 Anthropic usage 端点用）；空=回退系统 HTTP(S)_PROXY
     },
   };
 }

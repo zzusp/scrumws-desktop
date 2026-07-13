@@ -1079,6 +1079,109 @@ function escapeAttr(s) { return escapeHtml(s); }
 // 用户消息展示前剥掉钉钉链的指令前缀（cc: 是 dws 群聊的触发词，任务视图里不出现这种用法）
 function stripDirectivePrefix(s) { return String(s || '').replace(/^\s*cc[:：]\s*/i, ''); }
 
+// ---- Claude Code 账号级用量（详情页卡片）：套餐 + Pro/Max 的 5h/7d 滚动窗，账号全局非按任务 ----
+// 后端 /api/claude-usage 已 60s 缓存；前端再缓存一层，详情页 5s 轮询不必每 tick 拉。
+let claudeUsage = null;          // 最近一次 /api/claude-usage 结果
+let claudeUsageAt = 0;           // 拉取时刻（毫秒）
+let claudeUsageInflight = false;
+const CLAUDE_USAGE_TTL = 60000;
+async function refreshClaudeUsage(taskKey) {
+  if (claudeUsageInflight) return;
+  if (claudeUsage && Date.now() - claudeUsageAt < CLAUDE_USAGE_TTL) return;   // 新鲜：不重复拉
+  claudeUsageInflight = true;
+  try {
+    const u = await api('/api/claude-usage');
+    claudeUsage = u; claudeUsageAt = Date.now();
+    if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);   // 到货重画卡片
+  } catch { /* 网络抖动：忽略，下一 tick 再拉 */ }
+  finally { claudeUsageInflight = false; }
+}
+
+// token 压缩显示（对齐 renderRuntime 的 compact：百万级用 K/M/B）
+function compactTokens(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+// 距刷新剩余（resetsAt ISO → 「1d 22h 后刷新 / 3h 20m 后刷新 / 12m 后刷新 / 即将刷新」）
+function fmtResetIn(resetsAt) {
+  const ms = new Date(resetsAt) - Date.now();
+  if (!isFinite(ms) || ms <= 0) return '即将刷新';
+  const totalMin = Math.floor(ms / 60000);
+  const d = Math.floor(totalMin / 1440);
+  const h = Math.floor((totalMin % 1440) / 60);
+  const m = totalMin % 60;
+  if (d > 0) return `${d}d ${h}h 后刷新`;
+  if (h > 0) return `${h}h ${m}m 后刷新`;
+  return `${m}m 后刷新`;
+}
+
+// 单个滚动窗横向进度条（5h / 7d）：百分比 + 距刷新剩余；≥80% 红、≥50% 琥珀、否则绿（对齐 statusline 配色）
+function ccUsageBarHtml(label, win) {
+  if (!win || win.utilization == null) return '';
+  const pct = Math.max(0, Math.min(100, Number(win.utilization)));
+  const color = pct >= 80 ? 'var(--coral)' : pct >= 50 ? 'var(--amber)' : 'var(--jade)';
+  const reset = win.resetsAt ? fmtResetIn(win.resetsAt) : '';
+  return `
+    <div class="cc-bar">
+      <div class="cc-bar-head">
+        <span class="cc-bar-label">${escapeHtml(label)}</span>
+        <span class="cc-bar-pct" style="color:${color}">${pct.toFixed(0)}%</span>
+      </div>
+      <div class="cc-bar-track"><div class="cc-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+      ${reset ? `<div class="cc-bar-reset">${escapeHtml(reset)}</div>` : ''}
+    </div>`;
+}
+
+// Claude Code 卡片：sessionId / 模型 / token 用量 + Pro/Max 的 5h/7d 滚动窗
+function claudeCodeCardHtml(t, model) {
+  const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const sessionId = t.meta?.sessionId || null;
+  const u = t.meta?.usage || null;   // CC result.usage 末轮快照
+  let tokenHtml;
+  if (u) {
+    const inTok = Number(u.input_tokens) || 0;
+    const outTok = Number(u.output_tokens) || 0;
+    const cacheTok = (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
+    const title = `输入 ${inTok.toLocaleString('en-US')} · 输出 ${outTok.toLocaleString('en-US')} · 缓存 ${cacheTok.toLocaleString('en-US')}`;
+    tokenHtml = `<span title="${escapeAttr(title)}">↑${compactTokens(inTok)} ↓${compactTokens(outTok)} <span style="color:var(--dim)">缓存 ${compactTokens(cacheTok)}</span></span>`;
+  } else if (t.source === 'cli') {
+    tokenHtml = '<span style="color:var(--dim)">CLI 会话不计量</span>';   // CLI 会话 v1 不计 token
+  } else {
+    tokenHtml = '<span style="color:var(--dim)">—</span>';               // 分身任务：快照尚未落盘（多为处理中）
+  }
+  // 用量区：套餐 Pro/Max 才有 5h/7d 滚动窗；数据未到 / 非订阅 / 拉取失败各自提示
+  const cu = claudeUsage;
+  let usageHtml = '';
+  if (!cu) {
+    usageHtml = '<div class="cc-usage-note">用量加载中…</div>';
+  } else if (cu.ok && cu.subscription) {
+    if (cu.error) {
+      const msg = cu.error === 'token-expired' ? 'OAuth 凭据已过期，重新登录 Claude Code 后恢复' : `用量读取失败（${escapeHtml(cu.error)}）`;
+      usageHtml = `<div class="cc-usage-note">${msg}</div>`;
+    } else {
+      const bars = ccUsageBarHtml('5 小时', cu.fiveHour) + ccUsageBarHtml('7 天', cu.sevenDay);
+      usageHtml = bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
+    }
+  }
+  // 套餐徽章：max/pro 高亮，其余淡显
+  const plan = cu?.plan;
+  const planTag = plan
+    ? `<span class="tag ${cu?.subscription ? 'tag-jade' : 'tag-mut'}" style="text-transform:uppercase">${escapeHtml(plan)}</span>`
+    : '';
+  return `
+    <div class="side-block">
+      <h3>Claude Code ${planTag ? `<span style="margin-left:auto">${planTag}</span>` : ''}</h3>
+      ${kv('session', sessionId ? escapeHtml(sessionId) : '<span style="color:var(--dim)">—</span>')}
+      ${kv('模型', escapeHtml(model))}
+      ${kv('token', tokenHtml)}
+      ${usageHtml ? `<div class="cc-usage">${usageHtml}</div>` : ''}
+    </div>`;
+}
+
 // ---- 右侧信息栏：任务信息 kv / 描述 / 快捷操作（参考 detail-side）----
 function renderTaskSide(taskKey) {
   const el = $('taskSide');
@@ -1186,7 +1289,6 @@ function renderTaskSide(taskKey) {
       ${kv('cwd', escapeHtml(cwdVal))}
       ${kv('git', escapeHtml(gitVal))}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
-      ${kv('模型', escapeHtml(model))}
       ${bgAgent > 0 ? kv('后台 agent', `<span style="color:var(--amber)">${bgAgent} 个运行中（主进程已让出，等后台完成）</span>`) : ''}
       ${/* turns / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / jsonlVal，待定放置位置）*/''}
       ${kv('创建', escapeHtml(t.createdAt || '—'))}
@@ -1196,6 +1298,7 @@ function renderTaskSide(taskKey) {
       ${failureHtml}
       ${commentHtml}
     </div>
+    ${claudeCodeCardHtml(t, model)}
     <div class="side-block">
       <h3>任务描述 <button class="btn" style="margin-left:auto;font-size:10px;padding:1px 9px" onclick="editTaskDesc('${escapeAttr(t.taskKey)}')">✎ 编辑</button></h3>
       ${descText
@@ -1208,6 +1311,8 @@ function renderTaskSide(taskKey) {
   // 面包屑末级同步任务标题（详情页 header 已移除，标题改在此块内展示 · req4）
   const crumbLast = document.getElementById('crumbLast');
   if (crumbLast) crumbLast.textContent = sideTitle;
+  // Claude Code 卡片的账号级用量：懒加载（到货后回调重画本卡）
+  refreshClaudeUsage(taskKey);
 }
 
 function renderDetailTab(r, liveMb) {
@@ -1583,10 +1688,37 @@ async function refreshState() {
     renderChecker(stateData.checker);
     renderRuntime(stateData.runtime);
     renderLifecycle(stateData.lifecycle);
+    syncProxyInput();
   } catch (e) { console.error('state error:', e); }
 }
 
 $('autoRefreshSwitch').addEventListener('change', (e) => { autoRefresh = e.target.checked; });
+
+// 设置页出网代理：从 state 回填（不覆盖用户正在编辑的输入），保存走 /api/config/proxy
+function syncProxyInput() {
+  const inp = $('proxyUrlInput');
+  if (!inp || inp === document.activeElement || inp.dataset.dirty === '1') return;   // 编辑中不回填
+  inp.value = stateData?.runnerConfig?.proxyUrl || '';
+}
+{
+  const inp = $('proxyUrlInput');
+  const btn = $('proxySaveBtn');
+  const hint = $('proxySaveHint');
+  if (inp) inp.addEventListener('input', () => { inp.dataset.dirty = '1'; if (hint) hint.textContent = ''; });
+  if (btn) btn.addEventListener('click', async () => {
+    const proxyUrl = (inp.value || '').trim();
+    btn.disabled = true; if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '保存中…'; }
+    try {
+      const r = await api('/api/config/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxyUrl }) });
+      if (r.ok) {
+        delete inp.dataset.dirty;
+        claudeUsage = null; claudeUsageAt = 0;   // 代理变了：清前端用量缓存，详情页下次即重拉
+        if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = proxyUrl ? '已保存 · 用量将经此代理拉取' : '已清除 · 回退系统环境变量代理'; }
+      } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
+    } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
+    finally { btn.disabled = false; }
+  });
+}
 
 // ---- 新建任务 Modal（同一弹窗兼作 plan 任务「编辑」：editingTaskKey 非空即编辑模式）----
 const NEWTASK_HEAD = '新建 manual 任务';

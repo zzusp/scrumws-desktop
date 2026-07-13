@@ -1,0 +1,17 @@
+case,desc,round-1
+C1,后端 /api/claude-usage 返回真实用量(plan/subscription/fiveHour/sevenDay),PASS
+C2,Claude Code 卡片存在且紧邻「任务信息」下方,PASS
+C3,卡片含 session/模型/token 三行,PASS
+C4,套餐徽章 MAX/PRO 渲染,PASS
+C5,Pro/Max 渲染 5h+7d 两条横向进度条,PASS
+C6,5h 条含百分比+填充宽度+距刷新剩余,PASS
+C7,7d 条含百分比+填充宽度+距刷新剩余,PASS
+C8,已计量 manual 任务 token 显真实读数,PASS
+C9,分身无快照任务 token 显「—」非「不计量」,PASS
+C10,CLI 任务 token 显「不计量」,PASS
+C11,设置页「网络」区 + proxyUrl 输入框就位,PASS
+C12,保存代理落 runner-config.json + state 回传 + 回填,PASS
+C13,配置代理经 curl -x 生效(坏代理必失败/好代理 200),PASS
+C14,空代理回退系统 HTTP(S)_PROXY,PASS
+C15,非法代理地址被 400 拒,PASS
+C16,清除代理落盘为空,PASS

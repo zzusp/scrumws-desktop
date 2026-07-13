@@ -8,6 +8,7 @@ import { createTask, replyToTask, cancelTask, completeTask, restartTask, taskCwd
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
+import { getClaudeUsage, invalidateClaudeUsage } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
 
@@ -170,6 +171,8 @@ const server = http.createServer(async (req, res) => {
   const { pathname, searchParams } = new URL(req.url, 'http://x');
   try {
     if (pathname === '/api/state') return sendJson(res, 200, await collectState());
+    // Claude Code 账号级用量（详情页 Claude Code 卡片）：套餐 + Pro/Max 的 5h/7d 滚动窗；模块内 60s 缓存
+    if (pathname === '/api/claude-usage') return sendJson(res, 200, await getClaudeUsage());
     if (pathname === '/api/worker-log/stream') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
@@ -255,6 +258,22 @@ const server = http.createServer(async (req, res) => {
         // CLI 会话续接 = bypass 权限（终端里本就是 bypass permissions 态，续到看板不该逐工具再授权）
         const r = createSession({ cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null, bypass: true });
         sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
+      });
+      return;
+    }
+    // 出网代理配置（设置页）：body {proxyUrl}；空串=清除、回退系统 HTTP(S)_PROXY。存 runner-config.json，
+    // 清 claude-usage 缓存令下次拉取立即用新代理。
+    if (req.method === 'POST' && pathname === '/api/config/proxy') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const proxyUrl = String(payload?.proxyUrl ?? '').trim();
+        if (proxyUrl && !/^https?:\/\/[^\s]+$/i.test(proxyUrl)) return sendJson(res, 400, { ok: false, error: '代理地址需形如 http://host:port' });
+        writeConfig({ proxyUrl });
+        invalidateClaudeUsage();
+        sendJson(res, 200, { ok: true, proxyUrl });
       });
       return;
     }

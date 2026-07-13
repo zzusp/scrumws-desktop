@@ -347,6 +347,15 @@ select.field-input{background:var(--card)}
 .side-kv .k{width:70px;color:var(--dim);flex:none}
 .side-kv .v{flex:1;color:var(--ink2);font-family:var(--mono);font-size:11px;word-break:break-all}
 .side-actions{display:flex;flex-wrap:wrap;gap:8px}
+/* Claude Code 卡片：账号级用量（5h/7d 横向进度条 + 距刷新剩余） */
+.cc-usage{margin-top:11px;padding-top:11px;border-top:1px solid var(--hair);display:flex;flex-direction:column;gap:11px}
+.cc-usage-note{font-size:11px;color:var(--dim);line-height:1.5}
+.cc-bar-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:5px}
+.cc-bar-label{font-size:11.5px;color:var(--ink2)}
+.cc-bar-pct{font-size:11.5px;font-weight:650;font-family:var(--mono)}
+.cc-bar-track{height:6px;border-radius:99px;background:var(--card2);box-shadow:inset 0 0 0 1px var(--hair);overflow:hidden}
+.cc-bar-fill{height:100%;border-radius:99px;transition:width .4s ease}
+.cc-bar-reset{margin-top:4px;font-size:10.5px;color:var(--dim)}
 .reply-box{flex:none;margin-top:0;padding:12px 22px;background:var(--glass2);backdrop-filter:blur(8px);border:none;border-top:1px solid var(--hair);border-radius:0}
 
 /* 消息时间线：user 右对齐软气泡 */
@@ -686,6 +695,21 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               </label>
             </div>
             <button class="btn theme-btn" id="themeBtn" title="切换明暗主题">☀️</button>
+          </section>
+
+          <!-- 网络：出网代理（打 Anthropic usage 端点用；受限地区直连会 403） -->
+          <section class="card" style="max-width:640px;margin-bottom:var(--gap)">
+            <div class="sec-head">
+              <h2>网络</h2>
+              <span class="sec-sub">出网代理 · 拉取 Claude Code 账号用量（5h/7d）时经此代理访问 api.anthropic.com</span>
+            </div>
+            <div class="field">
+              <input type="text" id="proxyUrlInput" class="field-input mono" autocomplete="off" placeholder="http://127.0.0.1:10808（留空 = 用系统 HTTP(S)_PROXY 环境变量）">
+              <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+                <button class="btn" id="proxySaveBtn">保存</button>
+                <span id="proxySaveHint" style="font-size:11.5px;color:var(--dim)"></span>
+              </div>
+            </div>
           </section>
 
           <!-- 平台守护（req5 从数据看板迁入）：runner-checker 启停 -->
