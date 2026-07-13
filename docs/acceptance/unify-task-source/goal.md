@@ -10,9 +10,9 @@
 
 | # | sub goal | 关键改动 | 状态 |
 |---|----------|----------|------|
-| 1 | 详情侧栏字段归一 | 后端 `readCliWorkerLog` round 补 `gitBranch`；前端 `renderTaskSide` 去 `isCli` 取值分叉，共有字段统一取详情 round，CLI 独有字段按 `t.cli` 存在性显 | DONE（待实跑复核） |
-| 2 | 操作/端点归一 | `/api/cli/rename`→并入 `/api/task/rename` 内部分派；补齐分身 unarchive/uncomplete 或明确语义；前端去 `startsWith('cli:')` 选端点 | TODO |
-| 3 | 语义字段替代来源判据 | 引入 `observed`（或复用 `t.cli`/`mbSessionId`）替换散落的 `source==='cli'`；卡片 statusLine/actionBtn 归一 | TODO |
+| 1 | 详情侧栏字段归一 | 后端 `readCliWorkerLog` round 补 `gitBranch`；前端 `renderTaskSide` 去 `isCli` 取值分叉，共有字段统一取详情 round，CLI 独有字段按 `t.cli` 存在性显 | DONE ✅ 实跑通过 |
+| 2 | rename 端点归一 | `renameTask` 内部按来源分派（CLI→watchlist / 分身→task.json，与 archiveTask 同构）；删并行的 `/api/cli/rename` + `renameCliSession`；前端统一调 `/api/task/rename` | DONE ✅ 实跑 7/7 |
+| 3 | 剩余 `source==='cli'` 判据复核 | 逐个归类：真执行差异（回复路径/可逆操作/rewind/无 pid-usage）保留，仅判据名可选纯化为语义字段；卡片 statusLine/actionBtn 视情况归一 | 待用户拍板 |
 
 ## 保留的合理差异（执行方式，非来源）
 - 回复：owned 走 mbSend/sendReply；observed 空闲→收养成 Mode B；observed 终端占用→只读（`app.js` 以 `mbSessionId` 为主判据，已正确）
@@ -22,3 +22,8 @@
 
 ## 进展
 - 2026-07-13 round-1：完成 sub goal 1（字段归一）。数据源确认——`readWorkerLog` 对 CLI/分身产出同构 rounds，CLI 原缺 gitBranch 已补齐。
+  验证：`scripts/verify-fields.mjs` + 起 web server(8890) curl `/api/worker-log`——CLI round.gitBranch 由 null→`master`，两类 cwd/git/model/workMs 同源可取。
+- 2026-07-13 round-2：完成 sub goal 2（rename 归一）。`renameTask` 内部分派，删 `/api/cli/rename` 路由 + `renameCliSession` 函数（grep 零残留），前端统一端点。
+  验证：`scripts/verify-rename.mjs` 独立临时数据根 7/7 PASS（CLI 写 watchlist、分身写 task.json、空标题清除、不存在报错）。
+- 待决策：sub goal 3。复核结论——第 1/2 步已消除"同一逻辑被按来源做两套"的真特殊处理；剩余 `isCli` 判据经逐条核查**基本都是执行方式差异**
+  （observed 会话：收养回复/只读/rewind/取消归档-完成，owned 会话：排队/中断，及 pid/lease/usage 数据可得性），改判据名为 `observed` 只是抽象纯化、非消除特殊处理。
