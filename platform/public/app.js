@@ -198,6 +198,18 @@ function tickLiveTimers() {
   });
 }
 
+// 来源标签（卡片左下角 + 详情页「任务信息」状态标签前，同一套）：chat 链走 dws（钉钉工具链），
+// 会话细分（self/group/dm）看底部 taskKey 短码；issue / cli 独立，其余显 source 名。
+function sourceTagHtml(t) {
+  return t.source === 'chat'
+    ? '<span class="tag tag-cyan">dws</span>'
+    : t.source === 'issue'
+      ? '<span class="tag tag-amber">issue</span>'
+      : t.source === 'cli'
+        ? '<span class="tag" style="background:var(--brandS);color:var(--brand)">CLI</span>'
+        : '<span class="tag tag-mut">' + (t.source || '?') + '</span>';
+}
+
 function taskCardHtml(t, section) {
   const isCli = t.source === 'cli';
   const cost = t.meta?.totalCostUsd ? '$' + t.meta.totalCostUsd.toFixed(4) : '';
@@ -233,14 +245,7 @@ function taskCardHtml(t, section) {
     statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">${t.resolvedAgo || '—'} · 耗时 ${totalDur}</div>`;
   }
 
-  // 来源标签：chat 链走 dws（钉钉工具链），会话细分（self/group/dm）看底部 taskKey 短码；cli 独立
-  const sourceTag = t.source === 'chat'
-    ? '<span class="tag tag-cyan">dws</span>'
-    : t.source === 'issue'
-      ? '<span class="tag tag-amber">issue</span>'
-      : t.source === 'cli'
-        ? '<span class="tag" style="background:var(--brandS);color:var(--brand)">CLI</span>'
-        : '<span class="tag tag-mut">' + (t.source || '?') + '</span>';
+  const sourceTag = sourceTagHtml(t);
 
   // 按钮（底部 ghost 化，卡片 hover 提亮）：非 plan=✎ 描述；plan=✎ 编辑（改 title/prompt/model/目录/描述）；plan 还有确认排队+归档
   const isPlan = section === 'plan';
@@ -1045,10 +1050,10 @@ function renderTaskSide(taskKey) {
   const lastOk = rounds[rounds.length - 1] || null;
   const isCli = t.source === 'cli';
   const model = isCli ? (t.meta?.model || '—') : (lastOk?.ccSummary?.model || lastOk?.systemInit?.model || '—');
-  const srcTxt = t.source === 'chat' ? `dws / ${t.kind || '?'}` : (t.source === 'cli' ? `本机 CLI · ${t.cli?.version || '?'}` : (t.source || '—'));
   const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const tags = [
+    sourceTagHtml(t),                                   // 卡片左下角同款来源标签，放状态标签前
     stateTagHtml(t.state),
     t.outcome === 'cancelled' ? '<span class="tag tag-coral">用户中断</span>' : '',
     t.isArchive ? '<span class="tag tag-mut">已归档</span>' : '',
@@ -1145,7 +1150,6 @@ function renderTaskSide(taskKey) {
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0">${tags}</div>
       ${kv('taskKey', escapeHtml(t.taskKey))}
-      ${kv('来源', escapeHtml(srcTxt))}
       ${kv('cwd', escapeHtml(cwdVal))}
       ${kv('git', escapeHtml(gitVal))}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
