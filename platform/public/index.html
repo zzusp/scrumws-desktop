@@ -308,6 +308,10 @@ select.field-input{background:var(--card)}
 .md-body pre code{background:none;box-shadow:none;padding:0;font-size:11.5px}
 .md-body a{color:var(--cyan);text-decoration:underline;word-break:break-all}
 .md-body strong{font-weight:700;color:var(--ink)}
+.md-body table{border-collapse:collapse;margin:.6em 0;font-size:12.5px;display:block;overflow-x:auto;max-width:100%}
+.md-body th,.md-body td{border:1px solid var(--hair);padding:5px 10px;text-align:left;vertical-align:top}
+.md-body th{background:var(--card2);font-weight:600;color:var(--ink)}
+.md-body tbody tr:nth-child(even){background:color-mix(in oklab, var(--card2) 45%, transparent)}
 
 /* ---------- 任务详情页：左右布局（req4：去掉顶部 header，标题移入右侧任务信息）---------- */
 #view-task{flex:1;min-height:0;overflow:hidden}
@@ -415,6 +419,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .reply-composer textarea:disabled{background:var(--card2);color:var(--dim);cursor:not-allowed}
 .reply-toolbar{display:flex;align-items:center;gap:10px;padding:7px 10px 7px 12px;background:var(--muted);border-top:1px solid var(--hair);border-radius:0 0 calc(var(--r-lg) - 1px) calc(var(--r-lg) - 1px);flex-wrap:wrap}
 .reply-model-wrap{position:relative;flex:none}
+.reply-toolbar .reply-model-wrap{margin-right:auto}
 .reply-model-btn{font-family:var(--sans);font-size:11px;padding:5px 9px 5px 10px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);outline:none;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:border-color .15s,background .15s;min-width:140px}
 .reply-model-btn.form-size{font-size:12.5px;padding:8px 12px;border-radius:var(--r-md);border-color:var(--input);background:transparent;min-width:0}
 .reply-model-btn:hover{background:var(--raise);border-color:var(--hair2)}
@@ -445,7 +450,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .reply-toolbar .reply-count.warn{color:var(--amber)}
 .reply-toolbar .reply-kbd{font-size:10.5px;color:var(--dim);display:inline-flex;align-items:center;gap:3px}
 .reply-toolbar .reply-kbd kbd{font-family:var(--mono);font-size:10px;background:var(--card);box-shadow:inset 0 0 0 1px var(--hair),inset 0 -1px 0 var(--hair2);border-radius:4px;padding:2px 5px;color:var(--ink2);line-height:1}
-.reply-toolbar .reply-send{margin-left:auto;font-size:12px;padding:6px 18px;flex:none;font-weight:600;letter-spacing:.02em}
+.reply-toolbar .reply-send{font-size:12px;padding:6px 18px;flex:none;font-weight:600;letter-spacing:.02em}
 .reply-toolbar .reply-send:disabled{opacity:.5;cursor:not-allowed}
 .reply-restart{display:flex;align-items:center;gap:14px;margin-top:10px;padding:12px 14px;background:color-mix(in oklab, var(--warning) 7%, transparent);border:1px dashed color-mix(in oklab, var(--warning) 40%, transparent);border-radius:var(--r-lg)}
 .reply-restart-btn{font-size:12.5px;padding:8px 18px;background:var(--warning);color:oklch(0.2 0.02 85);border-color:transparent;font-weight:600;letter-spacing:.02em;flex:none}
@@ -727,8 +732,6 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
                   </button>
                   <div class="reply-model-menu" id="modalReplyModelMenu" role="listbox"></div>
                 </div>
-                <span class="reply-count" id="modalReplyCount">0 字</span>
-                <span class="reply-kbd" title="Ctrl+Enter 发送"><kbd>Ctrl</kbd>+<kbd>⏎</kbd></span>
                 <button class="btn" id="modalReplyInterrupt" style="display:none" title="打断当前轮（interrupt）">■ 打断</button>
                 <button class="btn btn-primary reply-send" id="modalReplySend">发送</button>
               </div>

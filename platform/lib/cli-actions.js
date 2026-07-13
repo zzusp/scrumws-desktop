@@ -178,11 +178,12 @@ export function removeCliSession({ sid } = {}) {
 }
 
 // 原地 rewind：改写历史 user 消息并从那里重新执行（对齐 CC 交互 double-Esc rewind 语义：
-// 同一 session、同一张卡片）。实现：截断原 jsonl 到目标消息之前（写回原文件，sid 不变）→
-// claude --resume <原sid> -p <改写消息> → 新消息挂到截断处叶子 = 从那里重新执行。
-// 截掉的时间线直接丢弃（2026-07-10 用户拍板：不做备份）。
+// 同一 session、同一张卡片）。本函数只负责「截断」：把原 jsonl 截到目标消息之前（写回原文件，sid 不变）
+// → 返回 { sid, cwd } 交前端收养成 Mode B live 会话（createSession(resume=sid) + 把改写后的消息作新一轮
+// 从截断处叶子重跑，同「续接」路径）。不再走已废弃的 cli-reply-runner.ps1（桌面版脚本资产不随数据根走，
+// 方向是无 ps1、一律 Mode B 引擎）。截掉的时间线直接丢弃（2026-07-10 用户拍板：不做备份）。
 // guard：终端进程占用时拒绝——终端内存持有完整会话状态，动文件会错乱；且终端里本来就有原生 rewind。
-export function rewindCliSession({ taskKey, uuid, message, model } = {}) {
+export function rewindCliSession({ taskKey, uuid, message } = {}) {
   const msg = String(message || '').trim();
   if (!msg) return { ok: false, error: 'message required' };
   if (!uuid || !/^[a-f0-9-]{36}$/i.test(String(uuid))) return { ok: false, error: 'invalid uuid（目标消息）' };
@@ -244,9 +245,8 @@ export function rewindCliSession({ taskKey, uuid, message, model } = {}) {
     return { ok: false, error: `截断写回失败: ${e.message}` };
   }
 
-  const spawnErr = spawnCliReply({ sid, message: msg, model, cwd });
-  if (spawnErr) return { ok: false, error: `${spawnErr}（jsonl 已截断）` };
-  return { ok: true, taskKey: `cli:${sid.slice(0, 8)}` };
+  // 截断完成 → 交前端收养成 Mode B live 会话（/api/session/adopt + 改写后的消息经 live 视图发出重跑）。
+  return { ok: true, sid, taskKey: `cli:${sid.slice(0, 8)}`, cwd };
 }
 
 // 看板向 CLI session 发回复：spawn cli-reply-runner.ps1 → claude --resume 追加一轮。

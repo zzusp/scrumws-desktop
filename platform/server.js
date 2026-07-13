@@ -7,6 +7,7 @@ import { writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, restartTask, taskCwds, readTaskEdit, editTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
+import { readAttachedSessions } from './lib/collect-cli.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
 
@@ -243,6 +244,10 @@ const server = http.createServer(async (req, res) => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
         const sessionId = payload?.sessionId;
+        // guard：该 session 仍被活终端进程持有 → 拒绝续接。两个 claude 抢同一 session 会撞车，被收养的 Mode B
+        // 会话拿不到 system/init 永久卡 starting，把看板卡片钉死在 processing（对齐 replyCli/rewindCli 的 guard ①）。
+        const att = readAttachedSessions().get(sessionId);
+        if (att) return sendJson(res, 409, { ok: false, error: `session 正被终端进程占用（pid=${att.pid}${att.status ? ` · ${att.status}` : ''}），请直接在那个终端窗口里回复；关闭该终端后即可从看板续接` });
         const hist = readCcSessionForAdopt(sessionId);
         if (!hist.ok) return sendJson(res, 400, hist);
         // 历史消息 → Mode B 事件形状（content block 已带 _ts）
@@ -423,8 +428,8 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // CLI 原地 rewind：改写历史 user 消息并从那里重新执行（同一 session；原时间线备份到 rewind-backup/）
-    // body: {taskKey, uuid, message, model?}
+    // CLI 原地 rewind：截断 jsonl 到目标消息之前（同一 session，原时间线丢弃不备份），返回 {sid, cwd}
+    // 交前端收养成 Mode B live 会话续跑改写后的消息。body: {taskKey, uuid, message}
     if (req.method === 'POST' && pathname === '/api/cli/rewind') {
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });

@@ -89,6 +89,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
     title,
     hasCustomTitle: !!task?.customTitle,
     description: task?.description || null,   // 纯用户备注（看板编辑，不进 prompt）
+    cwd: task?.cwd || null,                   // 任务配置的工作目录（新建/编辑时写入 task.json）；awaiting 卡片非失败态展示
     source,
     kind,
     state: effectiveState,

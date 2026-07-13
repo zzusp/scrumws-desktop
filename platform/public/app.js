@@ -238,9 +238,19 @@ function taskCardHtml(t, section) {
   } else if (section === 'done') {
     statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">${t.resolvedAgo || '—'} · 耗时 ${totalDur} · ${rounds} · ${cost}</div>`;
   } else if (section === 'awaiting-human') {
-    const reason = t.outcomeDetail?.failureReason || t.outcome || '未知';
-    const short = reason.length > 60 ? reason.slice(0, 60) + '…' : reason;
-    statusLine = `<div style="font-size:11px;color:var(--coral);font-family:var(--mono)">${escapeHtml(short)}</div><div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">${t.resolvedAgo || '—'} · 耗时 ${totalDur}</div>`;
+    // awaiting-human 有两类：① 真失败/中断（checker 收孤儿、session error、用户中断）带 failureReason/outcome
+    // → 红字显原因；② 一轮收敛等你回复（outcome=null 无 failureReason）→ 非失败，显工作目录（对齐 CLI 卡片），
+    // 不再兜底成误导性红字"未知"。
+    const failReason = t.outcomeDetail?.failureReason || t.outcome;
+    const tail = `<div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">${t.resolvedAgo || '—'} · 耗时 ${totalDur}</div>`;
+    if (failReason) {
+      const short = failReason.length > 60 ? failReason.slice(0, 60) + '…' : failReason;
+      statusLine = `<div style="font-size:11px;color:var(--coral);font-family:var(--mono)">${escapeHtml(short)}</div>${tail}`;
+    } else {
+      const cwd = t.cwd || '—';
+      const cwdShort = cwd.length > 40 ? '…' + cwd.slice(-38) : cwd;
+      statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(cwd)}">${escapeHtml(cwdShort)}</div>${tail}`;
+    }
   } else {
     statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">${t.resolvedAgo || '—'} · 耗时 ${totalDur}</div>`;
   }
@@ -266,7 +276,7 @@ function taskCardHtml(t, section) {
       actionBtn = `<button class="btn" style="color:var(--mut)" onclick="event.stopPropagation();uncompleteCliTask('${escapeAttr(t.taskKey)}')" title="取消完成，回落存活自动判态">↺ 取消完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
     } else {
       // awaiting-human（终端空闲/退出）：可人工标完成 → done，或归档
-      actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 确认完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
+      actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
     }
   } else if (section === 'plan') {
     actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="不做了，直接归档">归档</button>`;
@@ -274,7 +284,7 @@ function taskCardHtml(t, section) {
     actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();cancelTaskAction('${escapeAttr(t.taskKey)}')">中断</button>`;
   } else if (section === 'awaiting-human') {
     // 人工复查后判定其实已完成 → 确认完成（移入 done）；或归档收走
-    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此任务已完成 → 移入 done">✓ 确认完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
+    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此任务已完成 → 移入 done">✓ 完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
   } else if (section === 'done') {
     actionBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
   }
@@ -552,6 +562,7 @@ window.approveTaskAction = approveTaskAction;
 // ---- 任务详情页（单一对话流 + 右侧信息栏）----
 let currentModalData = null;
 let lastModalFp = null;             // poll 内容指纹：没新内容不重画 DOM（保住滚动位置和 details 展开态）
+let lastReplyFp = null;             // 回复框模式指纹：只在决定 composer 形态的字段变了才重装（否则每 tick 重装会清空用户正在输入的文本 + 抢焦点）
 
 // 卡片点击入口：统一进详情 #/task/<key>。详情内部按任务是否有活 Mode B 会话分派——
 // 有活会话 → 连 live SSE（逐字 / 权限 / 打断）；无 → 读磁盘 jsonl 只读历史 + 回复框。
@@ -567,6 +578,7 @@ async function loadTaskDetail(taskKey) {
     closeModalLive();
     currentModalData = null;
     renderTaskSide(taskKey);            // 先出侧栏，body 由 loadSession 连上后渲染
+    startModalPoll(taskKey);            // 常驻轮询：live 模式下 stateData 也要保鲜，侧栏 state/耗时 不滞后
     loadSession(t.mbSessionId);
     return;
   }
@@ -603,23 +615,28 @@ function modalContentFp(r, stateStr, histLen) {
   ]);
 }
 
-// 关闭详情页实时通道（SSE + 兜底轮询都清）
-function closeModalLive() {
+// 只关块级 SSE（消息体近实时通道），保留常驻轮询继续刷侧栏卡片
+function closeModalSse() {
   if (modalSse) { try { modalSse.close(); } catch { /* ignore */ } modalSse = null; }
+}
+// 关闭详情页所有实时通道（SSE + 常驻轮询）——离开详情 / 切任务时用
+function closeModalLive() {
+  closeModalSse();
   if (modalPollTimer) { clearInterval(modalPollTimer); modalPollTimer = null; }
 }
 
 function startModalPoll(taskKey) {
   if (modalPollTimer) clearInterval(modalPollTimer);
-  modalPollTimer = setInterval(() => reloadModalIfProcessing(taskKey), MODAL_POLL_MS);
+  modalPollTimer = setInterval(() => pollTaskDetail(taskKey), MODAL_POLL_MS);
 }
 
-// processing 任务：优先 SSE 块级推送；无 EventSource / SSE 出错则回落 5s 轮询
+// 详情页刷新总控：无条件起常驻轮询（任何状态都刷「任务信息卡 + state」，补上 modal 打开期间被门控的
+// 看板主轮询）；processing 任务再叠加块级 SSE 做消息体近实时（此时轮询只刷侧栏、不重复拉 worker-log）。
 function ensureModalLive(taskKey) {
   closeModalLive();
+  startModalPoll(taskKey);   // 常驻：侧栏卡片稳定刷（heartbeat/耗时/state/工作时长/git 不再滞后）
   const t = findTaskInState(taskKey);
-  if (t?.state !== 'processing') return;
-  if (typeof EventSource === 'undefined') { startModalPoll(taskKey); return; }
+  if (t?.state !== 'processing' || typeof EventSource === 'undefined') return;   // 非 processing / 无 SSE：只靠轮询
   const es = new EventSource(`/api/worker-log/stream?taskKey=${encodeURIComponent(taskKey)}`);
   modalSse = es;
   es.onmessage = (ev) => {
@@ -628,11 +645,11 @@ function ensureModalLive(taskKey) {
     try { payload = JSON.parse(ev.data); } catch { return; }
     if (payload && payload.ok) applyStreamedWorkerLog(taskKey, payload);
   };
-  es.addEventListener('done', () => { closeModalLive(); reloadModalIfProcessing(taskKey); });   // 收敛：最后同步一次
-  es.onerror = () => { closeModalLive(); if (modalOpen && modalPollTaskKey === taskKey) startModalPoll(taskKey); };
+  es.addEventListener('done', () => { closeModalSse(); pollTaskDetail(taskKey); });   // SSE 收敛：只关 SSE，轮询继续刷卡
+  es.onerror = () => { closeModalSse(); };   // SSE 掉线：回落常驻轮询兜底拉 worker-log
 }
 
-// 消费 SSE 推来的 worker-log：消息流立即用推送数据渲染（不阻塞），侧栏卡片走一次轻量 state 刷新
+// 消费 SSE 推来的 worker-log：消息流立即用推送数据渲染（不阻塞），侧栏卡片同步一次
 async function applyStreamedWorkerLog(taskKey, r) {
   currentModalData = r;
   const histLen = (findTaskInState(taskKey)?.history || []).length;
@@ -644,31 +661,36 @@ async function applyStreamedWorkerLog(taskKey, r) {
     renderTaskSide(taskKey);
     updateReplyBoxAvailability(taskKey);
     const t = findTaskInState(taskKey);
-    if (t && t.state !== 'processing') closeModalLive();
+    if (t && t.state !== 'processing') closeModalSse();   // 收敛：只关 SSE，常驻轮询继续刷卡
   } catch { /* state 抖动：忽略，下一帧再同步 */ }
 }
 
-async function reloadModalIfProcessing(taskKey) {
+// 详情页常驻轮询（任何状态/模式一 tick 一刷）：拉 state 刷「任务信息卡」——侧栏无滚动/展开态，
+// 每 tick 直接重画拿最新 heartbeat/耗时/state/工作时长/git，不再受消息指纹门控而滞后。
+// 非 live 的 processing 任务且无块级 SSE 时，顺带拉 worker-log 兜底刷消息体（指纹变才重画，保滚动）。
+async function pollTaskDetail(taskKey) {
   if (!modalOpen || modalPollTaskKey !== taskKey) { closeModalLive(); return; }
   try {
-    // 先拉 state（modal 打开时看板 poll 被门控 skip 掉，findTaskInState 会陈旧；这里主动喂）
-    const s = await api('/api/state');
-    stateData = s;
-    // 拉 worker-log
-    const r = await api(`/api/worker-log?taskKey=${encodeURIComponent(taskKey)}`);
-    if (!r.ok) return;
-    currentModalData = r;
+    stateData = await api('/api/state');
+    if (!modalOpen || modalPollTaskKey !== taskKey) return;
     const t = findTaskInState(taskKey);
-    // 内容指纹没变就不重画（重画会丢滚动位置和 details 展开态——处理中"显示变动"的根因）
-    const fp = modalContentFp(r, t?.state, (t?.history || []).length);
-    if (fp !== lastModalFp) {
-      lastModalFp = fp;
-      renderModalBody(true);
-      renderTaskSide(taskKey);
+    // 会话变活（queued 自动起会话 / CLI 收养 / 续接）→ 切 live 模式重新分派（会重挂 SSE + 常驻轮询）
+    if (t?.mbSessionId && !mb) { loadTaskDetail(taskKey); return; }
+    // 侧栏卡片每 tick 重画（与消息体解耦：这是"刷新不及时"的根因）
+    renderTaskSide(taskKey);
+    // 回复框仅在 composer 形态变了才重装（否则会清空用户正在输入的文本 / 抢焦点）
+    if (replyBoxFp(t) !== lastReplyFp) updateReplyBoxAvailability(taskKey);
+    // 消息体：live 会话由 mb SSE 维护、块级 SSE 在跑时交给 SSE；非 live 且刚进 processing 且没挂 SSE →
+    // 升级到块级 SSE 做近实时（覆盖"打开时还是 queued、看着看着起跑"的场景）；无 SSE 环境则轮询兜底拉 worker-log
+    if (!mb && !modalSse && t?.state === 'processing') {
+      if (typeof EventSource !== 'undefined') { ensureModalLive(taskKey); return; }
+      const r = await api(`/api/worker-log?taskKey=${encodeURIComponent(taskKey)}`);
+      if (r.ok) {
+        currentModalData = r;
+        const fp = modalContentFp(r, t.state, (t.history || []).length);
+        if (fp !== lastModalFp) { lastModalFp = fp; renderModalBody(true); }
+      }
     }
-    updateReplyBoxAvailability(taskKey);
-    // state 已收敛 → 停 poll（下次 open 才再评估）
-    if (t && t.state !== 'processing') closeModalLive();
   } catch { /* 网络抖一下别把 modal 打坏，静默继续 */ }
 }
 
@@ -711,7 +733,7 @@ const STATE_TAG = {
   queued:         { cls: 'tag-mut',   label: 'queued' },
   processing: { cls: 'tag-amber', label: 'processing' },
   done:           { cls: 'tag-jade',  label: 'done' },
-  'awaiting-human': { cls: 'tag-coral', label: 'awaiting-human' },
+  'awaiting-human': { cls: 'tag-coral', label: 'awaiting' },
   cancelled:      { cls: 'tag-coral', label: 'cancelled' },   // 仅旧归档数据显示兼容；2026-07-10 起中断写 awaiting-human
 };
 function stateTagHtml(state) {
@@ -787,6 +809,15 @@ function router() {
 }
 window.addEventListener('hashchange', router);
 
+// 决定 composer 形态的字段集指纹：常驻轮询据此判定"要不要重装回复框"——只有这些变了才重装，
+// 否则每 tick 重装会清空用户正在输入的文本 + 抢焦点（CLI 空闲 / 可对话分支会 text.value='' + focus）。
+function replyBoxFp(t) {
+  return JSON.stringify([
+    t?.state, t?.mbSessionId || null, t?.source, !!t?.meta?.sessionId,
+    !!t?.lease?.alive, !!t?.isArchive, t?.cli?.attachedPid || null, t?.cli?.archivedAt || null,
+  ]);
+}
+
 // ---- 继续对话区：三态状态机（可对话 / 处理中 / 需重发 / 不可用）----
 // 每次 open modal 都会调；状态徽章 + 说明 + 输入区 / 重发区之间切换
 function updateReplyBoxAvailability(taskKey) {
@@ -802,6 +833,7 @@ function updateReplyBoxAvailability(taskKey) {
   const restartBtn = $('modalRestartBtn');
   const toast = $('modalReplyErr');
   const t = findTaskInState(taskKey);
+  lastReplyFp = replyBoxFp(t);   // 每次装配都刷新基线，常驻轮询据此判定后续是否需要重装
   const hasSid = !!(t?.meta?.sessionId);
   const processing = t?.state === 'processing';
   const isCli = t?.source === 'cli';
@@ -999,6 +1031,22 @@ async function sendReply(taskKey) {
 // 消息不塞进 adopt（createSession(prompt) 走 sendUserMessage 不进 transcript、视图看不到）——改为收养后由
 // 会话视图 synced 时 mbSend 乐观回显发出，保证消息可见。pendingCliMessage 只在收养成功后置、消费一次即清。
 let pendingCliMessage = null;
+// 收养 CLI session 成 Mode B live 会话：taskKey 透传绑该任务，msg 不塞进 adopt 而是置 pendingCliMessage，
+// 详情连上 live 会话 synced 后经 mbSend 乐观回显发出（保证可见），再跳详情进 live。
+// 续接（sendCliContinue）与 rewind（先截断再收养）共用。返回 api 结果（{ok} 或 {ok:false,error}）。
+async function adoptCliToLive({ taskKey, sessionId, msg, model }) {
+  const body = model ? { sessionId, model, taskKey } : { sessionId, taskKey };
+  const r = await api('/api/session/adopt', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!r.ok) return r;
+  pendingCliMessage = msg;                                    // 详情连上 live 会话 synced 后自动发出
+  await refreshState();                                       // 让 mbSessionId 现身，详情才能分派到 live
+  const target = '#/task/' + encodeURIComponent(taskKey);
+  if (location.hash === target) loadTaskDetail(taskKey);      // 已在该详情：hash 不变，直接重载进 live
+  else location.hash = target;                                // 否则触发 router → loadTaskDetail
+  return { ok: true };
+}
 async function sendCliContinue(taskKey) {
   const text = $('modalReplyText');
   const send = $('modalReplySend');
@@ -1011,17 +1059,8 @@ async function sendCliContinue(taskKey) {
   if (t?.state === 'processing') { showReplyToast('会话仍在运行——先退出终端再续接，避免两个进程同写一个会话', 'err'); return; }
   send.disabled = true; text.disabled = true; send.textContent = '续接中…';
   try {
-    // taskKey 透传 → 收养会话绑该 CLI 任务，详情靠 mbSessionId 进 live 模式（不再有独立会话视图）
-    const body = model ? { sessionId, model, taskKey } : { sessionId, taskKey };
-    const r = await api('/api/session/adopt', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
+    const r = await adoptCliToLive({ taskKey, sessionId, msg, model });
     if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
-    pendingCliMessage = msg;                                    // 详情连上 live 会话 synced 后自动发出
-    await refreshState();                                       // 让 mbSessionId 现身，详情才能分派到 live
-    const target = '#/task/' + encodeURIComponent(taskKey);
-    if (location.hash === target) loadTaskDetail(taskKey);      // 已在该详情：hash 不变，直接重载进 live
-    else location.hash = target;                                // 否则触发 router → loadTaskDetail
   } catch (e) {
     showReplyToast(e.message, 'err');
   } finally {
@@ -1080,13 +1119,13 @@ function renderTaskSide(taskKey) {
       btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     } else {
       // 终端已退出（非 processing）→ 可人工标完成 或 归档；续接对话走详情底部 composer（发消息即收养成 Mode B 实时会话）
-      btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 确认完成</button>`);
+      btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button>`);
       btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
     }
   } else {
     if (t.state === 'plan' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button>`);
     if (['queued', 'processing'].includes(t.state) && !t.isArchive) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${escapeAttr(t.taskKey)}')">中断</button>`);
-    if (t.state === 'awaiting-human' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')">✓ 确认完成</button>`);
+    if (t.state === 'awaiting-human' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')">✓ 完成</button>`);
     if ((t.resolvedAt || t.state === 'plan') && !t.isArchive) btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
   }
   const descText = t.description || '';
@@ -1097,11 +1136,15 @@ function renderTaskSide(taskKey) {
   if (isCli) {
     workMs = rounds[0]?.ccSummary?.workMs || 0;
   } else {
+    // 优先 ccSummary.workMs（turn_duration/每轮墙钟累加，无 rounds.jsonl 也有值）；
+    // 退回本轮 startedAt→endedAt 墙钟（需 rounds.jsonl 提供，缺失时为 0）
     (r?.rounds || []).forEach((rd) => {
-      if (rd.startedAt && rd.endedAt) {
-        const d = new Date(rd.endedAt) - new Date(rd.startedAt);
-        if (d > 0 && !isNaN(d)) workMs += d;
+      let d = rd.ccSummary?.workMs || 0;
+      if (!d && rd.startedAt && rd.endedAt) {
+        const w = new Date(rd.endedAt) - new Date(rd.startedAt);
+        if (w > 0 && !isNaN(w)) d = w;
       }
+      workMs += d;
     });
   }
   // 动态：state 流转时间线（参考 cloud-team 右侧 timeline：竖线 + 彩点 + 间隔耗时）
@@ -1123,12 +1166,13 @@ function renderTaskSide(taskKey) {
       </div>`;
   }).join('');
   // 统一字段值：所有任务(CLI/分身)的「任务信息」按 CLI 字段集展示——共有字段各取自己的值；
-  // CLI 独有(git/后台agent/jsonl大小)分身无数据显 —；分身独有(轮次/成本/tokens/缓存读)按决策不展示。
+  // git 两侧都取自会话 jsonl 的 gitBranch（CLI 走 t.cli，分身走末轮 round.gitBranch）；
+  // 后台agent/jsonl大小 CLI 独有、分身无数据显 —；分身独有(轮次/成本/tokens/缓存读)按决策不展示。
   // 分身工作目录取运行时最新一轮 systemInit.cwd（原详情页 header 的 modalCwd 迁到此）。
   const rtCwds = isCli ? [] : [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
   const rtCwd = rtCwds[rtCwds.length - 1] || null;
   const cwdVal = isCli ? (t.cli?.cwd || '—') : (rtCwd || '—');
-  const gitVal = isCli ? (t.cli?.gitBranch || '—') : '—';
+  const gitVal = isCli ? (t.cli?.gitBranch || '—') : (lastOk?.gitBranch || '—');
   const permMode = (isCli && t.cli?.mode && t.cli.mode !== 'normal') ? t.cli.mode : null;   // 仅 CLI 非 normal 权限模式才显
   const bgAgent = isCli ? (t.cli?.pendingBackgroundAgentCount || 0) : '—';
   const jsonlVal = isCli
@@ -1154,9 +1198,7 @@ function renderTaskSide(taskKey) {
       ${kv('git', escapeHtml(gitVal))}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
       ${kv('模型', escapeHtml(model))}
-      ${kv('turns', fmtNum(meta.numTurns))}
-      ${kv('后台 agent', bgAgent)}
-      ${kv('jsonl 大小', jsonlVal)}
+      ${/* turns / 后台 agent / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / bgAgent / jsonlVal，待定放置位置）*/''}
       ${kv('创建', escapeHtml(t.createdAt || '—'))}
       ${kv('最近活动', escapeHtml(lastActive))}
       ${kv('总耗时', fmtDuration(t.durationMs))}
@@ -1479,7 +1521,8 @@ function pickCommandArgs(text) {
 }
 
 // 原地 rewind：改写某条历史 user 消息并从那里重新执行（仅 CLI 会话；对齐 CC 交互 double-Esc rewind：
-// 同一 session、同一张卡片；被截掉的原时间线备份在 runtime/rewind-backup/）
+// 同一 session、同一张卡片；被截掉的原时间线直接丢弃、不备份）。两步：① 后端截断 jsonl 到该消息之前，
+// ② 收养成 Mode B live 会话把改写后的消息从截断处叶子重跑（同「续接」路径，不再走已废弃的 ps1 runner）。
 window.rewindCliMessage = async (uuid) => {
   const taskKey = modalPollTaskKey;
   if (!taskKey || !taskKey.startsWith('cli:')) return;
@@ -1497,15 +1540,16 @@ window.rewindCliMessage = async (uuid) => {
   });
   if (v === null || !v.trim()) return;
   try {
+    // ① 截断 jsonl 到目标消息之前（后端返回 sid）
     const r = await api('/api/cli/rewind', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskKey, uuid, message: v.trim() }),
     });
     if (!r.ok) { customAlert({ title: 'rewind 失败', message: escapeHtml(r.error || '未知错误') }); return; }
-    await refreshState();
-    // 同一张卡片：留在当前详情页，重拉最新会话流
-    loadTaskDetail(taskKey);
+    // ② 截断后收养成 Mode B live 会话，把改写后的消息作新一轮从截断处重跑（同 sendCliContinue 的收养路径）
+    const rr = await adoptCliToLive({ taskKey, sessionId: r.sid, msg: v.trim() });
+    if (!rr.ok) { customAlert({ title: 'rewind 后续接失败（jsonl 已截断，可在卡片里直接续接重发）', message: escapeHtml(rr.error || '未知错误') }); return; }
   } catch (e) { customAlert({ title: 'rewind 失败', message: escapeHtml(e.message) }); }
 };
 
@@ -2209,10 +2253,13 @@ async function mbSend() {
   mb.transcript.push({ type: 'user', message: { role: 'user', content: msg } });   // 乐观回显
   mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); mb.liveUsage = null;   // 从发送即开始计时（CC 风格）
   mb.state = 'running'; mbRenderBody(); mbSyncLiveHead();
-  // 任务绑定会话 → 走 /api/task/reply（内部 sendUserMessage + 置任务 state=processing）；
-  // 未绑定（CLI 收养会话）→ 直接 /api/session/send
+  // 绑定「文件任务」→ /api/task/reply（内部 sendUserMessage + 置任务 state=processing + lease）；
+  // CLI 收养会话（taskKey=cli:*，无 runner-state）与未绑定会话 → 直接发到 live 会话 stdin（/api/session/send）。
+  // 关键：cli:* 不能走 /api/task/reply——那会进 replyToTask 的 cli 分支→观察侧的 replyCliSession（已废弃 ps1），
+  // 既撞不到活的 runner、guard 又会把「本会话自己的 claude」误判成终端占用而拒发。mb 本身就是这个 live 会话。
   const tk = mb.info?.taskKey;
-  const r = tk
+  const useTaskReply = tk && !tk.startsWith('cli:');
+  const r = useTaskReply
     ? await api(`/api/task/reply?taskKey=${encodeURIComponent(tk)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }))
     : await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }));
   if (!r.ok) customAlert({ title: '发送失败', message: escapeHtml(r.error || '') });

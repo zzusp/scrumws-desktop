@@ -70,6 +70,18 @@ function readBoardSessions() {
   return { byTask, bySid };
 }
 
+// 单个 CLI session 的"在跑"权威信号（进程信号 v4，与 buildCliCard 卡片状态桶同源、同优先级）：
+// 看板 Mode B 会话 running/starting、CC 注册表 att.status=busy、或 headless reply runner 存活 → 在跑。
+// worker-log 的 inflight/state 据此判定，避免 mtime 阈值滞后卡片状态（卡片已进 awaiting-human、详情仍显示"● 实时 / 进行中"）。
+export function isCliSessionActive(sid) {
+  const board = readBoardSessions();
+  const boardState = board.bySid.get(sid) || board.byTask.get(`cli:${sid.slice(0, 8)}`) || null;
+  if (boardState) return boardState !== 'idle';
+  const att = readAttachedSessions().get(sid) || null;
+  if (att) return att.status === 'busy';
+  return !!readActiveReplyRunners(P.tmpDir).get(sid);
+}
+
 // 全局扫 ~/.claude/projects/*/<sid>.jsonl，返回首个命中的 { jsonlPath, projectDir }。
 // 加入 watchlist 时算一次即可；collect 时兜底（jsonl 被搬走/删除时会 rescan）。
 export function locateJsonlBySid(sid) {

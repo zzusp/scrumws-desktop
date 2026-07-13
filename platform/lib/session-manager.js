@@ -19,6 +19,8 @@ const ALLOWED_MODELS = new Set([
 ]);
 const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);   // claude --effort 合法档位（CLI v2.1.207 实测校验集）
 const TRANSCRIPT_CAP = 2000;   // 完整消息上限（逐字 partial 不入 transcript，只实时转发）
+// init 看门狗超时：resume/新建正常都秒级收到 system/init 进 running；超过此阈值仍卡 starting = init 失败，判死。
+const STARTING_TIMEOUT_MS = 60 * 1000;
 
 const sessions = new Map();    // id → Session
 
@@ -39,6 +41,7 @@ class Session {
     this.pendingPermissions = new Map();   // request_id → 原始 can_use_tool 请求（S5 用）
     this.lastError = null;
     this.child = null;
+    this._startWatchdog = null;      // init 看门狗计时器（收到 system/init 即清；超时未清则判死）
     this._buf = '';
     this.emitter = new EventEmitter();
     this.emitter.setMaxListeners(0);
@@ -72,6 +75,7 @@ function handleLine(s, line) {
     if (ev.session_id) s.claudeSessionId = ev.session_id;
     if (ev.model && !s.model) s.model = ev.model;
     s.state = 'running';
+    if (s._startWatchdog) { clearTimeout(s._startWatchdog); s._startWatchdog = null; }   // 正常起会话，撤看门狗
   } else if (ev.type === 'result') {
     s.state = 'idle';               // 一轮收敛，等下一条用户消息
   } else if (ev.type === 'control_request') {
@@ -118,6 +122,23 @@ function wireChild(s) {
 function writeStdin(s, obj) {
   if (!s.child || s.child.killed || !s.child.stdin.writable) return false;
   try { s.child.stdin.write(JSON.stringify(obj) + '\n'); return true; } catch { return false; }
+}
+
+// init 看门狗：会话被喂了首条消息却迟迟 init 不了（仍 starting）→ 判死 + 杀子进程。
+// 只在「已发出首条消息」后武装：claude -p --input-format stream-json 在收到消息前根本不 emit system/init，
+// 空等输入的会话属正常 idle，不能误杀；发了消息还长时间不 init 才是卡死（典型：resume 撞上被终端进程
+// 持有的同一 session，两个 claude 抢锁 init 拿不到）。否则僵尸会话把看板 CLI 卡片永久钉在 processing
+// （collect-cli 把 board 的 starting→processing）。收到 system/init 即在 handleLine 里清掉。
+function armInitWatchdog(s) {
+  if (s._startWatchdog) return;
+  s._startWatchdog = setTimeout(() => {
+    if (s.state !== 'starting') return;
+    s.state = 'error';
+    s.lastError = 'init 超时（发出消息后 60s 未收到 system/init；该 session 可能已被其他进程占用）';
+    s.emitter.emit('event', { type: 'error', error: s.lastError, _local: true, at: nowStr() });
+    try { s.child?.kill(); } catch { /* already gone */ }
+  }, STARTING_TIMEOUT_MS);
+  if (s._startWatchdog.unref) s._startWatchdog.unref();   // 不因看门狗阻塞进程退出
 }
 
 // ---- 对外 API ----
@@ -171,6 +192,8 @@ export function sendUserMessage(id, message) {
   if (!text.trim()) return { ok: false, error: 'message required' };
   const ok = writeStdin(s, { type: 'user', message: { role: 'user', content: text } });
   if (ok && s.state === 'idle') s.state = 'running';
+  // 首条消息喂进去但会话仍未 init（starting）→ 武装 init 看门狗（发了消息才该期待 system/init）
+  if (ok && s.state === 'starting') armInitWatchdog(s);
   return ok ? { ok: true } : { ok: false, error: 'stdin 不可写' };
 }
 

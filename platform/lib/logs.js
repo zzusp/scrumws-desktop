@@ -92,10 +92,13 @@ function parseCcSession(jsonlText) {
   let lastResult = null;
   let firstSystem = null;
   let firstCwd = null;
+  let gitBranch = null;
   for (const e of events) {
     if (e.type === 'system' && !firstSystem) firstSystem = e;
     // cwd 可能出现在任意事件顶层（session jsonl 里 user/queue-operation 都带）——不局限于 system:init
     if (!firstCwd && e.cwd) firstCwd = e.cwd;
+    // gitBranch 同样挂在真实 user/assistant 行；取最后一条（最新分支），与 collect-cli lastEnv 语义一致
+    if (e.gitBranch) gitBranch = e.gitBranch;
     if (e.type === 'result') { lastResult = e; continue; }
     if (e.type !== 'user' && e.type !== 'assistant') continue;
     if (onDeadBranch(e) && !e.isMeta) continue;   // 撤回的死分支消息不展示（对齐 resume 上下文）
@@ -191,7 +194,7 @@ function parseCcSession(jsonlText) {
   };
   // 真人 cc: 从 tool_result（dws chat message list 的返回）里提取 sender=孙鹏 + cc: 开头的
   const humanCc = extractHumanCc(messages);
-  return { messages, summary, systemInit: firstSystem, cwd: firstCwd, humanCc };
+  return { messages, summary, systemInit: firstSystem, cwd: firstCwd, gitBranch, humanCc };
 }
 
 // 过滤真人 cc:：只保留"本轮 worker 应处理的" —— cc.at 在 (下界, 本 session startedAt + 60s 宽限] 内
@@ -310,7 +313,9 @@ function readCliWorkerLog(taskKey) {
   try { text = fs.readFileSync(jsonlPath, 'utf8'); }
   catch (e) { return { ok: false, error: `读取失败: ${e.message}`, taskKey }; }
   const parsed = parseCcSession(text);
-  const stat = fs.statSync(jsonlPath);
+  // inflight 取和卡片状态桶同源的进程信号（buildCliCard v4），不再用 mtime 阈值——
+  // 否则卡片已进 awaiting-human，详情仍按 mtime<5min 显示"● 实时 / 进行中"，最长滞后 5 分钟。
+  const active = _collectCli.isCliSessionActive(sid);
   // CLI 无 rounds 概念：整段 messages 装到 round=1
   const round = {
     round: 1,
@@ -330,16 +335,18 @@ function readCliWorkerLog(taskKey) {
       toolsCount: Array.isArray(parsed.systemInit.tools) ? parsed.systemInit.tools.length : null,
     } : null,
     cwd: parsed.cwd || parsed.systemInit?.cwd || null,
-    // mtime <5min 视为"实时",前端会加 pulse 徽章
-    inflight: (Date.now() - stat.mtimeMs) < 5 * 60 * 1000,
+    // 会话正在生成 → 前端加 pulse "● 实时" + "（进行中）"
+    inflight: active,
   };
   return {
     ok: true,
     taskKey,
     safeKey: `cli__${sid}`,
     isArchive: false,
+    // SSE 判收敛（server.js payload.state!=='processing' → done）+ 前端指纹用；随进程信号收敛即刷新详情
+    state: active ? 'processing' : 'awaiting-human',
     rounds: [round],
-    hasInflight: round.inflight,
+    hasInflight: active,
     runnerLogTail: null,
     checkerLogTail: null,
   };
@@ -432,6 +439,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
         toolsCount: Array.isArray(parsed.systemInit.tools) ? parsed.systemInit.tools.length : null,
       } : null,
       cwd: parsed.cwd || parsed.systemInit?.cwd || null,
+      gitBranch: parsed.gitBranch || null,
     });
   }
 
@@ -494,6 +502,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
             messages,
             humanCc: [],   // in-flight 时窗未定，跳过 cc: 过滤
             cwd: parsed.cwd || parsed.systemInit?.cwd || null,
+            gitBranch: parsed.gitBranch || null,
             systemInit: parsed.systemInit ? {
               model: parsed.systemInit.model,
               cwd: parsed.systemInit.cwd,
