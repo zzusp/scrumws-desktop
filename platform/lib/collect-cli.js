@@ -292,6 +292,18 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
     durationMin: createdAt ? Math.max(0, Math.round((now - parse(createdAt)) / 60000)) : null,
   };
 
+  // 动态时间线：CLI 无持久 state 流转日志（state 每次 collect 现场从进程信号推导），
+  // 用现成真实时间戳合成流转序列，与分身同一 {state,at,by} 结构（前端时间线零改动即渲染）。
+  // 会话开跑(首条 jsonl 事件 → processing) → 收敛到等输入(末次活动 → awaiting-human) → 人工完成/归档(by:user)。
+  // 在跑(processing)时不追 awaiting（仍停在开跑那条）；单事件会话(created==lastActivity)同理不重复追加。
+  const history = [];
+  if (createdAt) history.push({ state: 'processing', at: createdAt });
+  if (state !== 'processing' && lastActivity && lastActivity !== createdAt) {
+    history.push({ state: 'awaiting-human', at: lastActivity });
+  }
+  if (doneAt) history.push({ state: 'done', at: doneAt, by: 'user' });
+  if (sidEntry.archivedAt) history.push({ state: 'archived', at: sidEntry.archivedAt, by: 'user' });
+
   return {
     taskKey: `cli:${shortSid}`,
     safeTaskKey: `cli__${sid}`,
@@ -307,7 +319,7 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
     // done 标 resolvedBy=user，复用卡片「人工完成」标（app.js manualDoneTag）
     outcomeDetail: state === 'done' ? { resolvedBy: 'user' } : null,
     createdAt,
-    history: [],
+    history,
     durationMs,
     lease: leaseInfo,
     humanCc: [],
