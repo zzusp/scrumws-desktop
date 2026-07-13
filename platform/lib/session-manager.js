@@ -12,7 +12,8 @@ import fs from 'node:fs';
 // 本模块只做引擎骨架：spawn / 解析 / 转发 / 送消息 / 生命周期。
 // 权限应答（can_use_tool）、打断（interrupt）、前端渲染留给 S5/S6/S7 —— 但相关 stdin 原语已就绪。
 
-const CLAUDE_BIN = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+// 不硬编码 .cmd：Windows 走 shell 由 PATHEXT 解析（原生装 claude.exe / npm 全局装 claude.cmd 皆命中，与 collect.js 探测同款）
+const CLAUDE_BIN = 'claude';
 const ALLOWED_MODELS = new Set([
   'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001', 'claude-fable-5',
 ]);
@@ -151,7 +152,8 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
     s.adopted = true;
   }
   try {
-    s.child = spawn(CLAUDE_BIN, args, { cwd: cwd || process.cwd(), env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Windows 须走 shell：CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd（同步抛 spawn EINVAL）；shell 由 PATHEXT 解析 claude.exe/.cmd
+    s.child = spawn(CLAUDE_BIN, args, { cwd: cwd || process.cwd(), env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], shell: process.platform === 'win32' });
   } catch (e) {
     return { ok: false, error: `spawn 失败：${e.message}` };
   }
