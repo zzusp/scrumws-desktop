@@ -177,7 +177,8 @@ function collectAll(now) {
 // ---------- Claude Code 运行时探测（版本 / 路径 / 在线，缓存 5min）----------
 // online 语义：本机能解析并执行 `claude --version` = 在线可用；失败（未装/PATH 缺失）= 离线。
 // 探测走后台 execFile 不阻塞 /api/state；模块加载即触发首探，TTL 到点后台重探，读缓存返回。
-const CLAUDE_BIN = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+// 不硬编码 .cmd：Windows 下配 shell 由 PATHEXT 解析，原生装(claude.exe) / npm 全局装(claude.cmd) 皆可命中
+const CLAUDE_BIN = 'claude';
 const WHICH_CMD = process.platform === 'win32' ? 'where' : 'which';
 const RT_DETECT_TTL = 5 * 60 * 1000;
 let claudeRt = { detectedAt: 0, online: null, version: null, binPath: null };   // online:null=检测中
@@ -187,7 +188,8 @@ function detectClaudeRuntime() {
   if (rtDetecting) return;
   if (claudeRt.detectedAt && Date.now() - claudeRt.detectedAt < RT_DETECT_TTL) return;
   rtDetecting = true;
-  execFile(CLAUDE_BIN, ['--version'], { timeout: 5000, windowsHide: true }, (err, stdout) => {
+  // Windows 须走 shell：CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd（同步抛 EINVAL 崩溃启动）；shell 亦让 PATHEXT 解析 claude.exe/.cmd
+  execFile(CLAUDE_BIN, ['--version'], { timeout: 5000, windowsHide: true, shell: process.platform === 'win32' }, (err, stdout) => {
     if (err) {
       claudeRt = { detectedAt: Date.now(), online: false, version: null, binPath: null };
       rtDetecting = false;
