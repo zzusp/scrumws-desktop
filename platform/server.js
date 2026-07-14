@@ -4,7 +4,7 @@ import path from 'node:path';
 import { collectState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, restartTask, taskCwds, readTaskEdit, editTask } from './lib/task-actions.js';
+import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
@@ -382,6 +382,13 @@ const server = http.createServer(async (req, res) => {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
       const r = restartTask({ taskKey, approve: true });
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    // 移除 plan 态任务（删除计划草稿目录；仅 plan 可用，不可恢复）
+    if (req.method === 'POST' && pathname === '/api/task/delete') {
+      const taskKey = searchParams.get('taskKey');
+      if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
+      const r = deleteTask({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
     // 编辑任务描述（body: {description}；纯用户备注不进 prompt，任意状态可编辑，空 = 清除）

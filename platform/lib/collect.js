@@ -35,6 +35,19 @@ function tailLine(file, bytes = 8192) {
 }
 // lease alive：单份实现在 lease.js（pid 为主 + HardTTL，与 scripts/lib/runner-common.ps1 同语义）
 
+// 卡片「最近更新时间」：取所有活动时间戳的最大值（runner 分身与 CLI 卡片同字段），供各桶统一按最新更新倒序
+function taskUpdatedMs(t) {
+  const lastHist = Array.isArray(t.history) && t.history.length ? t.history[t.history.length - 1].at : null;
+  return Math.max(
+    parse(t.createdAt)?.getTime() || 0,
+    parse(t.enteredAt)?.getTime() || 0,
+    parse(t.resolvedAt)?.getTime() || 0,
+    parse(t.lease?.heartbeatAt)?.getTime() || 0,
+    parse(t.meta?.lastRoundAt)?.getTime() || 0,
+    parse(lastHist)?.getTime() || 0,
+  );
+}
+
 // 后台维度派生（runner/cli 统一语义）：主 agent 一轮收敛写 awaiting-human，但若会话进程仍活着且该
 // CC session 还有后台 subagent 在跑 → 整体仍是 processing——主进程只是让出等后台完成（CC 自动注入
 // <task-notification> 唤醒续跑），任务未结束。
@@ -191,13 +204,14 @@ function collectAll(now) {
     else buckets.other.push(cli);
   }
 
-  // 排序：plan/processing/queued 按时间升序（老的靠前）；done/awaiting-human/archived 按 resolvedAt 降序（新的靠前）
-  buckets.plan.sort((a, b) => (parse(a.enteredAt) || 0) - (parse(b.enteredAt) || 0));
-  buckets.processing.sort((a, b) => (parse(a.lease?.claimedAt) || 0) - (parse(b.lease?.claimedAt) || 0));
-  buckets.queued.sort((a, b) => (parse(a.enteredAt) || 0) - (parse(b.enteredAt) || 0));
-  buckets.done.sort((a, b) => (parse(b.resolvedAt) || 0) - (parse(a.resolvedAt) || 0));
-  buckets['awaiting-human'].sort((a, b) => (parse(b.resolvedAt) || 0) - (parse(a.resolvedAt) || 0));
-  buckets.archived.sort((a, b) => (parse(b.resolvedAt) || 0) - (parse(a.resolvedAt) || 0));
+  // 排序：所有桶统一按「最近更新时间」倒序（新的靠前）
+  const byUpdatedDesc = (a, b) => taskUpdatedMs(b) - taskUpdatedMs(a);
+  buckets.plan.sort(byUpdatedDesc);
+  buckets.processing.sort(byUpdatedDesc);
+  buckets.queued.sort(byUpdatedDesc);
+  buckets.done.sort(byUpdatedDesc);
+  buckets['awaiting-human'].sort(byUpdatedDesc);
+  buckets.archived.sort(byUpdatedDesc);
   return buckets;
 }
 

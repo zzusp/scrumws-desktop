@@ -38,6 +38,44 @@ let modalSse = null;                // 详情页块级近实时 SSE（processing
 let stateTimer = null;
 const MODAL_POLL_MS = 5000;
 
+// ---- 任务「状态变更」标记 ----
+// 记录每个任务上次「看过」时所处的分桶(section)；当前分桶与之不同 = 状态有更新，卡片显更新点。
+// 首次见到的任务先记基线（不标记，避免首屏全亮）；用户点开卡片/编辑即视为看过、清标记。
+let seenSections = {};
+try { seenSections = JSON.parse(localStorage.getItem('seenSections') || '{}') || {}; } catch { seenSections = {}; }
+function saveSeenSections() { try { localStorage.setItem('seenSections', JSON.stringify(seenSections)); } catch { } }
+// 渲染前对所有任务补基线（新任务记当前 section，不算「更新」）；返回本次判定为「有更新」的 taskKey 集合
+function reconcileSeenSections(lifecycle) {
+  const updated = new Set();
+  const sectionOf = (t, bucket) => (t.isArchive ? 'archived' : (t.state || bucket));
+  const alive = new Set();
+  for (const [bucket, list] of Object.entries(lifecycle || {})) {
+    for (const t of list) {
+      const sec = sectionOf(t, bucket);
+      alive.add(t.taskKey);
+      if (!(t.taskKey in seenSections)) seenSections[t.taskKey] = sec;   // 新任务：记基线
+      else if (seenSections[t.taskKey] !== sec) updated.add(t.taskKey);  // 分桶变了：标更新
+    }
+  }
+  // 清理已消失的任务，避免 localStorage 无限增长
+  for (const k of Object.keys(seenSections)) if (!alive.has(k)) delete seenSections[k];
+  saveSeenSections();
+  return updated;
+}
+// 用户看过某任务：把基线更新到当前 section，清掉更新点
+function acknowledgeTask(taskKey) {
+  const t = findTaskInState(taskKey);
+  if (!t) return;
+  const sec = t.isArchive ? 'archived' : t.state;
+  if (seenSections[taskKey] !== sec) {
+    seenSections[taskKey] = sec;
+    saveSeenSections();
+    document.querySelector(`.taskcard[data-taskkey="${cssEscape(taskKey)}"] .update-dot`)?.remove();
+  }
+}
+function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&'); }
+let updatedTaskKeys = new Set();   // 本轮渲染判定为「有更新」的任务
+
 // ---- API ----
 async function api(url, opts) {
   const r = await fetch(url, opts);
@@ -220,12 +258,11 @@ function taskCardHtml(t, section) {
 
   let statusLine = '';
   if (isCli) {
-    // CLI 卡片：只读展示 cwd + 心跳 + turns；无 pid / 无失败原因
+    // CLI 卡片：只读展示 cwd + 心跳；无 pid / 无失败原因
     const cwd = t.cli?.cwd || '—';
     const cwdShort = cwd.length > 40 ? '…' + cwd.slice(-38) : cwd;
-    const turns = t.meta?.numTurns ? `${t.meta.numTurns} turns` : '';
     const heartbeat = t.lease?.heartbeatAgo ? ` · 心跳 ${t.lease.heartbeatAgo}` : '';
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(cwd)}">${escapeHtml(cwdShort)}</div><div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">${turns} · 总耗时 ${totalDur}${heartbeat}${bgBadge}</div>`;
+    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(cwd)}">${escapeHtml(cwdShort)}</div><div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">总耗时 ${totalDur}${heartbeat}${bgBadge}</div>`;
   } else if (section === 'plan') {
     statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">待确认 · 建于 ${escapeHtml(t.createdAt || t.enteredAt || '—')}</div>`;
   } else if (section === 'processing') {
@@ -257,34 +294,8 @@ function taskCardHtml(t, section) {
   }
 
   const sourceTag = sourceTagHtml(t);
-
-  // 按钮（底部 ghost 化，卡片 hover 提亮）：非 plan=✎ 描述；plan=✎ 编辑（改 title/prompt/model/目录/描述）；plan 还有确认排队+归档
   const isPlan = section === 'plan';
-  const descBtn = `<button class="btn" onclick="event.stopPropagation();editTaskDesc('${escapeAttr(t.taskKey)}')" title="${t.description ? '编辑' : '添加'}任务描述（自己看的备注，不发给 claude）">✎ 描述</button>`;
-  // plan 态任务：整任务可编辑（prompt 是确认排队后真正发给 claude 的指令）——顶掉「✎ 描述」
-  const editBtn = `<button class="btn" onclick="event.stopPropagation();openEditTask('${escapeAttr(t.taskKey)}')" title="编辑任务（标题 / prompt / 模型 / 工作目录 / 描述）">✎ 编辑</button>`;
-  // 操作按钮按 section（分桶=状态）统一：完成/取消完成/归档/取消归档 对所有来源一致；
-  // 仅执行差异按 isCli 分支——CLI processing 不干预运行中会话、CLI 归档区额外「移除」出观测名单。
-  let actionBtn = '';
-  const _k = escapeAttr(t.taskKey);
-  const archiveBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${_k}')" title="收进已归档区">归档</button>`;
-  const unarchiveBtn = `<button class="btn" onclick="event.stopPropagation();unarchiveTaskAction('${_k}')" title="取消归档，回落自动判态">↺ 取消归档</button>`;
-  const completeBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${_k}')" title="人工确认已完成 → 移入 done">✓ 完成</button>`;
-  const uncompleteBtn = `<button class="btn" style="color:var(--mut)" onclick="event.stopPropagation();uncompleteTaskAction('${_k}')" title="取消完成，退回 awaiting-human">↺ 取消完成</button>`;
-  if (section === 'plan') {
-    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();approveTaskAction('${_k}')">▶ 确认排队</button>${archiveBtn}`;
-  } else if (section === 'processing') {
-    actionBtn = isCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();cancelTaskAction('${_k}')">中断</button>`;
-  } else if (section === 'queued') {
-    actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();cancelTaskAction('${_k}')">中断</button>`;
-  } else if (section === 'awaiting-human') {
-    actionBtn = completeBtn + archiveBtn;
-  } else if (section === 'done') {
-    actionBtn = uncompleteBtn + archiveBtn;
-  } else if (section === 'archived') {
-    const rmBtn = isCli ? `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">移除</button>` : '';
-    actionBtn = unarchiveBtn + rmBtn;
-  }
+
   // 任务描述（用户备注）：有则显示一行截断，点击直接编辑（plan 态点击进整任务编辑，与「✎ 编辑」按钮一致）
   const descLine = t.description
     ? `<div style="font-size:11px;color:var(--ink2);margin-top:6px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="点击编辑${isPlan ? '任务' : '描述'}：${escapeAttr(t.description)}" onclick="event.stopPropagation();${isPlan ? 'openEditTask' : 'editTaskDesc'}('${escapeAttr(t.taskKey)}')"><span style="color:var(--dim)">✎</span> ${escapeHtml(t.description)}</div>`
@@ -293,35 +304,93 @@ function taskCardHtml(t, section) {
   // 标题：优先 customTitle > 第一条真人 cc: > taskKey
   const titleText = t.title || t.taskKey;
   const titleShort = titleText.length > 60 ? titleText.slice(0, 60) + '…' : titleText;
-  // 人工完成标：done 且 resolvedBy=user（区别于 worker 自动 done）
-  const manualDoneTag = (section === 'done' && t.outcomeDetail?.resolvedBy === 'user')
-    ? '<span class="tag tag-jade" title="人工确认完成（非 worker 自动收敛）">人工完成</span>' : '';
+  // 状态变更标记：本轮判定「有更新」的任务，标题前显一个更新点（点开卡片/编辑即清）
+  const updateDot = updatedTaskKeys.has(t.taskKey) ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
+
+  // 卡片点击：plan 态弹编辑弹窗（任务未开始，不进详情页）；其余进详情页
+  const cardClick = isPlan
+    ? `openEditTask('${escapeAttr(t.taskKey)}')`
+    : `openTaskModal('${escapeAttr(t.taskKey)}')`;
 
   return `
-    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="openTaskModal('${escapeAttr(t.taskKey)}')">
-      <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${escapeHtml(titleShort)}</div>
+    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="${cardClick}">
+      <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
       ${statusLine}
       ${descLine}
       <div class="card-foot">
-        ${sourceTag}${manualDoneTag}
-        <span class="card-key" title="${escapeAttr(t.taskKey)}">${escapeHtml(shortTaskKey(t.taskKey))}</span>
-        <span class="cardbtns">${isPlan ? editBtn : descBtn}${actionBtn}</span>
+        ${sourceTag}
+        <span style="flex:1"></span>
+        <button class="btn card-menu-btn" title="操作" onclick="event.stopPropagation();openCardMenu(event,'${escapeAttr(t.taskKey)}','${section}')">···</button>
       </div>
     </div>
   `;
 }
 
-// taskKey 短码（卡片底部展示；hover 全 key）：issue:HiQ-AI-feedback#69 → feedback#69、chat:self → self、manual:m…-183 → m…-183、cli:04689bb1 → 04689bb1
-function shortTaskKey(k) {
-  const m = /^issue:.*?([A-Za-z0-9_]+)#(\d+)$/.exec(k);
-  if (m) return `${m[1]}#${m[2]}`;
-  if (k.startsWith('chat:')) return k.slice(5);
-  if (k.startsWith('manual:')) return k.slice(7);
-  if (k.startsWith('cli:')) return k.slice(4);
-  return k;
+// 卡片操作按钮（收进「···」浮层菜单）：edit/desc + 按 section 的操作。菜单在卡片外浮层，按钮不需 stopPropagation。
+function cardActionButtons(t, section) {
+  const isCli = t.source === 'cli';
+  const isPlan = section === 'plan';
+  const _k = escapeAttr(t.taskKey);
+  const descBtn = `<button class="btn" onclick="editTaskDesc('${_k}')" title="自己看的备注，不发给 claude">✎ 描述</button>`;
+  const editBtn = `<button class="btn" onclick="openEditTask('${_k}')" title="编辑任务（标题 / prompt / 模型 / 工作目录 / 描述）">✎ 编辑</button>`;
+  const removeBtn = `<button class="btn" style="color:var(--coralT)" onclick="deleteTaskAction('${_k}')" title="删除该计划任务（不可恢复）">移除</button>`;
+  const archiveBtn = `<button class="btn" onclick="archiveTask('${_k}')" title="收进已归档区">归档</button>`;
+  const unarchiveBtn = `<button class="btn" onclick="unarchiveTaskAction('${_k}')" title="取消归档，回落自动判态">↺ 取消归档</button>`;
+  const completeBtn = `<button class="btn" style="color:var(--jade)" onclick="completeTaskAction('${_k}')" title="人工确认已完成 → 移入 done">✓ 完成</button>`;
+  const uncompleteBtn = `<button class="btn" style="color:var(--mut)" onclick="uncompleteTaskAction('${_k}')" title="取消完成，退回 awaiting-human">↺ 取消完成</button>`;
+
+  const lead = isPlan ? editBtn : descBtn;
+  let actionBtn = '';
+  if (section === 'plan') {
+    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="approveTaskAction('${_k}')">▶ 排队</button>${removeBtn}`;
+  } else if (section === 'processing') {
+    actionBtn = isCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">中断</button>`;
+  } else if (section === 'queued') {
+    actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">中断</button>`;
+  } else if (section === 'awaiting-human') {
+    actionBtn = completeBtn + archiveBtn;
+  } else if (section === 'done') {
+    actionBtn = uncompleteBtn + archiveBtn;
+  } else if (section === 'archived') {
+    const rmBtn = isCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">移除</button>` : '';
+    actionBtn = unarchiveBtn + rmBtn;
+  }
+  return lead + actionBtn;
 }
 
+// ---- 卡片「···」操作浮层菜单 ----
+// 单例浮层（在 index.html #cardMenu），点「···」时按任务填充按钮并定位；点菜单内按钮/点外部/滚动都关闭。
+let cardMenuCloser = null;
+function closeCardMenu() {
+  const menu = $('cardMenu');
+  if (menu) menu.style.display = 'none';
+  if (cardMenuCloser) { document.removeEventListener('mousedown', cardMenuCloser, true); window.removeEventListener('scroll', closeCardMenu, true); cardMenuCloser = null; }
+}
+function openCardMenu(event, taskKey, section) {
+  const menu = $('cardMenu');
+  const t = findTaskInState(taskKey);
+  if (!menu || !t) return;
+  menu.innerHTML = cardActionButtons(t, section);
+  menu.style.display = 'flex';
+  // 定位在「···」按钮下方右对齐，越界则贴边
+  const r = event.currentTarget.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = r.right - mw;
+  let top = r.bottom + 4;
+  if (left < 6) left = 6;
+  if (top + mh > window.innerHeight - 6) top = r.top - mh - 4;   // 下方放不下 → 翻到上方
+  menu.style.left = Math.max(6, left) + 'px';
+  menu.style.top = Math.max(6, top) + 'px';
+  // 点菜单内任意按钮后关闭（按钮各自的 onclick 已先执行）；点外部/滚动也关闭
+  menu.onclick = () => closeCardMenu();
+  cardMenuCloser = (e) => { if (!menu.contains(e.target)) closeCardMenu(); };
+  setTimeout(() => { document.addEventListener('mousedown', cardMenuCloser, true); window.addEventListener('scroll', closeCardMenu, true); }, 0);
+}
+window.openCardMenu = openCardMenu;
+
 function renderLifecycle(lifecycle) {
+  closeCardMenu();                                       // 重绘前收起可能残留的「···」浮层菜单
+  updatedTaskKeys = reconcileSeenSections(lifecycle);   // 状态变更标记：先补基线、算出本轮「有更新」的任务
   const map = {
     'plan': lifecycle.plan,
     'queued': lifecycle.queued,
@@ -520,11 +589,11 @@ async function cancelTaskAction(taskKey) {
 }
 window.cancelTaskAction = cancelTaskAction;
 
-// awaiting-human → done：人工确认任务已完成（标 resolvedBy=user，卡片显示「人工完成」）
+// awaiting-human → done：人工确认任务已完成（标 resolvedBy=user 记录"谁收的"，卡片不再显标签）
 async function completeTaskAction(taskKey) {
   const ok = await customConfirm({
     title: '确认完成',
-    message: `人工判定 <code>${escapeHtml(taskKey)}</code> 已完成 → 移入 <code>done</code>（标记「人工完成」）。<br>之后如需继续，在详情里继续对话即可重新排队执行。`,
+    message: `人工判定 <code>${escapeHtml(taskKey)}</code> 已完成 → 移入 <code>done</code>。<br>之后如需继续，在详情里继续对话即可重新排队执行。`,
     confirmText: '确认完成',
     tone: 'primary',
   });
@@ -555,6 +624,23 @@ async function approveTaskAction(taskKey) {
 }
 window.approveTaskAction = approveTaskAction;
 
+// 移除 plan 态任务（删除计划草稿，不可恢复）
+async function deleteTaskAction(taskKey) {
+  const ok = await customConfirm({
+    title: '移除任务',
+    message: `删除计划任务 <code>${escapeHtml(taskKey)}</code>（从未执行的草稿）。<br><b>不可恢复。</b>`,
+    confirmText: '移除',
+    tone: 'danger',
+  });
+  if (!ok) return;
+  try {
+    const r = await api(`/api/task/delete?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
+    if (!r.ok) { customAlert({ title: '移除失败', message: escapeHtml(r.error) }); return; }
+    await refreshState();
+  } catch (e) { customAlert({ title: '移除失败', message: escapeHtml(e.message) }); }
+}
+window.deleteTaskAction = deleteTaskAction;
+
 // ---- 任务详情页（单一对话流 + 右侧信息栏）----
 let currentModalData = null;
 let lastModalFp = null;             // poll 内容指纹：没新内容不重画 DOM（保住滚动位置和 details 展开态）
@@ -567,6 +653,7 @@ window.openTaskModal = (taskKey) => { location.hash = '#/task/' + encodeURICompo
 async function loadTaskDetail(taskKey) {
   modalOpen = true;
   modalPollTaskKey = taskKey;
+  acknowledgeTask(taskKey);             // 看过即清「状态变更」更新点
   const t = findTaskInState(taskKey);
   // 分派：有活 Mode B 会话 → 详情接 live SSE（逐字 / 权限卡 / 打断，渲染进 #modalBody + renderTaskSide + composer）；
   // 无活会话 → 读磁盘 jsonl 只读历史（processing 时块级 SSE 兜底）。二者对同一次详情加载互斥。
@@ -1747,6 +1834,7 @@ async function openEditTask(taskKey) {
   try { r = await api(`/api/task/detail?taskKey=${encodeURIComponent(taskKey)}`); }
   catch (e) { return customAlert({ title: '打不开编辑', message: escapeHtml(e.message) }); }
   if (!r || !r.ok) return customAlert({ title: '打不开编辑', message: escapeHtml(r?.error || '读取任务失败') });
+  acknowledgeTask(taskKey);             // 看过即清「状态变更」更新点
   editingTaskKey = taskKey;
   $('newTaskModal').querySelector('.modal-head h2').textContent = '编辑任务';
   $('newTaskModal').querySelector('.modal-hint').textContent = `source=${r.source} · ${taskKey} · plan 态可编辑；prompt 是确认排队后真正发给 claude 的指令`;
