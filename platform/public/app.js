@@ -2011,6 +2011,7 @@ $('newTaskBtn').addEventListener('click', () => {
 // req4/5/6 表单附加字段归默认（新建打开时调）
 function resetNewTaskExtras() {
   $('newTaskScheduledAt').value = '';
+  window.__syncDtPicker?.();                    // 同步日历选择器显示为「留空」
   $('newTaskWorktree').checked = true;         // req5：支持 worktree 时默认开启
   $('newTaskDynamicWorkflow').checked = false; // req6：默认关闭
 }
@@ -2035,6 +2036,7 @@ async function openEditTask(taskKey) {
   newTaskMesCtl?.setModel(r.model || 'claude-opus-4-8');
   newTaskMesCtl?.setEffort(r.effort || 'xhigh');                          // 默认 xhigh
   $('newTaskScheduledAt').value = toDatetimeLocal(r.scheduledAt || '');   // req4
+  window.__syncDtPicker?.();                                              // 同步日历选择器显示
   $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
   // req5：git 探测后回填 worktree 勾选 + 签出分支（默认开启沿用旧值；旧 plan 无该字段则默认开）
   refreshWorktreeUi(r.cwd || '', { worktree: r.worktree !== false, baseBranch: r.baseBranch || '' });
@@ -2085,6 +2087,7 @@ $('newTaskWorktree').addEventListener('change', toggleBranchRow);
 function toggleBranchRow() { $('newTaskBranchRow').style.display = $('newTaskWorktree').checked ? 'flex' : 'none'; }
 
 // req5：探测工作目录是否 git 项目 → 切 worktree 区显隐 + 填签出分支下拉。opts 用于编辑回填(worktree/baseBranch)。
+let newTaskBranchOptions = [];   // [{branch, isCurrent}] —— 可筛选下拉数据源
 async function refreshWorktreeUi(cwd, opts) {
   const row = $('newTaskWorktreeRow');
   const c = String(cwd || '').trim();
@@ -2097,14 +2100,43 @@ async function refreshWorktreeUi(cwd, opts) {
   if (!r || !r.ok || !r.isGit) { row.style.display = 'none'; return; }
   row.style.display = 'flex';
   const branches = r.branches || [];
-  const want = (opts && opts.baseBranch) || r.currentBranch || branches[0] || '';
-  const sel = $('newTaskBaseBranch');
-  sel.innerHTML = branches.length
-    ? branches.map((b) => `<option value="${escapeAttr(b)}"${b === want ? ' selected' : ''}>${escapeHtml(b)}${b === r.currentBranch ? '（当前）' : ''}</option>`).join('')
-    : '<option value="">（无本地分支 · 基于 HEAD 新建）</option>';
+  const cur = r.currentBranch || '';
+  newTaskBranchOptions = branches.map((b) => ({ branch: b, isCurrent: b === cur }));
+  const want = (opts && opts.baseBranch) || cur || branches[0] || '';
+  $('newTaskBaseBranch').value = want;
+  renderBranchMenu();
   if (opts && typeof opts.worktree === 'boolean') $('newTaskWorktree').checked = opts.worktree;
   toggleBranchRow();
 }
+
+// req1：签出基分支 可筛选下拉（复用 cwd-combo 样式；输入即筛，选中写回 input.value）
+// filter=true 按 input.value 过滤（用户在输入）；否则全列（打开下拉时——避免被已选中的默认分支值过滤成只剩自己）
+function renderBranchMenu(filter) {
+  const menu = $('newTaskBaseBranchMenu');
+  if (!menu) return;
+  const q = filter ? ($('newTaskBaseBranch').value || '').trim().toLowerCase() : '';
+  const list = newTaskBranchOptions.filter((o) => !q || o.branch.toLowerCase().includes(q));
+  menu.innerHTML = list.length
+    ? list.map((o) => `<div class="cwd-item" role="option" data-branch="${escapeAttr(o.branch)}"><span class="cwd-path" title="${escapeAttr(o.branch)}">${escapeHtml(o.branch)}</span>${o.isCurrent ? '<span class="cwd-src">当前</span>' : ''}</div>`).join('')
+    : `<div class="cwd-empty">${newTaskBranchOptions.length ? '无匹配分支 · 按输入值作基分支' : '无本地分支 · 基于 HEAD 新建'}</div>`;
+}
+function closeBranchMenu() { $('newTaskBaseBranchMenu')?.classList.remove('open'); }
+function openBranchMenu() { renderBranchMenu(false); $('newTaskBaseBranchMenu')?.classList.add('open'); }
+(function initBranchCombo() {
+  const input = $('newTaskBaseBranch'), menu = $('newTaskBaseBranchMenu'), caret = $('newTaskBranchCaret'), combo = $('newTaskBranchCombo');
+  if (!input || !menu || !caret || !combo) return;
+  caret.addEventListener('click', (e) => { e.preventDefault(); menu.classList.contains('open') ? closeBranchMenu() : openBranchMenu(); });
+  input.addEventListener('focus', openBranchMenu);
+  input.addEventListener('input', () => { renderBranchMenu(true); menu.classList.add('open'); });
+  menu.addEventListener('mousedown', (e) => {   // mousedown 先于 blur，避免选中前菜单被关
+    const item = e.target.closest('.cwd-item');
+    if (!item) return;
+    e.preventDefault();
+    input.value = item.dataset.branch;
+    closeBranchMenu();
+  });
+  document.addEventListener('click', (e) => { if (!combo.contains(e.target)) closeBranchMenu(); });
+})();
 
 // scheduledAt 本地串 'yyyy-MM-dd HH:mm:ss' ↔ datetime-local 'yyyy-MM-ddTHH:mm' 互转
 function toDatetimeLocal(s) {
@@ -2115,6 +2147,116 @@ function toLocalStamp(dtLocal) {
   const m = String(dtLocal || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
   return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:00` : '';
 }
+
+// req2：定时执行 自定义日历时间选择器（向上弹出，替代原生 datetime-local）。
+// 隐藏 input#newTaskScheduledAt 作 value 载体（yyyy-MM-ddTHH:mm），submit/edit 复用 toLocalStamp/toDatetimeLocal。
+(function initDtPicker() {
+  const wrap = $('newTaskDtWrap'), btn = $('newTaskDtBtn'), pop = $('newTaskDtPop'),
+    label = $('newTaskDtLabel'), clearBtn = $('newTaskDtClear'), hidden = $('newTaskScheduledAt');
+  if (!wrap || !btn || !pop || !hidden) return;
+  const p = (n) => String(n).padStart(2, '0');
+  const WD = ['日', '一', '二', '三', '四', '五', '六'];
+  let viewY, viewM, sel = null, h = 9, mi = 0, scrollHost = null;
+
+  function syncFromHidden() {
+    const m = String(hidden.value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    const now = new Date();
+    if (m) { sel = { y: +m[1], m: +m[2] - 1, d: +m[3] }; h = +m[4]; mi = +m[5]; }
+    else { sel = null; h = 9; mi = 0; }
+    viewY = sel ? sel.y : now.getFullYear();
+    viewM = sel ? sel.m : now.getMonth();
+    renderLabel();
+    if (pop.classList.contains('open')) renderPop();
+  }
+  function renderLabel() {
+    if (sel) { label.textContent = `${sel.y}-${p(sel.m + 1)}-${p(sel.d)} ${p(h)}:${p(mi)}`; label.classList.remove('dim'); clearBtn.style.display = ''; }
+    else { label.textContent = '留空 = 不定时'; label.classList.add('dim'); clearBtn.style.display = 'none'; }
+  }
+  function commit() {
+    hidden.value = sel ? `${sel.y}-${p(sel.m + 1)}-${p(sel.d)}T${p(h)}:${p(mi)}` : '';
+    renderLabel();
+  }
+  function renderPop() {
+    const startWd = new Date(viewY, viewM, 1).getDay();
+    const daysInMonth = new Date(viewY, viewM + 1, 0).getDate();
+    const daysPrev = new Date(viewY, viewM, 0).getDate();
+    const today = new Date();
+    let cells = '';
+    for (let i = 0; i < 42; i++) {
+      const n = i - startWd + 1;
+      let y = viewY, mo = viewM, d = n, other = false;
+      if (n < 1) { mo = viewM - 1; d = daysPrev + n; other = true; if (mo < 0) { mo = 11; y = viewY - 1; } }
+      else if (n > daysInMonth) { mo = viewM + 1; d = n - daysInMonth; other = true; if (mo > 11) { mo = 0; y = viewY + 1; } }
+      const isSel = sel && sel.y === y && sel.m === mo && sel.d === d;
+      const isToday = today.getFullYear() === y && today.getMonth() === mo && today.getDate() === d;
+      cells += `<button type="button" class="dt-day${other ? ' other' : ''}${isToday ? ' today' : ''}${isSel ? ' sel' : ''}" data-y="${y}" data-m="${mo}" data-d="${d}">${d}</button>`;
+    }
+    pop.innerHTML = `
+      <div class="dt-cal-head">
+        <button type="button" class="dt-nav" data-nav="-1">‹</button>
+        <span class="dt-cal-title">${viewY}年${viewM + 1}月</span>
+        <button type="button" class="dt-nav" data-nav="1">›</button>
+      </div>
+      <div class="dt-grid dt-wd">${WD.map((w) => `<span>${w}</span>`).join('')}</div>
+      <div class="dt-grid dt-days">${cells}</div>
+      <div class="dt-time">
+        <span class="dt-time-label">时间</span>
+        <input type="number" class="dt-h" min="0" max="23" value="${p(h)}"> :
+        <input type="number" class="dt-m" min="0" max="59" value="${p(mi)}">
+      </div>
+      <div class="dt-foot">
+        <button type="button" class="dt-preset" data-preset="clear">清除</button>
+        <button type="button" class="dt-preset" data-preset="now1h">1 小时后</button>
+        <button type="button" class="btn btn-primary dt-done">确定</button>
+      </div>`;
+  }
+  function openPop() {
+    renderPop();
+    // fixed 定位向上弹出：dt-pop 在 overflow-y:auto 容器内，absolute 会被裁剪，故算屏幕坐标挂 viewport
+    const r = btn.getBoundingClientRect();
+    pop.style.position = 'fixed';
+    pop.style.left = r.left + 'px';
+    pop.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+    pop.style.top = 'auto';
+    pop.style.width = '268px';
+    pop.classList.add('open'); btn.classList.add('open'); btn.setAttribute('aria-expanded', 'true');
+    scrollHost = wrap.closest('[style*="overflow-y:auto"], [style*="overflow-y: auto"]');
+    if (scrollHost) scrollHost.addEventListener('scroll', closePop, { passive: true });
+    window.addEventListener('resize', closePop);
+  }
+  function closePop() {
+    if (!pop.classList.contains('open')) return;
+    pop.classList.remove('open'); btn.classList.remove('open'); btn.setAttribute('aria-expanded', 'false');
+    pop.style.cssText = '';
+    if (scrollHost) { scrollHost.removeEventListener('scroll', closePop); scrollHost = null; }
+    window.removeEventListener('resize', closePop);
+  }
+  btn.addEventListener('click', (e) => {
+    if (e.target === clearBtn) { e.stopPropagation(); sel = null; commit(); closePop(); return; }
+    pop.classList.contains('open') ? closePop() : openPop();
+  });
+  pop.addEventListener('click', (e) => {
+    const nav = e.target.closest('[data-nav]');
+    if (nav) { viewM += +nav.dataset.nav; if (viewM < 0) { viewM = 11; viewY--; } else if (viewM > 11) { viewM = 0; viewY++; } renderPop(); return; }
+    const day = e.target.closest('.dt-day');
+    if (day) { sel = { y: +day.dataset.y, m: +day.dataset.m, d: +day.dataset.d }; viewY = sel.y; viewM = sel.m; commit(); renderPop(); return; }
+    const preset = e.target.closest('[data-preset]');
+    if (preset) {
+      if (preset.dataset.preset === 'clear') { sel = null; commit(); closePop(); }
+      else { const t = new Date(Date.now() + 3600000); sel = { y: t.getFullYear(), m: t.getMonth(), d: t.getDate() }; h = t.getHours(); mi = t.getMinutes(); viewY = sel.y; viewM = sel.m; commit(); renderPop(); }
+      return;
+    }
+    if (e.target.closest('.dt-done')) closePop();
+  });
+  pop.addEventListener('input', (e) => {
+    if (e.target.classList.contains('dt-h')) { h = Math.max(0, Math.min(23, parseInt(e.target.value, 10) || 0)); if (sel) commit(); }
+    else if (e.target.classList.contains('dt-m')) { mi = Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)); if (sel) commit(); }
+  });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target) && !pop.contains(e.target)) closePop(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePop(); });
+  window.__syncDtPicker = syncFromHidden;
+  syncFromHidden();
+})();
 
 // req3：浏览按钮 → 系统目录选择（桌面端 Electron dialog；web 模式回退提示手填）
 $('newTaskCwdBrowse').addEventListener('click', async () => {
