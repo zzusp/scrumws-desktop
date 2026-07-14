@@ -5,6 +5,7 @@ import { P, ROOT } from './paths.js';
 import { fmt } from './timeutil.js';
 import { CHECKER, checkerIntervalSec } from './jobs/checker-meta.js';
 import { pidAlive } from './lease.js';
+import { promoteDueScheduledTasks, drainQueued } from './task-runner.js';
 
 // 看板进程内调度器（2026-07-12 去派发器后只调度平台守护 Runner Checker 一个 job）：
 // · 每 job 一个 interval 定时器；tick = fork 子进程跑 run-job.js（隔离——脚本写崩不拖死看板）
@@ -22,6 +23,20 @@ const TICK_TIMEOUT_MS = 240000;
 const jobs = new Map();   // id → job
 let mode = 'stopped';     // running | disabled-env | disabled-lock | stopped
 let lockInfo = null;
+
+// plan 定时执行扫描：in-process（须与 session-manager 同进程才能 spawn），仅持锁实例跑，防双实例双提升。
+const PROMOTE_INTERVAL_MS = 30000;
+let promoteTimer = null;
+function runPromoteSweep() {
+  try {
+    const r = promoteDueScheduledTasks();
+    if (r.promoted?.length) console.log(`定时执行：${r.promoted.length} 个 plan 任务到点提升（${r.promoted.join(', ')}）`);
+    for (const e of r.errors || []) console.log(`定时执行失败 ${e.taskKey}：${e.error}`);
+    // 兜底排空 queued（名额空出的事件驱动排空之外，30s 再兜一次，覆盖漏事件 / 起失败重试）
+    const d = drainQueued();
+    if (d.started?.length) console.log(`并发排空：起 ${d.started.length} 个 queued 任务（${d.started.join(', ')}）`);
+  } catch (e) { console.log(`定时执行扫描出错：${e.message}`); }
+}
 
 function acquireLock() {
   try {
@@ -152,6 +167,9 @@ export function start() {
   for (const sig of ['exit']) process.on(sig, releaseLock);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
   reload();
+  // plan 定时执行：启动即扫一次（补偿离线期间到点的任务）+ 周期扫描
+  runPromoteSweep();
+  if (!promoteTimer) { promoteTimer = setInterval(runPromoteSweep, PROMOTE_INTERVAL_MS); promoteTimer.unref?.(); }
   console.log(`调度器已启动（pid=${process.pid}，jobs=${[...jobs.keys()].join(',')}）`);
   return mode;
 }

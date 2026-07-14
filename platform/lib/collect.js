@@ -126,6 +126,13 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
     hasCustomTitle: !!task?.customTitle,
     description: task?.description || null,   // 纯用户备注（看板编辑，不进 prompt）
     cwd: task?.cwd || null,                   // 任务配置的工作目录（新建/编辑时写入 task.json）；awaiting 卡片非失败态展示
+    effort: task?.effort || null,             // 推理档位（新建/编辑写入）；详情侧栏展示
+    scheduledAt: task?.scheduledAt || null,   // 定时执行时刻（plan 到点自动执行）；提升后清空
+    worktree: !!task?.worktree,               // 是否 worktree 隔离运行
+    baseBranch: task?.baseBranch || null,     // worktree 签出基分支（配置）
+    worktreeBranch: meta?.worktreeBranch || null,  // 实际建出的 worktree 分支（运行态，meta）
+    worktreeDir: meta?.worktreeDir || null,        // 实际 worktree 目录（运行态，meta）
+    dynamicWorkflow: task?.dynamicWorkflow == null ? null : !!task?.dynamicWorkflow,  // 动态工作流开关
     source,
     kind,
     state: displayState,

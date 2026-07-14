@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
+import { parse } from './timeutil.js';
 import { readConfig } from './runner-config.js';
 import { replyCliSession } from './cli-actions.js';
-import { startTask, replyTask, cancelTaskSession } from './task-runner.js';
+import { tryStartOrQueue, replyTask, cancelTaskSession } from './task-runner.js';
 
 // 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
 function genSlug() {
@@ -162,8 +163,9 @@ export function uncompleteTask({ taskKey }) {
   return { ok: true, taskKey, state: 'awaiting-human' };
 }
 
-// 回复任务：CLI 会话走 cli-reply-runner（观察侧，另一功能）；其余走 Mode B（复用 live 会话 / --resume 重挂）
-export function replyToTask({ taskKey, message, model }) {
+// 回复任务：CLI 会话走 cli-reply-runner（观察侧，另一功能）；其余走 Mode B（复用 live 会话 / --resume 重挂）。
+// effort：per-reply reasoning 档位覆盖（仅 --resume 重挂新会话时生效，live 会话 spawn 时已定）。
+export function replyToTask({ taskKey, message, model, effort }) {
   if (String(taskKey || '').startsWith('cli:')) return replyCliSession({ taskKey, message, model });
   const msg = String(message || '').trim();
   if (!msg) return { ok: false, error: 'message required' };
@@ -177,8 +179,12 @@ export function replyToTask({ taskKey, message, model }) {
   if (model && !ALLOWED_MODELS.has(model)) {
     return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
   }
+  const eff = String(effort || '').trim();
+  if (eff && !ALLOWED_EFFORTS.has(eff)) {
+    return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
+  }
   // 走 Mode B：live 会话在则复用续轮 / 会话已死则 --resume 重挂（task-runner 内写 state=processing + lease）
-  return replyTask(taskKey, msg, model);
+  return replyTask(taskKey, msg, model, eff || undefined);
 }
 
 // 重新发起 / 确认执行：起绑定该任务的 Mode B 会话执行（→processing）。
@@ -201,8 +207,10 @@ export function restartTask({ taskKey, approve = false }) {
   if (!allowed.includes(state?.state)) {
     return { ok: false, error: `当前 state=${state?.state || '?'}、不能${approve ? '确认执行' : '重新发起'}（仅允许 ${allowed.join('/')}）` };
   }
-  const r = startTask(taskKey);
+  // 受并发上限约束：满则落 queued 等排空（名额释放自动放行）
+  const r = tryStartOrQueue(taskKey);
   if (!r.ok) return r;
+  if (r.queued) return { ok: true, taskKey, spawned: false, queued: true };
   return { ok: true, taskKey, spawned: true, sessionUiId: r.sessionUiId };
 }
 
@@ -228,7 +236,9 @@ export function taskCwds() {
 // （→processing，见 task-runner.startTask）；plan 待用户 approve 再起。跨平台，一个入口一套处理逻辑。
 // source（缺省 manual）：任意 [A-Za-z0-9_-] 标签，承载在 taskKey 前缀（<source>:<slug>），仅作展示/回复路由。
 // cwd（可选）：claude 工作目录，校验存在且是目录后写进 task.json.cwd。effort（可选）：reasoning 档位。
-export function createTask({ source, title, prompt, model, description, plan, cwd, effort }) {
+// scheduledAt（可选）：定时执行时刻（本地串），到点由调度器把 plan 提升为执行；给了则强制 plan。
+// worktree/baseBranch（可选）：git 项目下隔离 worktree 运行 + 签出基分支。dynamicWorkflow（可选）：动态工作流开关。
+export function createTask({ source, title, prompt, model, description, plan, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }) {
   const src = String(source || 'manual').trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
   const t = String(title || '').trim();
@@ -249,6 +259,12 @@ export function createTask({ source, title, prompt, model, description, plan, cw
     if (!st.isDirectory()) return { ok: false, error: `工作目录不是文件夹：${cwdRaw}` };
     cwdFinal = path.resolve(cwdRaw);
   }
+  // scheduledAt 可选：给了必须能解析成时刻；有定时 = 必然 plan（到点才执行）
+  const schedRaw = String(scheduledAt || '').trim();
+  if (schedRaw && !parse(schedRaw)) return { ok: false, error: `定时时间无法解析：${schedRaw}` };
+  const wantWorktree = !!worktree;
+  const baseBr = String(baseBranch || '').trim();
+  const dynFlow = dynamicWorkflow == null ? null : !!dynamicWorkflow;
 
   const slug = genSlug();
   const taskKey = `${src}:${slug}`;
@@ -261,7 +277,8 @@ export function createTask({ source, title, prompt, model, description, plan, cw
 
   // state = plan(需确认) / queued(可跑)：由 plan 标志或 runner-config.planSources 含该 source 决定
   const cfg = readConfig();
-  const planFirst = !!plan || (Array.isArray(cfg.planSources) && cfg.planSources.includes(src));
+  // 有定时 = 必然先存 plan（到点由调度器提升执行）；其余按 plan 标志 / planSources 决定
+  const planFirst = !!plan || !!schedRaw || (Array.isArray(cfg.planSources) && cfg.planSources.includes(src));
   const initState = planFirst ? 'plan' : 'queued';
 
   try {
@@ -273,6 +290,9 @@ export function createTask({ source, title, prompt, model, description, plan, cw
     };
     if (cwdFinal) taskJson.cwd = cwdFinal;
     if (eff) taskJson.effort = eff;
+    if (schedRaw) taskJson.scheduledAt = schedRaw;
+    if (wantWorktree) { taskJson.worktree = true; if (baseBr) taskJson.baseBranch = baseBr; }
+    if (dynFlow != null) taskJson.dynamicWorkflow = dynFlow;
     if (desc) taskJson.description = desc;
     fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
     // state.json = plan（先计划，用户确认后执行）或 queued（即将自动起会话）
@@ -288,8 +308,9 @@ export function createTask({ source, title, prompt, model, description, plan, cw
   // queued → 立即起绑定该任务的 Mode B 会话执行（→processing）；plan 待 approve。
   // 起会话失败（如 claude 不可用）不回滚任务，留在 queued 供用户「重新发起」重试。
   if (initState === 'queued') {
-    const started = startTask(taskKey);
-    if (started.ok) return { ok: true, taskKey, state: 'processing', spawned: true, sessionUiId: started.sessionUiId };
+    const started = tryStartOrQueue(taskKey);   // 受并发上限约束：满则留 queued 等排空
+    if (started.ok && started.spawned) return { ok: true, taskKey, state: 'processing', spawned: true, sessionUiId: started.sessionUiId };
+    if (started.ok && started.queued) return { ok: true, taskKey, state: 'queued', spawned: false, capped: true };
     return { ok: true, taskKey, state: initState, spawned: false, startError: started.error };
   }
   return { ok: true, taskKey, state: initState, spawned: false };
@@ -316,13 +337,18 @@ export function readTaskEdit(taskKey) {
     model: task.model || '',
     cwd: task.cwd || '',
     description: task.description || '',
+    effort: task.effort || '',
+    scheduledAt: task.scheduledAt || '',
+    worktree: !!task.worktree,
+    baseBranch: task.baseBranch || '',
+    dynamicWorkflow: task.dynamicWorkflow == null ? null : !!task.dynamicWorkflow,
   };
 }
 
-// 编辑 plan 态任务：改写 task.json 的 title/prompt/model/cwd/description（prompt 是确认排队后真正发给 claude 的指令）。
-// 仅 plan 且非归档可编辑（已 queued/processing/收敛的任务不给改）。复用 createTask 同套校验（model 白名单、cwd 必须存在目录）。
-// 编辑后 title 落 task.title 且清 customTitle（编辑即权威标题）；effort 表单不涉及、保留原值不动。
-export function editTask({ taskKey, title, prompt, model, description, cwd }) {
+// 编辑 plan 态任务：改写 task.json 的 title/prompt/model/cwd/description + effort/scheduledAt/worktree/baseBranch/dynamicWorkflow。
+// 仅 plan 且非归档可编辑（已 queued/processing/收敛的任务不给改）。复用 createTask 同套校验（model/effort 白名单、cwd 必须存在目录）。
+// 编辑后 title 落 task.title 且清 customTitle（编辑即权威标题）。
+export function editTask({ taskKey, title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
@@ -335,9 +361,15 @@ export function editTask({ taskKey, title, prompt, model, description, cwd }) {
   const p = String(prompt || '').trim();
   const m = String(model || '').trim();
   const desc = String(description || '').trim().slice(0, 2000);
+  const eff = String(effort || '').trim();
+  const schedRaw = String(scheduledAt || '').trim();
+  const baseBr = String(baseBranch || '').trim();
+  const dynFlow = dynamicWorkflow == null ? null : !!dynamicWorkflow;
   if (!t) return { ok: false, error: 'title required' };
   if (!p) return { ok: false, error: 'prompt required' };
   if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
+  if (eff && !ALLOWED_EFFORTS.has(eff)) return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
+  if (schedRaw && !parse(schedRaw)) return { ok: false, error: `定时时间无法解析：${schedRaw}` };
   // cwd 可选：给了就必须存在且是目录（对齐 createTask，避免改出跑不起来的任务）
   let cwdFinal = null;
   const cwdRaw = String(cwd || '').trim();
@@ -357,6 +389,11 @@ export function editTask({ taskKey, title, prompt, model, description, cwd }) {
   task.model = m;
   if (desc) task.description = desc; else delete task.description;
   if (cwdFinal) task.cwd = cwdFinal; else delete task.cwd;
+  if (eff) task.effort = eff; else delete task.effort;
+  if (schedRaw) task.scheduledAt = schedRaw; else delete task.scheduledAt;
+  if (cwdFinal && worktree) { task.worktree = true; if (baseBr) task.baseBranch = baseBr; else delete task.baseBranch; }
+  else { delete task.worktree; delete task.baseBranch; }
+  if (dynFlow != null) task.dynamicWorkflow = dynFlow; else delete task.dynamicWorkflow;
   task.taskKey = task.taskKey || taskKey;
   try { fs.writeFileSync(taskFile, JSON.stringify(task, null, 2), 'utf8'); }
   catch (e) { return { ok: false, error: `写 task.json 失败: ${e.message}` }; }
