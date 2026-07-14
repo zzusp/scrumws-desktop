@@ -87,3 +87,51 @@ export async function getClaudeUsage() {
 
 // 代理配置变更后清缓存，令下次拉取立即用新代理（否则最长 60s 沿用旧结果）
 export function invalidateClaudeUsage() { cache = { at: 0, data: null }; }
+
+// ---- 模型上下文窗口（Models API：GET /v1/models/{id} → max_input_tokens）----
+// 详情页上下文用量环形的「上限」取真实值，不按 model 名硬编码/猜测：直接问 Anthropic 该 model 报告的
+// max_input_tokens。桌面平台 spawn 的 --model 会话上限即此（实测 opus/opus-4-7/sonnet-5/fable=1,000,000、
+// haiku=200,000；真实会话单条上下文已见 892k，反证 1M 窗口确在生效）。上下文窗口是 model 静态属性、几乎
+// 不变 → 每 model 缓存 6h；无凭据/网络失败回退旧值或错误态，前端据此显「上限未知」而非编造。
+const MODELS_URL = 'https://api.anthropic.com/v1/models/';
+const ANTHROPIC_VERSION = '2023-06-01';
+const MODEL_TTL = 6 * 60 * 60_000;          // 6h
+const modelCache = new Map();               // model → { at, data }
+const modelInflight = new Map();            // model → Promise（并发去重）
+
+// 打 Models API 取单个 model 的 max_input_tokens（与用量端点同一套 curl+OAuth+代理路径）
+async function fetchModelLimit(model) {
+  const cred = readCred();
+  if (!cred) return { ok: false, model, error: 'no-credentials' };
+  if (cred.expiresAt && Date.now() > cred.expiresAt) return { ok: false, model, error: 'token-expired' };
+  const resp = await curlGet(MODELS_URL + encodeURIComponent(model), {
+    Authorization: `Bearer ${cred.accessToken}`,
+    'anthropic-version': ANTHROPIC_VERSION,
+    'anthropic-beta': OAUTH_BETA,
+  });
+  if (resp.status !== 200) return { ok: false, model, error: resp.status ? `http-${resp.status}` : `curl-${resp.err || 'failed'}` };
+  let m;
+  try { m = JSON.parse(resp.body); } catch { return { ok: false, model, error: 'parse-failed' }; }
+  const max = Number(m.max_input_tokens);
+  if (!Number.isFinite(max) || max <= 0) return { ok: false, model, error: 'no-max-input-tokens' };
+  return { ok: true, model, maxInputTokens: max };
+}
+
+// 查某 model 的上下文窗口上限（TTL 缓存 + 并发去重，语义对齐 getClaudeUsage：失败若有旧值则沿用）
+export async function getModelContextLimit(model) {
+  const key = (model || '').trim();
+  if (!key) return { ok: false, error: 'no-model' };
+  const hit = modelCache.get(key);
+  if (hit && Date.now() - hit.at < MODEL_TTL) return hit.data;
+  if (modelInflight.has(key)) return modelInflight.get(key);
+  const p = fetchModelLimit(key).then((data) => {
+    modelInflight.delete(key);
+    if (data.ok || !hit) modelCache.set(key, { at: Date.now(), data });   // 成功、或无旧值才写；失败但有旧值 → 沿用旧值
+    return modelCache.get(key).data;
+  }).catch(() => {
+    modelInflight.delete(key);
+    return hit ? hit.data : { ok: false, model: key, error: 'fetch-failed' };
+  });
+  modelInflight.set(key, p);
+  return p;
+}

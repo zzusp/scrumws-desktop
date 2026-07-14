@@ -1185,6 +1185,75 @@ function claudeCodeCardHtml(t, model) {
     </div>`;
 }
 
+// ---- 上下文用量环形（详情页底栏 model 控件右侧）：已用上下文 / 该模型真实上下文窗口 ----
+// 上限取真实值——不按 model 名硬编码，走 /api/model-context（后端问 Anthropic Models API 的 max_input_tokens）。
+// 上下文窗口是 model 静态属性 → 前端按 model 缓存 6h；上限未拿到时环形留灰、tooltip 标「上限未知」，不编造分母。
+const modelCtxCache = {};        // model → { at, maxInputTokens|null, error }
+const modelCtxInflight = {};     // model → true（并发去重）
+const MODEL_CTX_TTL = 6 * 60 * 60000;
+function ensureModelCtxLimit(model, taskKey) {
+  if (!model || model === '—') return;
+  const hit = modelCtxCache[model];
+  if (hit && Date.now() - hit.at < MODEL_CTX_TTL) return;   // 新鲜：不重复拉
+  if (modelCtxInflight[model]) return;
+  modelCtxInflight[model] = true;
+  api('/api/model-context?model=' + encodeURIComponent(model)).then((r) => {
+    modelCtxCache[model] = { at: Date.now(), maxInputTokens: (r && r.ok) ? r.maxInputTokens : null, error: r && r.error };
+    if (modalOpen && modalPollTaskKey === taskKey) syncContextRing(taskKey);   // 上限到货重画环形
+  }).catch(() => { modelCtxCache[model] = { at: Date.now(), maxInputTokens: null, error: 'fetch-failed' }; })
+    .finally(() => { delete modelCtxInflight[model]; });
+}
+function ctxTipRow(k, v) { return `<div class="ctx-tip-row"><span>${k}</span><span>${v}</span></div>`; }
+// 环形 + hover 明细。半径 8 → 周长 2π·8≈50.27；进度弧用 dashoffset 收缩，≥80% 红 / ≥50% 琥珀 / 否则绿（对齐用量条）
+function contextRingHtml(ctxSize, model, limInfo) {
+  const C = 50.27;
+  const limit = (limInfo && limInfo.maxInputTokens) ? limInfo.maxInputTokens : null;
+  let color = 'var(--mut)', off = C, pctTxt = '·', arc = '', ariaPct = '上限未知';
+  if (limit) {
+    const pct = Math.max(0, Math.min(100, ctxSize / limit * 100));
+    color = pct >= 80 ? 'var(--coral)' : pct >= 50 ? 'var(--amber)' : 'var(--jade)';
+    off = C * (1 - pct / 100);
+    pctTxt = (pct > 0 && pct < 10) ? pct.toFixed(1) + '%' : pct.toFixed(0) + '%';
+    ariaPct = pctTxt;
+    arc = `<circle cx="10" cy="10" r="8" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 10 10)"/>`;
+  }
+  const rows = [`<div class="ctx-tip-title">上下文用量</div>`];
+  if (limit) {
+    rows.push(`<div class="ctx-tip-big"><span style="color:${color}">${pctTxt}</span> <span class="ctx-tip-dim">已用</span></div>`);
+    rows.push(ctxTipRow('已用', ctxSize.toLocaleString('en-US')));
+    rows.push(ctxTipRow('上限', limit.toLocaleString('en-US')));
+    rows.push(ctxTipRow('剩余', Math.max(0, limit - ctxSize).toLocaleString('en-US')));
+    rows.push(ctxTipRow('模型', escapeHtml(model)));
+    rows.push(`<div class="ctx-tip-note">上限为该模型真实上下文窗口（Anthropic Models API）</div>`);
+  } else {
+    rows.push(ctxTipRow('已用', ctxSize.toLocaleString('en-US')));
+    rows.push(ctxTipRow('模型', escapeHtml(model)));
+    const why = (limInfo && limInfo.error) ? `上限获取失败（${escapeHtml(limInfo.error)}）` : '上限获取中…';
+    rows.push(`<div class="ctx-tip-note">${why}</div>`);
+  }
+  return `
+    <div class="ctx-ring" tabindex="0" aria-label="上下文用量 ${ariaPct}">
+      <svg class="ctx-ring-svg" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+        <circle cx="10" cy="10" r="8" fill="none" stroke="var(--hair2)" stroke-width="2.5"/>
+        ${arc}
+      </svg>
+      <span class="ctx-ring-pct"${limit ? ` style="color:${color}"` : ''}>${pctTxt}</span>
+      <div class="ctx-ring-tip">${rows.join('')}</div>
+    </div>`;
+}
+// 用 currentModalData 末轮的 contextSize + 会话真实 model 刷新环形；无上下文数据则清空容器（保留其 margin-right:auto 布局位）
+function syncContextRing(taskKey) {
+  const wrap = document.getElementById('modalCtxRing');
+  if (!wrap) return;
+  const rounds = (currentModalData?.rounds || []).filter((x) => !x.error);
+  const lastOk = rounds[rounds.length - 1] || null;
+  const ctxSize = lastOk?.ccSummary?.contextSize;
+  const model = lastOk?.ccSummary?.model || lastOk?.systemInit?.model || null;
+  if (ctxSize == null || !model) { wrap.innerHTML = ''; return; }
+  ensureModelCtxLimit(model, taskKey);
+  wrap.innerHTML = contextRingHtml(ctxSize, model, modelCtxCache[model]);
+}
+
 // ---- 右侧信息栏：任务信息 kv / 描述 / 快捷操作（参考 detail-side）----
 function renderTaskSide(taskKey) {
   const el = $('taskSide');
@@ -1311,6 +1380,8 @@ function renderTaskSide(taskKey) {
   if (crumbLast) crumbLast.textContent = sideTitle;
   // Claude Code 卡片的账号级用量：懒加载（到货后回调重画本卡）
   refreshClaudeUsage(taskKey);
+  // 底栏上下文用量环形：每次侧栏刷新（轮询 / live 同步）都同步一次，跟随 contextSize 变化
+  syncContextRing(taskKey);
 }
 
 function renderDetailTab(r, liveMb) {
@@ -2259,10 +2330,15 @@ function mbToRounds() {
     for (let j = i + 1; j < messages.length && messages[j].role !== 'user'; j++) if (messages[j].at) end = new Date(messages[j].at).getTime();
     if (end && end > start) workMs += end - start;
   }
+  // 上下文用量：末条带 usage 的 assistant 消息 input+cache（= 模型本轮读入的上下文总量，与 Mode A logs.js 同口径）
+  const lastAsstU = [...messages].reverse().find((m) => m.role === 'assistant' && m.usage)?.usage;
+  const contextSize = lastAsstU
+    ? (lastAsstU.input_tokens || 0) + (lastAsstU.cache_read_input_tokens || 0) + (lastAsstU.cache_creation_input_tokens || 0)
+    : null;
   return [{
     round: 1, sessionId: mb.info?.claudeSessionId || null, inflight, messages,
     cwd: mb.info?.cwd || null, gitBranch,
-    ccSummary: { model: mb.info?.model || null, workMs: workMs > 0 ? workMs : null },
+    ccSummary: { model: mb.info?.model || null, workMs: workMs > 0 ? workMs : null, contextSize },
     humanCc: [],
   }];
 }
@@ -2335,6 +2411,7 @@ function mbRenderBody() {
   const rounds = mbToRounds();
   // 供右侧 renderTaskSide 读 live 轮次/token/● 实时（live 模式不走 /api/worker-log，currentModalData 由此喂）
   currentModalData = { rounds, hasInflight: mb.state === 'running' || mb.state === 'starting' };
+  syncContextRing(modalPollTaskKey);   // 底栏上下文环形跟随 live 上下文变化（多数 live 事件只走 mbRenderBody，不经 renderTaskSide）
   let html = rounds[0].messages.length ? renderDetailTab({ rounds }, true) : '<div style="color:var(--dim);padding:12px 0">等待 claude 响应…</div>';
   if (mb.liveText) html += `<div class="cc-line cc-text"><span class="cc-dot">⏺</span><div class="mb-live" id="mbLive">${escapeHtml(mb.liveText)}</div></div>`;
   const running = mb.state === 'running' || mb.state === 'starting';
