@@ -435,7 +435,20 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .reply-composer textarea:disabled{background:var(--card2);color:var(--dim);cursor:not-allowed}
 .reply-toolbar{display:flex;align-items:center;gap:10px;padding:7px 10px 7px 12px;background:var(--muted);border-top:1px solid var(--hair);border-radius:0 0 calc(var(--r-lg) - 1px) calc(var(--r-lg) - 1px);flex-wrap:wrap}
 .reply-model-wrap{position:relative;flex:none}
-.reply-toolbar .reply-model-wrap{margin-right:auto}
+/* 上下文用量环形：紧贴 model 控件右侧，margin-right:auto 让其后的打断/发送靠右（容器常驻、无数据时空） */
+.reply-toolbar .ctx-ring-wrap{margin-right:auto;display:flex;align-items:center;flex:none}
+.ctx-ring{position:relative;display:inline-flex;align-items:center;gap:5px;padding:2px 5px;border-radius:var(--r-md);cursor:default;outline:none}
+.ctx-ring:hover,.ctx-ring:focus-visible{background:var(--raise)}
+.ctx-ring-svg{flex:none;display:block}
+.ctx-ring-pct{font-size:10.5px;font-weight:600;color:var(--mut);font-variant-numeric:tabular-nums;line-height:1}
+.ctx-ring-tip{position:absolute;bottom:calc(100% + 8px);left:0;min-width:196px;background:var(--popover);box-shadow:var(--ring1),var(--shadow);border-radius:var(--r-lg);padding:10px 12px;z-index:1060;display:none;animation:rise .12s}
+.ctx-ring:hover .ctx-ring-tip,.ctx-ring:focus-visible .ctx-ring-tip{display:block}
+.ctx-tip-title{font-size:11px;font-weight:700;color:var(--ink);margin-bottom:7px}
+.ctx-tip-big{font-size:17px;font-weight:700;margin-bottom:9px;line-height:1}
+.ctx-tip-big .ctx-tip-dim{font-size:11px;font-weight:500;color:var(--mut)}
+.ctx-tip-row{display:flex;justify-content:space-between;gap:18px;font-size:11px;color:var(--ink2);padding:2.5px 0;font-variant-numeric:tabular-nums}
+.ctx-tip-row span:first-child{color:var(--mut)}
+.ctx-tip-note{font-size:10px;color:var(--dim);line-height:1.5;margin-top:7px}
 .reply-model-btn{font-family:var(--sans);font-size:11px;padding:5px 9px 5px 10px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);outline:none;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:border-color .15s,background .15s;min-width:140px}
 .reply-model-btn.form-size{font-size:12.5px;padding:8px 12px;border-radius:var(--r-md);border-color:var(--input);background:transparent;min-width:0}
 .reply-model-btn:hover{background:var(--raise);border-color:var(--hair2)}
@@ -763,6 +776,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
                   </button>
                   <div class="reply-model-menu" id="modalReplyModelMenu" role="listbox"></div>
                 </div>
+                <!-- 上下文用量环形（app.js syncContextRing 填充；无会话上下文时留空，但保留 margin-right:auto 支撑布局）-->
+                <div class="ctx-ring-wrap" id="modalCtxRing"></div>
                 <button class="btn" id="modalReplyInterrupt" style="display:none" title="打断当前轮（interrupt）">■ 打断</button>
                 <button class="btn btn-primary reply-send" id="modalReplySend">发送</button>
               </div>

@@ -8,7 +8,7 @@ import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, rest
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
-import { getClaudeUsage, invalidateClaudeUsage } from './lib/claude-usage.js';
+import { getClaudeUsage, invalidateClaudeUsage, getModelContextLimit } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
 
@@ -173,6 +173,12 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/state') return sendJson(res, 200, await collectState());
     // Claude Code 账号级用量（详情页 Claude Code 卡片）：套餐 + Pro/Max 的 5h/7d 滚动窗；模块内 60s 缓存
     if (pathname === '/api/claude-usage') return sendJson(res, 200, await getClaudeUsage());
+    // 模型上下文窗口上限（详情页上下文用量环形的分母）：取该 model 真实 max_input_tokens；模块内每 model 缓存 6h
+    if (pathname === '/api/model-context') {
+      const model = searchParams.get('model');
+      if (!model) return sendJson(res, 400, { ok: false, error: 'model required' });
+      return sendJson(res, 200, await getModelContextLimit(model));
+    }
     if (pathname === '/api/worker-log/stream') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
