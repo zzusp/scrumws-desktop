@@ -282,6 +282,46 @@ select.field-input{background:var(--card)}
 .cwd-item:hover,.cwd-item.active{background:var(--accent);color:var(--accent-foreground)}
 .cwd-empty{padding:10px;text-align:center;color:var(--dim);font-size:11.5px}
 
+/* 动态工作流：与 mes 按钮同高的小盒开关，和 Model·Effort 同排对齐 */
+.dyn-toggle{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);font-size:12.5px;cursor:pointer;user-select:none;white-space:nowrap}
+.dyn-toggle:hover{background:var(--raise);border-color:var(--hair2)}
+.dyn-toggle input{margin:0;cursor:pointer}
+
+/* 定时执行：自定义日历选择器（向上弹出） */
+.dt-wrap{position:relative;align-self:flex-start;min-width:220px}
+.dt-btn{display:inline-flex;align-items:center;gap:8px;width:100%;font-family:var(--sans);font-size:12.5px;padding:8px 12px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);cursor:pointer;outline:none;transition:border-color .15s,background .15s}
+.dt-btn:hover{background:var(--raise);border-color:var(--hair2)}
+.dt-btn.open{border-color:var(--ring);box-shadow:var(--focus-ring)}
+.dt-btn-icon{flex:none;font-size:13px;line-height:1}
+.dt-btn-label{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.dt-btn-label.dim{color:var(--dim)}
+.dt-btn-clear{flex:none;color:var(--mut);font-size:14px;width:16px;height:16px;display:grid;place-items:center;border-radius:50%}
+.dt-btn-clear:hover{background:var(--muted);color:var(--ink)}
+.dt-btn-caret{flex:none;color:var(--mut);font-size:9px;transition:transform .15s}
+.dt-btn.open .dt-btn-caret{transform:rotate(180deg)}
+.dt-pop{position:absolute;bottom:calc(100% + 6px);left:0;width:268px;background:var(--popover);box-shadow:var(--ring1),var(--shadow);border-radius:var(--r-lg);padding:10px;z-index:1100;animation:rise .15s;display:none}
+.dt-pop.open{display:block}
+.dt-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.dt-cal-title{font-size:12.5px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.dt-nav{width:26px;height:26px;display:grid;place-items:center;border:none;background:transparent;color:var(--mut);cursor:pointer;border-radius:var(--r-md);font-size:14px}
+.dt-nav:hover{background:var(--accent);color:var(--accent-foreground)}
+.dt-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.dt-wd span{text-align:center;font-size:10px;color:var(--dim);padding:2px 0}
+.dt-day{aspect-ratio:1;display:grid;place-items:center;font-size:11.5px;color:var(--ink2);border:none;background:transparent;cursor:pointer;border-radius:var(--r-md);font-variant-numeric:tabular-nums}
+.dt-day:hover{background:var(--accent);color:var(--accent-foreground)}
+.dt-day.other{color:var(--dim);opacity:.5}
+.dt-day.today{box-shadow:inset 0 0 0 1px var(--hair2)}
+.dt-day.sel{background:var(--primary);color:#fff;font-weight:600}
+.dt-day.sel:hover{background:var(--primary)}
+.dt-time{display:flex;align-items:center;gap:6px;margin-top:9px;padding-top:9px;border-top:1px solid var(--hair)}
+.dt-time-label{font-size:11px;color:var(--mut);flex:1}
+.dt-time input{width:44px;font-family:var(--mono);font-size:12px;padding:5px 6px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink);text-align:center}
+.dt-time input:focus{border-color:var(--ring);outline:none;box-shadow:var(--focus-ring)}
+.dt-foot{display:flex;align-items:center;gap:8px;margin-top:10px}
+.dt-foot .dt-preset{font-size:11px;color:var(--brand);background:none;border:none;cursor:pointer;padding:2px 4px}
+.dt-foot .dt-preset:hover{text-decoration:underline}
+.dt-foot .dt-done{margin-left:auto;font-size:11.5px;padding:5px 14px}
+
 /* ---------- 任务看板：筛选工具行（参考 landing-hero 顶部 toolbar 的 outline 按钮风）---------- */
 .board-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:12px}
 .board-toolbar .bt-label{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--mut);margin-right:2px}
@@ -869,31 +909,41 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <span class="f-label">描述（可选 · 自己看的备注，不会发给 claude）</span>
           <textarea id="newTaskDesc" class="field-input" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…"></textarea>
         </label>
-        <div class="field">
-          <span class="f-label">Model · Effort（模型与推理档位）</span>
-          <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
-          <select id="newTaskModel" style="display:none">
-            <option value="claude-opus-4-8" selected>Opus 4.8</option>
-            <option value="claude-fable-5">Fable 5</option>
-            <option value="claude-opus-4-7">Opus 4.7</option>
-            <option value="claude-sonnet-5">Sonnet 5</option>
-            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-          </select>
-          <select id="newTaskEffort" style="display:none">
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="xhigh" selected>xhigh</option>
-            <option value="max">max</option>
-          </select>
-          <div class="mes-wrap" id="newTaskMesWrap">
-            <button type="button" class="mes-btn form-size" id="newTaskMesBtn" aria-haspopup="true" aria-expanded="false" title="选择 model 与 effort 档位">
-              <span class="mes-btn-model">Opus 4.8</span>
-              <span class="mes-btn-effort">xHigh</span>
-              <span class="mes-btn-caret" aria-hidden="true">▾</span>
-            </button>
-            <div class="mes-menu" id="newTaskMesMenu" role="menu"></div>
+        <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div class="field" style="flex:1;min-width:220px">
+            <span class="f-label">Model · Effort（模型与推理档位）</span>
+            <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
+            <select id="newTaskModel" style="display:none">
+              <option value="claude-opus-4-8" selected>Opus 4.8</option>
+              <option value="claude-fable-5">Fable 5</option>
+              <option value="claude-opus-4-7">Opus 4.7</option>
+              <option value="claude-sonnet-5">Sonnet 5</option>
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+            </select>
+            <select id="newTaskEffort" style="display:none">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh" selected>xhigh</option>
+              <option value="max">max</option>
+            </select>
+            <div class="mes-wrap" id="newTaskMesWrap">
+              <button type="button" class="mes-btn form-size" id="newTaskMesBtn" aria-haspopup="true" aria-expanded="false" title="选择 model 与 effort 档位">
+                <span class="mes-btn-model">Opus 4.8</span>
+                <span class="mes-btn-effort">xHigh</span>
+                <span class="mes-btn-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="mes-menu" id="newTaskMesMenu" role="menu"></div>
+            </div>
           </div>
+          <!-- 动态工作流：与 Model·Effort 同排（右侧）；label 单独一行、控件用同高小盒对齐 mes 按钮 -->
+          <label class="field" style="flex:none" title="开启后允许 claude 在执行时按需展开多智能体工作流（更强但更耗 token）；默认关闭">
+            <span class="f-label">动态工作流</span>
+            <span class="dyn-toggle">
+              <input type="checkbox" id="newTaskDynamicWorkflow" style="accent-color:var(--primary)">
+              <span>启用 Workflows</span>
+            </span>
+          </label>
         </div>
         <label class="field">
           <span class="f-label">工作目录（可选 · claude 在此目录下运行；留空用默认根目录）</span>
@@ -912,24 +962,31 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <input type="checkbox" id="newTaskWorktree" checked style="accent-color:var(--primary)">
             使用独立 git worktree 运行（隔离主库；分支 <code style="font-family:var(--mono);font-size:11px">worktree-&lt;slug&gt;</code>）
           </label>
-          <div id="newTaskBranchRow" style="display:flex;align-items:center;gap:8px">
-            <span class="f-label" style="flex:none;margin:0">签出基分支</span>
-            <select id="newTaskBaseBranch" class="field-input" style="flex:1"></select>
-          </div>
+          <label class="field" id="newTaskBranchRow">
+            <span class="f-label">签出基分支</span>
+            <div class="cwd-combo" id="newTaskBranchCombo">
+              <input type="text" id="newTaskBaseBranch" class="field-input mono" autocomplete="off" placeholder="选择或输入筛选分支">
+              <button type="button" class="cwd-caret" id="newTaskBranchCaret" tabindex="-1" aria-label="展开分支">▾</button>
+              <div class="cwd-menu" id="newTaskBaseBranchMenu" role="listbox"></div>
+            </div>
+          </label>
           <span style="font-size:11px;color:var(--dim)">worktree 基于所选分支的最新代码新建；不勾选则直接在工作目录本身运行</span>
         </div>
-        <label class="field">
+        <div class="field">
           <span class="f-label">定时执行（可选 · 到点自动把任务从计划桶转为执行）</span>
-          <input type="datetime-local" id="newTaskScheduledAt" class="field-input" style="cursor:text">
+          <!-- 自定义日历选择器（向上弹出）：隐藏 input 作 value 载体（yyyy-MM-ddTHH:mm），app.js initDtPicker 驱动 -->
+          <input type="hidden" id="newTaskScheduledAt">
+          <div class="dt-wrap" id="newTaskDtWrap">
+            <button type="button" class="dt-btn" id="newTaskDtBtn" aria-haspopup="dialog" aria-expanded="false">
+              <span class="dt-btn-icon" aria-hidden="true">🗓</span>
+              <span class="dt-btn-label dim" id="newTaskDtLabel">留空 = 不定时</span>
+              <span class="dt-btn-clear" id="newTaskDtClear" title="清除" style="display:none">×</span>
+              <span class="dt-btn-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="dt-pop" id="newTaskDtPop" role="dialog" aria-label="选择执行时间"></div>
+          </div>
           <span style="font-size:11px;color:var(--dim)">留空 = 不定时，在看板手动「确认执行」；设置后到点由调度器自动起会话执行</span>
-        </label>
-        <label class="field">
-          <span style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);cursor:pointer;user-select:none">
-            <input type="checkbox" id="newTaskDynamicWorkflow" style="accent-color:var(--primary)">
-            动态工作流（Claude Code 多智能体编排能力 · Workflows）
-          </span>
-          <span style="font-size:11px;color:var(--dim)">开启后允许 claude 在执行时按需展开多智能体工作流（更强但更耗 token）；默认关闭</span>
-        </label>
+        </div>
       </div>
       <div id="newTaskErr" class="form-err"></div>
       <div id="newTaskWarn" class="form-warn"></div>
