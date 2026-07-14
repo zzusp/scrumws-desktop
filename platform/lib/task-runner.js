@@ -13,6 +13,18 @@ import { readCcSessionForAdopt, ccMessagesToModeBSeed } from './logs.js';
 // taskKey → 内存会话 id（reply 复用 / 详情接 live SSE / 判活）
 const registry = new Map();
 const lastBeat = new Map();   // taskKey → 上次 heartbeat 落盘的 ms（节流，避免逐 token 写盘）
+const leakRetry = new Map();  // taskKey → 本轮"泄漏空转"已自动重试次数（真人新一轮 markProcessing 时清零）
+const LEAK_RETRY_MAX = 2;     // 上限：仍泄漏则落回 awaiting-human（不比现状差），防死循环
+
+// 泄漏空转判据：模型把工具调用输出成了文本（court 哨兵 + 原样 <invoke name=…>）而非结构化 tool_use，
+// 于是这一轮没有真工具、以 end_turn 收场 → CC 发 result。runner 据此自动补一条重试而非翻 awaiting-human，
+// 既不让用户把它误读成"异常中断"，也让被漏执行的 commit/验证得以补跑。判 content：无 tool_use 且某 text 命中泄漏特征。
+export function isLeakedToolTurn(content) {
+  const arr = Array.isArray(content) ? content : [];
+  if (arr.some((c) => c && c.type === 'tool_use')) return false;
+  return arr.some((c) => c && c.type === 'text'
+    && (/<invoke\s+name=/.test(c.text || '') || /(^|\n)\s*court\s*(\n|$)/.test(c.text || '')));
+}
 
 // 该任务当前是否有活着的 Mode B 会话（供 /api/state 暴露 mbSessionId + reply 判复用）
 export function getTaskSessionId(taskKey) {
@@ -94,11 +106,22 @@ function bind(taskKey, id) {
         beatLease(taskKey);
       } else if (ev.type === 'result') {
         updateMeta(taskKey, s.claudeSessionId, ev);
+        // 泄漏空转拦截：本轮把工具调用输出成了文本、无真 tool_use → 自动补重试、保持 processing，不翻牌
+        const lastAsst = [...s.transcript].reverse().find((e) => e.type === 'assistant');
+        const n = leakRetry.get(taskKey) || 0;
+        if (isLeakedToolTurn(lastAsst?.message?.content) && n < LEAK_RETRY_MAX) {
+          leakRetry.set(taskKey, n + 1);
+          sendUserMessage(id, '上一条把工具调用输出成了文本（court<invoke…>），并未真正执行。请用结构化工具重新发起这次调用。');
+          beatLease(taskKey);
+          return;                        // 不落 awaiting-human、不 removeLease：本轮继续
+        }
+        leakRetry.delete(taskKey);
         setTaskState(taskKey, { state: 'awaiting-human', outcome: null, resolvedAt: fmt(new Date()) }, 'session');
         removeLease(taskKey);            // 一轮收敛：进程常驻但不算 processing
       } else if (ev.type === 'closed') {
         setTaskState(taskKey, { state: 'awaiting-human', outcome: null, resolvedAt: fmt(new Date()) }, 'session');
         removeLease(taskKey);
+        leakRetry.delete(taskKey);
         registry.delete(taskKey);
         s.emitter.off('event', onEvent);
       } else if (ev.type === 'error') {
@@ -117,6 +140,7 @@ function bind(taskKey, id) {
 // 立即置 processing + 写占位 lease（同步落盘，/api/state 秒级可见；system.init 到达后补真 pid）
 function markProcessing(taskKey, id) {
   const s = getSession(id);
+  leakRetry.delete(taskKey);   // 真人新一轮：重置泄漏空转重试预算
   // 清 outcomeDetail：起会话/唤醒即进 processing，上一轮收敛/checker 收孤儿写的 failureReason(resumeSessionId 等)
   // 必须一并清掉，否则详情右上「任务信息」卡片会残留旧的"会话中断…可 --resume"红条（reply/restart 两路共用本函数）。
   setTaskState(taskKey, {
