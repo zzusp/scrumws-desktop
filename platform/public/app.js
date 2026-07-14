@@ -1210,19 +1210,23 @@ function fmtResetIn(resetsAt) {
   return `${m}m 后刷新`;
 }
 
-// 单个滚动窗横向进度条（5h / 7d）：百分比 + 距刷新剩余；≥80% 红、≥50% 琥珀、否则绿（对齐 statusline 配色）
+// 单个滚动窗横向进度条（5h / 7d）：百分比 + 距刷新剩余；≥80% 红、≥50% 琥珀、否则绿。
+// 配色参考 claude-center 用量条：百分比文字用可读色档（coral/amber/jade），填充用底色半透明——
+// 柔和不刺眼，避免压暗的 --amber 文字色直接做满值填充呈脏棕。
 function ccUsageBarHtml(label, win) {
   if (!win || win.utilization == null) return '';
   const pct = Math.max(0, Math.min(100, Number(win.utilization)));
-  const color = pct >= 80 ? 'var(--coral)' : pct >= 50 ? 'var(--amber)' : 'var(--jade)';
+  const textColor = pct >= 80 ? 'var(--coral)' : pct >= 50 ? 'var(--amber)' : 'var(--jade)';
+  const fillBase = pct >= 80 ? 'var(--destructive)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
+  const fill = `color-mix(in oklab, ${fillBase} 62%, transparent)`;
   const reset = win.resetsAt ? fmtResetIn(win.resetsAt) : '';
   return `
     <div class="cc-bar">
       <div class="cc-bar-head">
         <span class="cc-bar-label">${escapeHtml(label)}</span>
-        <span class="cc-bar-pct" style="color:${color}">${pct.toFixed(0)}%</span>
+        <span class="cc-bar-pct" style="color:${textColor}">${pct.toFixed(0)}%</span>
       </div>
-      <div class="cc-bar-track"><div class="cc-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+      <div class="cc-bar-track"><div class="cc-bar-fill" style="width:${pct}%;background:${fill}"></div></div>
       ${reset ? `<div class="cc-bar-reset">${escapeHtml(reset)}</div>` : ''}
     </div>`;
 }
