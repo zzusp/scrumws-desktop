@@ -266,7 +266,7 @@ select.field-input{background:var(--card)}
 .modal-x:hover{color:var(--ink)}
 .modal-hint{font-size:11px;color:var(--mut);margin-bottom:14px;font-family:var(--mono);line-height:1.6}
 
-/* 新建任务·工作目录：自定义下拉（不用原生 datalist；风格对齐 reply-model 菜单）*/
+/* 新建任务·工作目录：自定义下拉（不用原生 datalist；风格对齐 .mes-* 菜单）*/
 .cwd-row{display:flex;gap:8px}
 .cwd-combo{position:relative;flex:1;min-width:0}
 .cwd-combo>.field-input{width:100%;padding-right:30px}
@@ -444,7 +444,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .reply-composer textarea::placeholder{color:var(--dim)}
 .reply-composer textarea:disabled{background:var(--card2);color:var(--dim);cursor:not-allowed}
 .reply-toolbar{display:flex;align-items:center;gap:10px;padding:7px 10px 7px 12px;background:var(--muted);border-top:1px solid var(--hair);border-radius:0 0 calc(var(--r-lg) - 1px) calc(var(--r-lg) - 1px);flex-wrap:wrap}
-.reply-model-wrap{position:relative;flex:none}
+.mes-wrap{position:relative;flex:none}
 /* 上下文用量环形：紧贴 model 控件右侧，margin-right:auto 让其后的打断/发送靠右（容器常驻、无数据时空） */
 .reply-toolbar .ctx-ring-wrap{margin-right:auto;display:flex;align-items:center;flex:none}
 .ctx-ring{position:relative;display:inline-flex;align-items:center;gap:5px;padding:2px 5px;border-radius:var(--r-md);cursor:default;outline:none}
@@ -459,32 +459,45 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .ctx-tip-row{display:flex;justify-content:space-between;gap:18px;font-size:11px;color:var(--ink2);padding:2.5px 0;font-variant-numeric:tabular-nums}
 .ctx-tip-row span:first-child{color:var(--mut)}
 .ctx-tip-note{font-size:10px;color:var(--dim);line-height:1.5;margin-top:7px}
-.reply-model-btn{font-family:var(--sans);font-size:11px;padding:5px 9px 5px 10px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);outline:none;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:border-color .15s,background .15s;min-width:140px}
-.reply-model-btn.form-size{font-size:12.5px;padding:8px 12px;border-radius:var(--r-md);border-color:var(--input);background:transparent;min-width:0}
-.reply-model-btn:hover{background:var(--raise);border-color:var(--hair2)}
-.reply-model-btn.open{border-color:var(--ring);box-shadow:var(--focus-ring)}
-.reply-model-btn-icon{color:var(--brand);font-size:11px;flex:none;line-height:1}
-.reply-model-btn-label{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.reply-model-btn-caret{color:var(--mut);font-size:9px;flex:none;transition:transform .15s}
-.reply-model-btn.open .reply-model-btn-caret{transform:rotate(180deg)}
-.reply-model-menu{position:absolute;bottom:calc(100% + 6px);left:0;min-width:260px;background:var(--popover);box-shadow:var(--ring1),var(--shadow);border-radius:var(--r-lg);padding:5px;z-index:1050;animation:rise .15s;max-height:340px;overflow-y:auto;display:none}
-.reply-model-menu.open{display:block}
-.reply-model-item{width:100%;display:flex;align-items:center;gap:10px;padding:8px 10px;background:none;border:none;border-radius:var(--r-md);cursor:pointer;text-align:left;font-family:var(--sans);color:var(--ink2);transition:background .1s}
-.reply-model-item:hover,.reply-model-item:focus-visible{background:var(--accent);outline:none}
-.reply-model-item.active{background:var(--accent)}
-.reply-model-item.active:hover{background:color-mix(in oklab, var(--foreground) 5%, var(--accent))}
-.reply-model-item .item-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-.reply-model-item .item-name{font-size:12.5px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:7px;line-height:1.3}
-.reply-model-item .item-desc{font-size:10.5px;color:var(--mut);line-height:1.45}
-.reply-model-item .item-tier{display:inline-flex;align-items:center;font-size:9px;font-weight:700;padding:1px 6px;border-radius:999px;font-family:var(--sans);letter-spacing:.02em;flex:none}
-.reply-model-item .item-tier.tier-jade{background:var(--jadeS);color:var(--jade)}
-.reply-model-item .item-tier.tier-amber{background:var(--amberS);color:var(--amber)}
-.reply-model-item .item-tier.tier-cyan{background:var(--cyanS);color:var(--cyanT)}
-.reply-model-item .item-tier.tier-coral{background:var(--coralS);color:var(--coralT)}
-.reply-model-item .item-tier.tier-mut{background:var(--muted);color:var(--mut);box-shadow:inset 0 0 0 1px var(--hair2)}
-.reply-model-item .item-check{color:var(--brand);font-size:13px;font-weight:700;flex:none;opacity:0}
-.reply-model-item.active .item-check{opacity:1}
-.reply-model-menu-hair{height:1px;background:var(--hair);margin:4px 6px}
+/* ==== 模型·effort 合并选择器（claude.ai 风格：单按钮 → 主菜单 + Effort/更多模型 二级飞出）==== */
+.mes-btn{font-family:var(--sans);font-size:11px;padding:5px 10px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);outline:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;max-width:100%;transition:border-color .15s,background .15s}
+.mes-btn.form-size{font-size:12.5px;padding:8px 12px;align-self:flex-start}
+.mes-btn:hover{background:var(--raise);border-color:var(--hair2)}
+.mes-btn.open{border-color:var(--ring);box-shadow:var(--focus-ring)}
+.mes-btn-model{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mes-btn-effort{font-weight:500;color:var(--mut);flex:none}
+.mes-btn-effort:empty{display:none}
+.mes-btn-caret{color:var(--mut);font-size:9px;flex:none;transition:transform .15s}
+.mes-btn.open .mes-btn-caret{transform:rotate(180deg)}
+/* 主菜单 popover（reply 用 absolute 上开；新建表单 inScroll 时 JS 改 fixed 定位） */
+.mes-menu{position:absolute;bottom:calc(100% + 6px);left:0;width:250px;background:var(--popover);box-shadow:var(--ring1),var(--shadow);border-radius:var(--r-lg);padding:5px;z-index:1050;animation:rise .15s;display:none}
+.mes-menu.open{display:block}
+.mes-row{width:100%;display:flex;align-items:center;gap:8px;padding:8px 10px;background:none;border:none;border-radius:var(--r-md);cursor:pointer;text-align:left;font-family:var(--sans);color:var(--ink2);transition:background .1s}
+.mes-row:hover,.mes-row:focus-visible{background:var(--accent);outline:none}
+.mes-hair{height:1px;background:var(--hair);margin:4px 6px}
+.mes-row-model .mes-row-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.mes-row-name{font-size:12.5px;font-weight:600;color:var(--ink);line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mes-row-desc{font-size:10.5px;color:var(--mut);line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mes-check{color:var(--brand);font-size:13px;font-weight:700;flex:none;opacity:0}
+.mes-check.on{opacity:1}
+.mes-row-nav .mes-row-label{flex:1;font-size:12.5px;font-weight:500;color:var(--ink);white-space:nowrap}
+.mes-row-nav .mes-row-val{font-size:11.5px;color:var(--mut);flex:none}
+.mes-row-arrow{color:var(--dim);font-size:14px;flex:none;line-height:1}
+/* 二级飞出面板：默认右侧展开，溢出翻左（.flip）；与主菜单底对齐向上延展 */
+.mes-sub{position:absolute;left:calc(100% + 6px);bottom:0;width:238px;background:var(--popover);box-shadow:var(--ring1),var(--shadow);border-radius:var(--r-lg);padding:5px;z-index:1051;display:none;animation:rise .12s;max-height:min(70vh,360px);overflow-y:auto}
+.mes-sub.open{display:block}
+.mes-sub.flip{left:auto;right:calc(100% + 6px)}
+.mes-sub-head{font-size:10.5px;color:var(--mut);line-height:1.5;padding:6px 8px 8px}
+.mes-item{width:100%;display:flex;align-items:center;gap:8px;padding:8px 10px;background:none;border:none;border-radius:var(--r-md);cursor:pointer;text-align:left;font-family:var(--sans);color:var(--ink2);transition:background .1s}
+.mes-item:hover,.mes-item:focus-visible{background:var(--accent);outline:none}
+.mes-item.active{background:var(--accent)}
+.mes-item-lead{flex:1;min-width:0;display:flex;align-items:center;gap:7px}
+.mes-item-name{font-size:12.5px;font-weight:500;color:var(--ink);white-space:nowrap}
+.mes-item-default{font-size:9.5px;color:var(--dim);flex:none}
+.mes-item-info{font-size:10px;color:var(--dim);flex:none;cursor:help}
+.mes-item-tag{font-size:9.5px;font-weight:600;color:var(--mut);background:var(--muted);padding:1px 6px;border-radius:999px;flex:none;box-shadow:inset 0 0 0 1px var(--hair2)}
+.mes-item-check{color:var(--brand);font-size:13px;font-weight:700;flex:none;opacity:0}
+.mes-item.active .mes-item-check{opacity:1}
 .reply-toolbar .reply-count{font-family:var(--mono);font-size:10.5px;color:var(--dim);font-variant-numeric:tabular-nums;letter-spacing:.02em}
 .reply-toolbar .reply-count.warn{color:var(--amber)}
 .reply-toolbar .reply-kbd{font-size:10.5px;color:var(--dim);display:inline-flex;align-items:center;gap:3px}
@@ -790,39 +803,30 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <div id="modalReplyBody" class="reply-composer" style="display:none">
               <textarea id="modalReplyText" rows="3" placeholder="继续输入消息…（Ctrl+Enter 快速发送）"></textarea>
               <div class="reply-toolbar">
-                <!-- 自定义 model 下拉：隐藏 native select 只作 value 载体 -->
+                <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
                 <select id="modalReplyModel" style="display:none">
-                  <option value="">继承任务 model</option>
-                  <option value="claude-opus-4-7">Opus 4.7</option>
+                  <option value="" selected>继承任务 model</option>
                   <option value="claude-opus-4-8">Opus 4.8</option>
+                  <option value="claude-fable-5">Fable 5</option>
+                  <option value="claude-opus-4-7">Opus 4.7</option>
                   <option value="claude-sonnet-5">Sonnet 5</option>
                   <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-                  <option value="claude-fable-5">Fable 5</option>
                 </select>
-                <div class="reply-model-wrap" id="modalReplyModelWrap">
-                  <button type="button" class="reply-model-btn" id="modalReplyModelBtn" title="切换 model（不选=继承任务 model）">
-                    <span class="reply-model-btn-icon">✦</span>
-                    <span class="reply-model-btn-label">继承任务 model</span>
-                    <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
-                  </button>
-                  <div class="reply-model-menu" id="modalReplyModelMenu" role="listbox"></div>
-                </div>
-                <!-- effort 下拉（req3 同步）：隐藏 native select 只作 value 载体；不选=继承任务 effort -->
                 <select id="modalReplyEffort" style="display:none">
-                  <option value="">继承任务 effort</option>
+                  <option value="" selected>继承任务 effort</option>
                   <option value="low">low</option>
                   <option value="medium">medium</option>
                   <option value="high">high</option>
                   <option value="xhigh">xhigh</option>
                   <option value="max">max</option>
                 </select>
-                <div class="reply-model-wrap" id="modalReplyEffortWrap">
-                  <button type="button" class="reply-model-btn" id="modalReplyEffortBtn" title="切换 effort（不选=继承任务 effort · 仅 --resume 重挂新会话时生效）">
-                    <span class="reply-model-btn-icon">◐</span>
-                    <span class="reply-model-btn-label">继承任务 effort</span>
-                    <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
+                <div class="mes-wrap" id="modalReplyMesWrap">
+                  <button type="button" class="mes-btn" id="modalReplyMesBtn" aria-haspopup="true" aria-expanded="false" title="切换 model / effort（不选=继承任务，仅 --resume 重挂新会话时生效）">
+                    <span class="mes-btn-model">继承任务</span>
+                    <span class="mes-btn-effort"></span>
+                    <span class="mes-btn-caret" aria-hidden="true">▾</span>
                   </button>
-                  <div class="reply-model-menu" id="modalReplyEffortMenu" role="listbox"></div>
+                  <div class="mes-menu" id="modalReplyMesMenu" role="menu"></div>
                 </div>
                 <!-- 上下文用量环形（app.js syncContextRing 填充；无会话上下文时留空，但保留 margin-right:auto 支撑布局）-->
                 <div class="ctx-ring-wrap" id="modalCtxRing"></div>
@@ -867,44 +871,31 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <span class="f-label">描述（可选 · 自己看的备注，不会发给 claude）</span>
           <textarea id="newTaskDesc" class="field-input" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…"></textarea>
         </label>
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <label class="field" style="flex:2;min-width:220px">
-            <span class="f-label">Model</span>
-            <!-- 自定义 model 下拉：与详情页同款组件，隐藏 native select 只作 value 载体 -->
-            <select id="newTaskModel" style="display:none">
-              <option value="claude-opus-4-8" selected>Opus 4.8</option>
-              <option value="claude-fable-5">Fable 5</option>
-              <option value="claude-opus-4-7">Opus 4.7</option>
-              <option value="claude-sonnet-5">Sonnet 5</option>
-              <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-            </select>
-            <div class="reply-model-wrap" id="newTaskModelWrap">
-              <button type="button" class="reply-model-btn form-size" id="newTaskModelBtn" title="选择 model" style="width:100%">
-                <span class="reply-model-btn-icon">✦</span>
-                <span class="reply-model-btn-label">Opus 4.8</span>
-                <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
-              </button>
-              <div class="reply-model-menu" id="newTaskModelMenu" role="listbox"></div>
-            </div>
-          </label>
-          <label class="field" style="flex:1;min-width:150px">
-            <span class="f-label">Effort（推理档位）</span>
-            <select id="newTaskEffort" style="display:none">
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high" selected>high</option>
-              <option value="xhigh">xhigh</option>
-              <option value="max">max</option>
-            </select>
-            <div class="reply-model-wrap" id="newTaskEffortWrap">
-              <button type="button" class="reply-model-btn form-size" id="newTaskEffortBtn" title="选择推理 effort 档位" style="width:100%">
-                <span class="reply-model-btn-icon">◐</span>
-                <span class="reply-model-btn-label">high</span>
-                <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
-              </button>
-              <div class="reply-model-menu" id="newTaskEffortMenu" role="listbox"></div>
-            </div>
-          </label>
+        <div class="field">
+          <span class="f-label">Model · Effort（模型与推理档位）</span>
+          <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
+          <select id="newTaskModel" style="display:none">
+            <option value="claude-opus-4-8" selected>Opus 4.8</option>
+            <option value="claude-fable-5">Fable 5</option>
+            <option value="claude-opus-4-7">Opus 4.7</option>
+            <option value="claude-sonnet-5">Sonnet 5</option>
+            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+          </select>
+          <select id="newTaskEffort" style="display:none">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high" selected>high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </select>
+          <div class="mes-wrap" id="newTaskMesWrap">
+            <button type="button" class="mes-btn form-size" id="newTaskMesBtn" aria-haspopup="true" aria-expanded="false" title="选择 model 与 effort 档位">
+              <span class="mes-btn-model">Opus 4.8</span>
+              <span class="mes-btn-effort">High</span>
+              <span class="mes-btn-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="mes-menu" id="newTaskMesMenu" role="menu"></div>
+          </div>
         </div>
         <label class="field">
           <span class="f-label">工作目录（可选 · claude 在此目录下运行；留空用默认根目录）</span>

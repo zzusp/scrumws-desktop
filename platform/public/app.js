@@ -1977,8 +1977,8 @@ $('newTaskBtn').addEventListener('click', () => {
   $('newTaskDesc').value = '';
   $('newTaskCwd').value = '';              // 工作目录（可选）
   loadNewTaskCwds();                       // 填充「已有工作目录」下拉（现有任务 cwd + 近期 CLI session cwd）
-  newTaskModelCtl?.setValue('claude-opus-4-8');
-  newTaskEffortCtl?.setValue('high');      // req3：默认 effort=high
+  newTaskMesCtl?.setModel('claude-opus-4-8');
+  newTaskMesCtl?.setEffort('high');        // req3：默认 effort=high
   resetNewTaskExtras();                    // req4/5/6：定时 / worktree / 动态工作流 归默认
   refreshWorktreeUi('');                   // 无 cwd → 隐藏 worktree 区
   $('newTaskErr').style.display = 'none';
@@ -2010,8 +2010,8 @@ async function openEditTask(taskKey) {
   $('newTaskDesc').value = r.description || '';
   $('newTaskCwd').value = r.cwd || '';
   loadNewTaskCwds();
-  newTaskModelCtl?.setValue(r.model || 'claude-opus-4-8');
-  newTaskEffortCtl?.setValue(r.effort || 'high');                         // req3
+  newTaskMesCtl?.setModel(r.model || 'claude-opus-4-8');
+  newTaskMesCtl?.setEffort(r.effort || 'high');                           // req3
   $('newTaskScheduledAt').value = toDatetimeLocal(r.scheduledAt || '');   // req4
   $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
   // req5：git 探测后回填 worktree 勾选 + 签出分支（默认开启沿用旧值；旧 plan 无该字段则默认开）
@@ -2325,64 +2325,126 @@ window.removeCliSession = async (sid) => {
   } catch (e) { customAlert({ title: '移除失败', message: escapeHtml(e.message) }); }
 };
 
-// ---- 自定义 model 下拉：填选项 + 事件绑定（隐藏的 <select> 承担 value 存储）----
-// 继续对话框用「继承任务 model」开头（value=''）；新建任务框不需要继承项，直接列出可选 model
-const INHERIT_OPTION = { value: '', name: '继承任务 model', desc: '默认 · 不覆盖任务原本的 model', tier: 'mut', tierLabel: '默认' };
+// ---- 模型·effort 合并选择器（claude.ai 风格）：单按钮 → 主菜单（当前模型 + Effort› + 更多模型›）+ 两个二级飞出面板 ----
+// 隐藏的两个 <select>（同 ID）仍是 value 载体，后端读它；这里只把 model / effort 两轴合进一个按钮 + 一个 popover。
+// 显示名对齐参考图（Extra=xhigh、Max=max），但 value 保持 claude --effort 白名单不变（见 session-manager.js ALLOWED_EFFORTS）。
 const BASE_MODELS = [
-  { value: 'claude-opus-4-8',               name: 'Opus 4.8',       desc: '旗舰推理 · 全局默认（与 4.7 同价）',    tier: 'jade', tierLabel: '旗舰' },
-  { value: 'claude-fable-5',                name: 'Fable 5',        desc: '最强推理 · 高于 Opus · issue 分析默认（配额消耗≈2×）', tier: 'coral',tierLabel: '最强' },
-  { value: 'claude-opus-4-7',               name: 'Opus 4.7',       desc: '上一代旗舰',                            tier: 'jade', tierLabel: '旗舰' },
-  { value: 'claude-sonnet-5',               name: 'Sonnet 5',       desc: '平衡 · 中等速度与推理',                 tier: 'cyan', tierLabel: '平衡' },
-  { value: 'claude-haiku-4-5-20251001',     name: 'Haiku 4.5',      desc: '最快 · 最省 token',                     tier: 'amber',tierLabel: '高速' },
+  { value: 'claude-opus-4-8',           name: 'Opus 4.8',  desc: '旗舰推理 · 全局默认' },
+  { value: 'claude-fable-5',            name: 'Fable 5',   desc: '最强推理 · 高于 Opus · issue 分析默认', badge: '配额 2×' },
+  { value: 'claude-opus-4-7',           name: 'Opus 4.7',  desc: '上一代旗舰' },
+  { value: 'claude-sonnet-5',           name: 'Sonnet 5',  desc: '平衡 · 中等速度与推理' },
+  { value: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', desc: '最快 · 最省 token' },
 ];
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];   // claude --effort 档位（后端白名单一致）；默认 high
-// effort 下拉选项（复用 initModelDropdown 组件的形状）；新建表单默认 high，回复条首项为「继承任务 effort」
+const MODEL_INHERIT = { value: '', name: '继承任务 model', desc: '默认 · 不覆盖任务原本的 model' };
 const EFFORT_OPTIONS = [
-  { value: 'low',    name: 'low',    desc: '最省 · 浅推理、最快',       tier: 'amber', tierLabel: '省' },
-  { value: 'medium', name: 'medium', desc: '中等推理',                 tier: 'cyan',  tierLabel: '中' },
-  { value: 'high',   name: 'high',   desc: '默认 · 深入推理',          tier: 'jade',  tierLabel: '深' },
-  { value: 'xhigh',  name: 'xhigh',  desc: '更深推理',                 tier: 'jade',  tierLabel: '很深' },
-  { value: 'max',    name: 'max',    desc: '最强推理 · 最耗 token',    tier: 'coral', tierLabel: '最强' },
+  { value: 'low',    name: 'Low' },
+  { value: 'medium', name: 'Medium' },
+  { value: 'high',   name: 'High', isDefault: true },
+  { value: 'xhigh',  name: 'Extra' },
+  { value: 'max',    name: 'Max', info: '最深推理 · 最慢、最耗额度' },
 ];
-const EFFORT_INHERIT = { value: '', name: '继承任务 effort', desc: '默认 · 不覆盖任务原本的 effort', tier: 'mut', tierLabel: '默认' };
+const EFFORT_INHERIT = { value: '', name: '继承' };
+const EFFORT_HEAD = '更高档位推理更充分，但更慢、也更快消耗额度。';
 
-// 通用初始化：wrapId/btnId/menuId/selectId 四元素 + models 列表 + 是否首项后加分隔线
-// inScroll=true：宿主在 overflow:auto 容器内（如新建任务表单）——absolute 定位会被容器裁剪，
-// 改为 open 时用 getBoundingClientRect 算出 fixed 坐标（挂在 viewport，不受容器裁剪），并按上下可用空间自动选方向
-function initModelDropdown({ wrapId, btnId, menuId, selectId, models, hairAfterFirst = false, inScroll = false }) {
-  const wrap = $(wrapId);
-  const btn = $(btnId);
-  const menu = $(menuId);
-  const btnLabel = btn?.querySelector('.reply-model-btn-label');
-  const select = $(selectId);
-  if (!wrap || !btn || !menu || !select) return null;
+// 单实例初始化：modelSelectId / effortSelectId 是隐藏 select（value 载体）；hasInherit=true 时两轴各多一个「继承」首项。
+// inScroll=true：宿主在 overflow:auto 容器内（新建任务表单）——主菜单改 fixed 定位挂 viewport，按上下空间自动选方向。
+function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortSelectId, hasInherit = false, inScroll = false }) {
+  const wrap = $(wrapId), btn = $(btnId), menu = $(menuId);
+  const modelSel = $(modelSelectId), effortSel = $(effortSelectId);
+  if (!wrap || !btn || !menu || !modelSel || !effortSel) return null;
+  const btnModel = btn.querySelector('.mes-btn-model');
+  const btnEffort = btn.querySelector('.mes-btn-effort');
 
-  menu.innerHTML = models.map((m, i) => `
-    ${hairAfterFirst && i === 1 ? '<div class="reply-model-menu-hair"></div>' : ''}
-    <button type="button" class="reply-model-item" data-value="${escapeAttr(m.value)}" role="option">
-      <span class="item-main">
-        <span class="item-name">${escapeHtml(m.name)}<span class="item-tier tier-${m.tier}">${escapeHtml(m.tierLabel)}</span></span>
-        <span class="item-desc">${escapeHtml(m.desc)}</span>
+  const models = hasInherit ? [MODEL_INHERIT, ...BASE_MODELS] : BASE_MODELS;
+  const efforts = hasInherit ? [EFFORT_INHERIT, ...EFFORT_OPTIONS] : EFFORT_OPTIONS;
+
+  const effortItems = efforts.map((e) => `
+    <button type="button" class="mes-item" data-eff="${escapeAttr(e.value)}" role="menuitemradio">
+      <span class="mes-item-lead">
+        <span class="mes-item-name">${escapeHtml(e.name)}</span>
+        ${e.isDefault ? '<span class="mes-item-default">默认</span>' : ''}
+        ${e.info ? `<span class="mes-item-info" title="${escapeAttr(e.info)}">ⓘ</span>` : ''}
       </span>
-      <span class="item-check" aria-hidden="true">✓</span>
-    </button>
-  `).join('');
+      <span class="mes-item-check" aria-hidden="true">✓</span>
+    </button>`).join('');
+  const modelItems = models.map((m) => `
+    <button type="button" class="mes-item" data-model="${escapeAttr(m.value)}" role="menuitemradio">
+      <span class="mes-item-lead">
+        <span class="mes-item-name">${escapeHtml(m.name)}</span>
+        ${m.badge ? `<span class="mes-item-tag">${escapeHtml(m.badge)}</span>` : ''}
+      </span>
+      <span class="mes-item-check" aria-hidden="true">✓</span>
+    </button>`).join('');
 
-  const setValue = (val) => {
-    select.value = val;
-    const m = models.find((x) => x.value === val) || models[0];
-    btnLabel.textContent = m.name;
-    menu.querySelectorAll('.reply-model-item').forEach((it) => {
-      it.classList.toggle('active', it.dataset.value === val);
-    });
+  menu.innerHTML = `
+    <div class="mes-main">
+      <button type="button" class="mes-row mes-row-model" data-nav="models">
+        <span class="mes-row-main">
+          <span class="mes-row-name" data-slot="model-name"></span>
+          <span class="mes-row-desc" data-slot="model-desc"></span>
+        </span>
+        <span class="mes-check on" aria-hidden="true">✓</span>
+      </button>
+      <div class="mes-hair"></div>
+      <button type="button" class="mes-row mes-row-nav" data-nav="effort">
+        <span class="mes-row-label">Effort</span>
+        <span class="mes-row-val" data-slot="effort-val"></span>
+        <span class="mes-row-arrow" aria-hidden="true">›</span>
+      </button>
+      <button type="button" class="mes-row mes-row-nav" data-nav="models">
+        <span class="mes-row-label">更多模型</span>
+        <span class="mes-row-arrow" aria-hidden="true">›</span>
+      </button>
+    </div>
+    <div class="mes-sub" data-sub="effort">
+      <div class="mes-sub-head">${escapeHtml(EFFORT_HEAD)}</div>
+      ${effortItems}
+    </div>
+    <div class="mes-sub" data-sub="models">${modelItems}</div>`;
+
+  const subEffort = menu.querySelector('.mes-sub[data-sub="effort"]');
+  const subModels = menu.querySelector('.mes-sub[data-sub="models"]');
+  const slotModelName = menu.querySelector('[data-slot="model-name"]');
+  const slotModelDesc = menu.querySelector('[data-slot="model-desc"]');
+  const slotEffortVal = menu.querySelector('[data-slot="effort-val"]');
+
+  const curModel = () => models.find((m) => m.value === modelSel.value) || models[0];
+  const curEffort = () => efforts.find((e) => e.value === effortSel.value) || efforts[0];
+
+  function render() {
+    const m = curModel(), e = curEffort();
+    slotModelName.textContent = m.name;
+    slotModelDesc.textContent = m.desc || '';
+    slotModelDesc.style.display = m.desc ? '' : 'none';
+    slotEffortVal.textContent = e.name;
+    const modelInherited = hasInherit && modelSel.value === '';
+    const effortInherited = hasInherit && effortSel.value === '';
+    if (modelInherited && effortInherited) { btnModel.textContent = '继承任务'; btnEffort.textContent = ''; }
+    else { btnModel.textContent = modelInherited ? '继承' : m.name; btnEffort.textContent = e.name; }
+    subModels.querySelectorAll('.mes-item').forEach((it) => it.classList.toggle('active', it.dataset.model === modelSel.value));
+    subEffort.querySelectorAll('.mes-item').forEach((it) => it.classList.toggle('active', it.dataset.eff === effortSel.value));
+  }
+  const setModel = (v) => { modelSel.value = v; render(); };
+  const setEffort = (v) => { effortSel.value = v; render(); };
+  render();
+
+  // 二级飞出：右侧展开，getBoundingClientRect 溢出右边界则翻左（.flip）
+  let openSub = null;
+  const showSub = (which) => {
+    if (openSub === which) return;
+    openSub = which;
+    subEffort.classList.toggle('open', which === 'effort');
+    subModels.classList.toggle('open', which === 'models');
+    const sub = which === 'effort' ? subEffort : subModels;
+    sub.classList.remove('flip');
+    requestAnimationFrame(() => { if (sub.getBoundingClientRect().right > window.innerWidth - 8) sub.classList.add('flip'); });
   };
-  setValue(select.value || models[0].value);
+  const hideSub = () => { openSub = null; subEffort.classList.remove('open'); subModels.classList.remove('open'); };
 
   let scrollHost = null;
   const closeMenu = () => {
-    menu.classList.remove('open');
-    btn.classList.remove('open');
-    btn.setAttribute('aria-expanded', 'false');
+    menu.classList.remove('open'); btn.classList.remove('open'); btn.setAttribute('aria-expanded', 'false');
+    hideSub();
     if (inScroll) {
       menu.style.cssText = '';
       if (scrollHost) { scrollHost.removeEventListener('scroll', closeMenu); scrollHost = null; }
@@ -2393,33 +2455,28 @@ function initModelDropdown({ wrapId, btnId, menuId, selectId, models, hairAfterF
     if (inScroll) {
       const r = btn.getBoundingClientRect();
       const spaceBelow = window.innerHeight - r.bottom;
-      const openUp = spaceBelow < 260 && r.top > spaceBelow;
+      const openUp = spaceBelow < 300 && r.top > spaceBelow;
       menu.style.position = 'fixed';
       menu.style.left = r.left + 'px';
-      menu.style.width = r.width + 'px';
       menu.style.bottom = openUp ? (window.innerHeight - r.top + 6) + 'px' : 'auto';
       menu.style.top = openUp ? 'auto' : (r.bottom + 6) + 'px';
       scrollHost = wrap.closest('[style*="overflow-y:auto"], [style*="overflow-y: auto"]');
       if (scrollHost) scrollHost.addEventListener('scroll', closeMenu, { passive: true });
       window.addEventListener('resize', closeMenu);
     }
-    menu.classList.add('open');
-    btn.classList.add('open');
-    btn.setAttribute('aria-expanded', 'true');
-    const activeItem = menu.querySelector('.reply-model-item.active');
-    if (activeItem) activeItem.scrollIntoView({ block: 'nearest' });
+    menu.classList.add('open'); btn.classList.add('open'); btn.setAttribute('aria-expanded', 'true');
   };
 
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    menu.classList.contains('open') ? closeMenu() : openMenu();
-  });
+  btn.addEventListener('click', (e) => { e.stopPropagation(); menu.classList.contains('open') ? closeMenu() : openMenu(); });
+  // 悬停导航行 → 展开对应二级面板（进入面板内部不改变，picks/外点/Esc 才关）
+  menu.addEventListener('mouseover', (e) => { const nav = e.target.closest('[data-nav]'); if (nav) showSub(nav.dataset.nav); });
   menu.addEventListener('click', (e) => {
-    const item = e.target.closest('.reply-model-item');
-    if (!item) return;
-    setValue(item.dataset.value);
-    closeMenu();
-    btn.focus();
+    const effItem = e.target.closest('[data-eff]');
+    if (effItem) { setEffort(effItem.dataset.eff); closeMenu(); btn.focus(); return; }
+    const mdlItem = e.target.closest('[data-model]');
+    if (mdlItem) { setModel(mdlItem.dataset.model); closeMenu(); btn.focus(); return; }
+    const nav = e.target.closest('[data-nav]');   // 键盘/点击可达：点导航行也展开
+    if (nav) showSub(nav.dataset.nav);
   });
   document.addEventListener('click', (e) => {
     if (menu.classList.contains('open') && !wrap.contains(e.target) && !menu.contains(e.target)) closeMenu();
@@ -2427,34 +2484,24 @@ function initModelDropdown({ wrapId, btnId, menuId, selectId, models, hairAfterF
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && menu.classList.contains('open')) { closeMenu(); btn.focus(); }
   });
-  return { setValue };
+  return { setModel, setEffort };
 }
 
-let replyModelCtl = null;
-let replyEffortCtl = null;
+let replyMesCtl = null;
 function initReplyModelSelector() {
-  replyModelCtl = initModelDropdown({
-    wrapId: 'modalReplyModelWrap', btnId: 'modalReplyModelBtn', menuId: 'modalReplyModelMenu', selectId: 'modalReplyModel',
-    models: [INHERIT_OPTION, ...BASE_MODELS], hairAfterFirst: true,
-  });
-  replyEffortCtl = initModelDropdown({
-    wrapId: 'modalReplyEffortWrap', btnId: 'modalReplyEffortBtn', menuId: 'modalReplyEffortMenu', selectId: 'modalReplyEffort',
-    models: [EFFORT_INHERIT, ...EFFORT_OPTIONS], hairAfterFirst: true,
+  replyMesCtl = initModelEffortSelector({
+    wrapId: 'modalReplyMesWrap', btnId: 'modalReplyMesBtn', menuId: 'modalReplyMesMenu',
+    modelSelectId: 'modalReplyModel', effortSelectId: 'modalReplyEffort', hasInherit: true, inScroll: false,
   });
   // 暴露给状态机：切换 taskKey 时把 UI 同步回默认（继承）
-  window.__resetReplyModel = () => { replyModelCtl?.setValue(''); replyEffortCtl?.setValue(''); };
+  window.__resetReplyModel = () => { replyMesCtl?.setModel(''); replyMesCtl?.setEffort(''); };
 }
 
-let newTaskModelCtl = null;
-let newTaskEffortCtl = null;
+let newTaskMesCtl = null;
 function initNewTaskModelSelector() {
-  newTaskModelCtl = initModelDropdown({
-    wrapId: 'newTaskModelWrap', btnId: 'newTaskModelBtn', menuId: 'newTaskModelMenu', selectId: 'newTaskModel',
-    models: BASE_MODELS, hairAfterFirst: false, inScroll: true,
-  });
-  newTaskEffortCtl = initModelDropdown({
-    wrapId: 'newTaskEffortWrap', btnId: 'newTaskEffortBtn', menuId: 'newTaskEffortMenu', selectId: 'newTaskEffort',
-    models: EFFORT_OPTIONS, hairAfterFirst: false, inScroll: true,
+  newTaskMesCtl = initModelEffortSelector({
+    wrapId: 'newTaskMesWrap', btnId: 'newTaskMesBtn', menuId: 'newTaskMesMenu',
+    modelSelectId: 'newTaskModel', effortSelectId: 'newTaskEffort', hasInherit: false, inScroll: true,
   });
 }
 
