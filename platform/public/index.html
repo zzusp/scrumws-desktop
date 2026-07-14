@@ -910,7 +910,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <textarea id="newTaskDesc" class="field-input" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…"></textarea>
         </label>
         <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
-          <div class="field" style="flex:1;min-width:220px">
+          <div class="field" style="flex:none">
             <span class="f-label">Model · Effort（模型与推理档位）</span>
             <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
             <select id="newTaskModel" style="display:none">
@@ -936,7 +936,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <div class="mes-menu" id="newTaskMesMenu" role="menu"></div>
             </div>
           </div>
-          <!-- 动态工作流：与 Model·Effort 同排（右侧）；label 单独一行、控件用同高小盒对齐 mes 按钮 -->
+          <!-- 动态工作流：紧邻 Model·Effort 右侧同排（Model·Effort 用 flex:none 不撑满，避免把本项顶到最右）；label 单独一行、控件用同高小盒对齐 mes 按钮 -->
           <label class="field" style="flex:none" title="开启后允许 claude 在执行时按需展开多智能体工作流（更强但更耗 token）；默认关闭">
             <span class="f-label">动态工作流</span>
             <span class="dyn-toggle">

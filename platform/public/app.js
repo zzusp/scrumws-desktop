@@ -2235,7 +2235,11 @@ function toLocalStamp(dtLocal) {
     if (e.target === clearBtn) { e.stopPropagation(); sel = null; commit(); closePop(); return; }
     pop.classList.contains('open') ? closePop() : openPop();
   });
+  // 选日期/翻月/预设只更新弹层内容、不关弹窗（确认/清除/点外部才关）。renderPop 会重建 innerHTML 使被点元素
+  // 脱离 pop，若不抑制，下面 document 级 outside-close 会因 pop.contains(脱离的 e.target)=false 而误关 → 置位跳过本次。
+  let suppressOutside = false;
   pop.addEventListener('click', (e) => {
+    suppressOutside = true;
     const nav = e.target.closest('[data-nav]');
     if (nav) { viewM += +nav.dataset.nav; if (viewM < 0) { viewM = 11; viewY--; } else if (viewM > 11) { viewM = 0; viewY++; } renderPop(); return; }
     const day = e.target.closest('.dt-day');
@@ -2252,7 +2256,10 @@ function toLocalStamp(dtLocal) {
     if (e.target.classList.contains('dt-h')) { h = Math.max(0, Math.min(23, parseInt(e.target.value, 10) || 0)); if (sel) commit(); }
     else if (e.target.classList.contains('dt-m')) { mi = Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)); if (sel) commit(); }
   });
-  document.addEventListener('click', (e) => { if (!wrap.contains(e.target) && !pop.contains(e.target)) closePop(); });
+  document.addEventListener('click', (e) => {
+    if (suppressOutside) { suppressOutside = false; return; }   // 本次点击落在 pop 内，跳过 outside-close
+    if (!wrap.contains(e.target) && !pop.contains(e.target)) closePop();
+  });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePop(); });
   window.__syncDtPicker = syncFromHidden;
   syncFromHidden();
