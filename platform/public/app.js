@@ -913,6 +913,17 @@ function replyBoxFp(t) {
   ]);
 }
 
+// 取任务「当前实际」model/effort：live 会话读 mb.info（后端序列化即带 model/effort）；否则读详情末轮 systemInit/ccSummary.model + t.effort
+function currentActualModelEffort(taskKey) {
+  const t = findTaskInState(taskKey);
+  if (t?.mbSessionId && mb && mb.id === t.mbSessionId && mb.info) {
+    return { model: mb.info.model || null, effort: mb.info.effort || t?.effort || null };
+  }
+  const rounds = (currentModalData?.rounds || []).filter((x) => !x.error);
+  const lastOk = rounds[rounds.length - 1] || null;
+  return { model: lastOk?.ccSummary?.model || lastOk?.systemInit?.model || null, effort: t?.effort || null };
+}
+
 // ---- 继续对话区：三态状态机（可对话 / 处理中 / 需重发 / 不可用）----
 // 每次 open modal 都会调；状态徽章 + 说明 + 输入区 / 重发区之间切换
 function updateReplyBoxAvailability(taskKey) {
@@ -967,6 +978,7 @@ function updateReplyBoxAvailability(taskKey) {
       if (interruptBtn) { interruptBtn.style.display = running ? '' : 'none'; interruptBtn.onclick = () => mbInterrupt(); }
     }
     updateReplyCount(text.value.length, countEl);
+    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.model, me.effort); }
     send.onclick = () => mbSend();
     text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); mbSend(); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);
@@ -996,7 +1008,7 @@ function updateReplyBoxAvailability(taskKey) {
     text.disabled = false; send.disabled = false;
     text.value = '';
     updateReplyCount(0, countEl);
-    if (typeof window.__resetReplyModel === 'function') window.__resetReplyModel();
+    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.model, me.effort); }
     send.onclick = () => sendCliContinue(taskKey);
     text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendCliContinue(taskKey); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);
@@ -1012,7 +1024,7 @@ function updateReplyBoxAvailability(taskKey) {
     text.disabled = false; send.disabled = false;
     text.value = '';
     updateReplyCount(0, countEl);
-    if (typeof window.__resetReplyModel === 'function') window.__resetReplyModel();
+    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.model, me.effort); }
     send.onclick = () => sendReply(taskKey);
     text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendReply(taskKey); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);
@@ -2341,7 +2353,14 @@ const BASE_MODELS = [
   { value: 'claude-sonnet-5',           name: 'Sonnet 5',  desc: '平衡 · 中等速度与推理' },
   { value: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', desc: '最快 · 最省 token' },
 ];
-const MODEL_INHERIT = { value: '', name: '继承任务 model', desc: '默认 · 不覆盖任务原本的 model' };
+// 容错映射：实测 CC 上报 model 即这些干净短 id，偶发带 -YYYYMMDD 后缀 → 归一到 BASE_MODELS 的 canonical value；认不出保留原值（诚实显示，不回落）
+function normalizeModelValue(raw) {
+  if (!raw) return '';
+  const strip = (s) => s.replace(/-\d{6,}$/, '');
+  const hit = BASE_MODELS.find((m) => m.value === raw)
+    || BASE_MODELS.find((m) => strip(m.value) === strip(raw) || raw.startsWith(strip(m.value)));
+  return hit ? hit.value : raw;
+}
 const EFFORT_OPTIONS = [
   { value: 'low',    name: 'Low' },
   { value: 'medium', name: 'Medium' },
@@ -2349,20 +2368,20 @@ const EFFORT_OPTIONS = [
   { value: 'xhigh',  name: 'Extra' },
   { value: 'max',    name: 'Max', info: '最深推理 · 最慢、最耗额度' },
 ];
-const EFFORT_INHERIT = { value: '', name: '继承' };
 const EFFORT_HEAD = '更高档位推理更充分，但更慢、也更快消耗额度。';
 
-// 单实例初始化：modelSelectId / effortSelectId 是隐藏 select（value 载体）；hasInherit=true 时两轴各多一个「继承」首项。
+// 单实例初始化：modelSelectId / effortSelectId 是隐藏 select（value 载体，后端读它）。
+// 回复条装配时按任务实际 model/effort 播种（见 __seedReplyModel）；新建表单播种默认值。
 // inScroll=true：宿主在 overflow:auto 容器内（新建任务表单）——主菜单改 fixed 定位挂 viewport，按上下空间自动选方向。
-function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortSelectId, hasInherit = false, inScroll = false }) {
+function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortSelectId, inScroll = false }) {
   const wrap = $(wrapId), btn = $(btnId), menu = $(menuId);
   const modelSel = $(modelSelectId), effortSel = $(effortSelectId);
   if (!wrap || !btn || !menu || !modelSel || !effortSel) return null;
   const btnModel = btn.querySelector('.mes-btn-model');
   const btnEffort = btn.querySelector('.mes-btn-effort');
 
-  const models = hasInherit ? [MODEL_INHERIT, ...BASE_MODELS] : BASE_MODELS;
-  const efforts = hasInherit ? [EFFORT_INHERIT, ...EFFORT_OPTIONS] : EFFORT_OPTIONS;
+  const models = BASE_MODELS;
+  const efforts = EFFORT_OPTIONS;
 
   const effortItems = efforts.map((e) => `
     <button type="button" class="mes-item" data-eff="${escapeAttr(e.value)}" role="menuitemradio">
@@ -2414,7 +2433,9 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
   const slotModelDesc = menu.querySelector('[data-slot="model-desc"]');
   const slotEffortVal = menu.querySelector('[data-slot="effort-val"]');
 
-  const curModel = () => models.find((m) => m.value === modelSel.value) || models[0];
+  // 认得的 model → 友好名 + 描述；认不出（未知/带版本）→ 合成条目直接显示原值，绝不静默回落成 Opus
+  const curModel = () => models.find((m) => m.value === modelSel.value)
+    || (modelSel.value ? { value: modelSel.value, name: modelSel.value, desc: '' } : models[0]);
   const curEffort = () => efforts.find((e) => e.value === effortSel.value) || efforts[0];
 
   function render() {
@@ -2423,14 +2444,16 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
     slotModelDesc.textContent = m.desc || '';
     slotModelDesc.style.display = m.desc ? '' : 'none';
     slotEffortVal.textContent = e.name;
-    const modelInherited = hasInherit && modelSel.value === '';
-    const effortInherited = hasInherit && effortSel.value === '';
-    if (modelInherited && effortInherited) { btnModel.textContent = '继承任务'; btnEffort.textContent = ''; }
-    else { btnModel.textContent = modelInherited ? '继承' : m.name; btnEffort.textContent = e.name; }
+    btnModel.textContent = m.name;
+    btnEffort.textContent = e.name;
     subModels.querySelectorAll('.mes-item').forEach((it) => it.classList.toggle('active', it.dataset.model === modelSel.value));
     subEffort.querySelectorAll('.mes-item').forEach((it) => it.classList.toggle('active', it.dataset.eff === effortSel.value));
   }
-  const setModel = (v) => { modelSel.value = v; render(); };
+  // 容忍不在下拉里的真实 model id（带版本/未知）：先补一个 <option>，否则原生 select 会把未知 value 吞成 ''
+  const setModel = (v) => {
+    if (v && !Array.from(modelSel.options).some((o) => o.value === v)) modelSel.add(new Option(v, v));
+    modelSel.value = v; render();
+  };
   const setEffort = (v) => { effortSel.value = v; render(); };
   render();
 
@@ -2497,17 +2520,20 @@ let replyMesCtl = null;
 function initReplyModelSelector() {
   replyMesCtl = initModelEffortSelector({
     wrapId: 'modalReplyMesWrap', btnId: 'modalReplyMesBtn', menuId: 'modalReplyMesMenu',
-    modelSelectId: 'modalReplyModel', effortSelectId: 'modalReplyEffort', hasInherit: true, inScroll: false,
+    modelSelectId: 'modalReplyModel', effortSelectId: 'modalReplyEffort', inScroll: false,
   });
-  // 暴露给状态机：切换 taskKey 时把 UI 同步回默认（继承）
-  window.__resetReplyModel = () => { replyMesCtl?.setModel(''); replyMesCtl?.setEffort(''); };
+  // 装配 composer 时按任务当前实际 model/effort 播种（不再显示「继承」占位）——发送时带的实际值 == 不带时后端继承的同一值，语义等价
+  window.__seedReplyModel = (model, effort) => {
+    replyMesCtl?.setModel(normalizeModelValue(model) || 'claude-opus-4-8');
+    replyMesCtl?.setEffort(effort || 'high');
+  };
 }
 
 let newTaskMesCtl = null;
 function initNewTaskModelSelector() {
   newTaskMesCtl = initModelEffortSelector({
     wrapId: 'newTaskMesWrap', btnId: 'newTaskMesBtn', menuId: 'newTaskMesMenu',
-    modelSelectId: 'newTaskModel', effortSelectId: 'newTaskEffort', hasInherit: false, inScroll: true,
+    modelSelectId: 'newTaskModel', effortSelectId: 'newTaskEffort', inScroll: true,
   });
 }
 

@@ -805,25 +805,23 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <div class="reply-toolbar">
                 <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
                 <select id="modalReplyModel" style="display:none">
-                  <option value="" selected>继承任务 model</option>
-                  <option value="claude-opus-4-8">Opus 4.8</option>
+                  <option value="claude-opus-4-8" selected>Opus 4.8</option>
                   <option value="claude-fable-5">Fable 5</option>
                   <option value="claude-opus-4-7">Opus 4.7</option>
                   <option value="claude-sonnet-5">Sonnet 5</option>
                   <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
                 </select>
                 <select id="modalReplyEffort" style="display:none">
-                  <option value="" selected>继承任务 effort</option>
                   <option value="low">low</option>
                   <option value="medium">medium</option>
-                  <option value="high">high</option>
+                  <option value="high" selected>high</option>
                   <option value="xhigh">xhigh</option>
                   <option value="max">max</option>
                 </select>
                 <div class="mes-wrap" id="modalReplyMesWrap">
-                  <button type="button" class="mes-btn" id="modalReplyMesBtn" aria-haspopup="true" aria-expanded="false" title="切换 model / effort（不选=继承任务，仅 --resume 重挂新会话时生效）">
-                    <span class="mes-btn-model">继承任务</span>
-                    <span class="mes-btn-effort"></span>
+                  <button type="button" class="mes-btn" id="modalReplyMesBtn" aria-haspopup="true" aria-expanded="false" title="切换 model / effort（默认=任务当前实际值；改动仅 --resume 重挂新会话时生效）">
+                    <span class="mes-btn-model">Opus 4.8</span>
+                    <span class="mes-btn-effort">High</span>
                     <span class="mes-btn-caret" aria-hidden="true">▾</span>
                   </button>
                   <div class="mes-menu" id="modalReplyMesMenu" role="menu"></div>
