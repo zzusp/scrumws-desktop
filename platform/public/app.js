@@ -827,6 +827,14 @@ function stateTagHtml(state) {
   return `<span class="tag ${m.cls}" style="font-size:10px">${escapeHtml(m.label)}</span>`;
 }
 
+// 滚到真正底部：innerHTML 后同帧读 scrollHeight，常因等宽字体/折叠块/代码块布局尚未稳定而少滚几行
+// → 下一帧 requestAnimationFrame 布局稳定后再补一次，确保停在最新内容处（进详情/追尾都用）。
+function scrollBodyToEnd(body) {
+  if (!body) return;
+  body.scrollTop = body.scrollHeight;
+  requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+}
+
 // keepScroll=true（poll 重画）保住滚动位置；首次打开滚到底部显示最新消息
 function renderModalBody(keepScroll = false) {
   if (!currentModalData) return;
@@ -838,7 +846,8 @@ function renderModalBody(keepScroll = false) {
   const html = renderDetailTab(currentModalData);
   body.innerHTML = html || '<div style="color:var(--dim);padding:12px 0">无数据</div>';
   // 首次打开 → 滚到底（最新消息在下面）；poll 重画 → 贴底则追尾、否则保持用户当前位置
-  body.scrollTop = keepScroll ? (wasAtBottom ? body.scrollHeight : prevScroll) : body.scrollHeight;
+  if (keepScroll && !wasAtBottom) body.scrollTop = prevScroll;   // 用户上滚看历史 → 原位保持
+  else scrollBodyToEnd(body);                                     // 首次打开 / 追尾贴底 → 滚到真正底部（含下一帧补滚）
 }
 
 // stateData 里按 mbSessionId 反查任务 key（旧 #/session/<id> 链接重定向用）
@@ -954,7 +963,8 @@ function updateReplyBoxAvailability(taskKey) {
     if (stateTag.parentElement) stateTag.parentElement.style.display = 'none';
     if (mb && mb.id === t.mbSessionId) {
       const running = mb.state === 'running' || mb.state === 'starting';
-      if (interruptBtn) { interruptBtn.style.display = ''; interruptBtn.disabled = !running; interruptBtn.onclick = () => mbInterrupt(); }
+      // 打断只在「正在生成」时有意义：非 running 用 display 隐藏（而非灰化占位），一轮收敛即消失。
+      if (interruptBtn) { interruptBtn.style.display = running ? '' : 'none'; interruptBtn.onclick = () => mbInterrupt(); }
     }
     updateReplyCount(text.value.length, countEl);
     send.onclick = () => mbSend();
@@ -1394,7 +1404,11 @@ function renderTaskSide(taskKey) {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${_bk}')">▶ 确认排队</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   } else if (['queued', 'processing'].includes(t.state)) {
-    if (!isCli) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
+    // live 会话已收敛（idle/closed）但任务 state 还没轮询刷成 awaiting-human 的空窗期，不再显示「中断」——
+    // 与「打断」同源于 mb.state，result 一到即随 mbSyncLiveHead→renderTaskSide 一起隐藏，不必等 5s 轮询。
+    // 非 live 任务（无 mb / 不匹配）→ liveRunning 恒真，按 t.state 原逻辑显示，不受影响。
+    const liveRunning = !mb || mb.id !== t.mbSessionId || mb.state === 'running' || mb.state === 'starting';
+    if (!isCli && liveRunning) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
   } else if (t.state === 'awaiting-human') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${_bk}')">✓ 完成</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
@@ -2464,7 +2478,8 @@ function mbToRounds() {
 function mbSyncLiveHead() {
   if (!mb) return;
   if (modalPollTaskKey) renderTaskSide(modalPollTaskKey);
-  const ib = $('modalReplyInterrupt'); if (ib) ib.disabled = mb.state !== 'running';
+  // 打断按钮用 display 即时显隐（result → mb.state=idle 即隐藏），与 updateReplyBoxAvailability 装配逻辑一致。
+  const ib = $('modalReplyInterrupt'); if (ib) ib.style.display = (mb.state === 'running' || mb.state === 'starting') ? '' : 'none';
   const st = $('modalReplyState');
   if (st && mb.id && findTaskInState(modalPollTaskKey)?.mbSessionId === mb.id) {
     st.className = 'tag ' + (mb.state === 'running' ? 'tag-amber' : 'tag-jade');
@@ -2544,7 +2559,7 @@ function mbRenderBody() {
       </div></div>`;
   }
   body.innerHTML = html;
-  if (atBottom) body.scrollTop = body.scrollHeight;
+  if (atBottom) scrollBodyToEnd(body);   // 含下一帧补滚：进 live 详情大段历史一次性渲染，布局稳定后才到真正底部
   if (running) mbStartStatusTimer(); else mbStopStatusTimer();
 }
 
