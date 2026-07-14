@@ -234,6 +234,34 @@ export function readCcSessionForAdopt(sessionId) {
   };
 }
 
+// live 会话侧栏 git：Mode B 流事件不带 gitBranch、fresh 任务 Session.gitBranch 也为空 → 从该 session 的
+// CC 磁盘 jsonl 取「最新分支」，与非 live 的 worker-log（parseCcSession 扫 lastEnv.gitBranch）同源，两条详情
+// 路径显示一致。gitBranch 几乎每行都挂 → 只 tail 读末尾 128KB 正则取最后一条（避免每次 stream 连接全量解析）；
+// 极端「末行是超大 tool_result」把 gitBranch 挤出窗口时，回落整文件扫一次。
+export function latestGitBranchBySid(sessionId) {
+  if (!sessionId || !/^[a-f0-9-]{36}$/.test(String(sessionId))) return null;
+  const found = _collectCli.locateJsonlBySid(sessionId);
+  if (!found || !found.jsonlPath) return null;
+  const pick = (text) => {
+    const m = String(text).match(/"gitBranch":"([^"]*)"/g);
+    if (!m || !m.length) return null;
+    const last = m[m.length - 1].match(/"gitBranch":"([^"]*)"/);
+    return last && last[1] ? last[1] : null;
+  };
+  try {
+    const fd = fs.openSync(found.jsonlPath, 'r');
+    try {
+      const { size } = fs.fstatSync(fd);
+      const start = Math.max(0, size - 131072);   // 末尾 128KB
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      const hit = pick(buf.toString('utf8'));
+      if (hit) return hit;
+    } finally { fs.closeSync(fd); }
+    return pick(fs.readFileSync(found.jsonlPath, 'utf8'));   // 回落：末尾窗口无命中才整文件扫
+  } catch { return null; }
+}
+
 // CC 历史消息 → Mode B 事件形状（seedTranscript 用）：assistant 带 id/usage/model，user 只需 content。
 // 复用点：session/adopt（收养终端会话）与 task reply 的 --resume 重挂都要回放历史，避免两处 map 走样。
 export function ccMessagesToModeBSeed(messages) {
