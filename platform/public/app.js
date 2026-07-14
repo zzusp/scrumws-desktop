@@ -75,7 +75,8 @@ function acknowledgeTask(taskKey) {
   if (seenSections[taskKey] !== sec) {
     seenSections[taskKey] = sec;
     saveSeenSections();
-    document.querySelector(`.taskcard[data-taskkey="${cssEscape(taskKey)}"] .update-dot`)?.remove();
+    const card = document.querySelector(`.taskcard[data-taskkey="${cssEscape(taskKey)}"]`);
+    if (card) { card.classList.remove('has-update'); card.querySelector('.update-dot')?.remove(); }
   }
 }
 function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&'); }
@@ -255,49 +256,44 @@ function sourceTagHtml(t) {
 }
 
 function taskCardHtml(t, section) {
-  const isCli = t.source === 'cli';
   const cost = t.meta?.totalCostUsd ? '$' + t.meta.totalCostUsd.toFixed(4) : '';
   const rounds = t.meta?.rounds ? `${t.meta.rounds} 轮` : '';
   const totalDur = fmtDuration(t.durationMs);
   // 统一后台维度徽章（runner/cli 同源 t.backgroundAgentCount）：主进程让出后仍在跑的后台 agent 数
   const bgBadge = t.backgroundAgentCount > 0 ? ` · <span style="color:var(--amber)">后台×${t.backgroundAgentCount}</span>` : '';
 
-  let statusLine = '';
-  if (isCli) {
-    // CLI 卡片：只读展示 cwd + 心跳；无 pid / 无失败原因
-    const cwd = t.cli?.cwd || '—';
-    const cwdShort = cwd.length > 40 ? '…' + cwd.slice(-38) : cwd;
-    const heartbeat = t.lease?.heartbeatAgo ? ` · 心跳 ${t.lease.heartbeatAgo}` : '';
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(cwd)}">${escapeHtml(cwdShort)}</div><div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">总耗时 ${totalDur}${heartbeat}${bgBadge}</div>`;
-  } else if (section === 'plan') {
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">待确认 · 建于 ${escapeHtml(t.createdAt || t.enteredAt || '—')}</div>`;
+  // 卡片副信息统一为「主状态行 + 副行」结构，所有来源（分身 / CLI）在同一分桶显示一致，字段缺失优雅降级。
+  // 工作目录跨来源统一取（CLI 在 t.cli.cwd，分身在 t.cwd）→ 作为所有卡片一致的副行。
+  const cwdVal = t.cwd || t.cli?.cwd || null;
+  const cwdShort = cwdVal ? (cwdVal.length > 40 ? '…' + cwdVal.slice(-38) : cwdVal) : '';
+  const cwdLine = cwdVal ? `<div class="card-sub" title="${escapeAttr(cwdVal)}">${escapeHtml(cwdShort)}</div>` : '';
+
+  let mainLine = '', mainCls = 'card-status', extra = cwdLine;
+  if (section === 'plan') {
+    mainLine = `待确认 · 建于 ${escapeHtml(t.createdAt || t.enteredAt || '—')}`;
+  } else if (section === 'queued') {
+    const age = t.queuedAgeMin;
+    if (age != null && age > 2) mainCls = 'card-status warn';
+    mainLine = `排队 ${age ?? '?'}min · 总耗时 ${totalDur}`;
   } else if (section === 'processing') {
     const durMin = t.lease?.durationMin ?? '?';
-    const intent = t.lease?.intent ? `<div style="font-size:11.5px;color:var(--ink2);margin-top:4px;line-height:1.5">${escapeHtml(t.lease.intent)}</div>` : '';
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">已跑 ${durMin}min · 总耗时 ${totalDur} · 心跳 ${t.lease?.heartbeatAgo || '—'} · pid=${t.lease?.pid || '?'}${bgBadge}</div>${intent}`;
-  } else if (section === 'queued') {
-    const queuedAge = t.queuedAgeMin;
-    const style = queuedAge != null && queuedAge > 2 ? 'color:var(--coral)' : 'color:var(--mut)';
-    statusLine = `<div style="font-size:11px;font-family:var(--mono);${style}">queued ${queuedAge ?? '?'}min · 总耗时 ${totalDur}</div>`;
+    mainLine = `运行 ${durMin}min · 心跳 ${t.lease?.heartbeatAgo || '—'} · 总耗时 ${totalDur}${bgBadge}`;
+    // AI 意图（仅分身有）优先占副行，工作目录跟其后
+    if (t.lease?.intent) extra = `<div class="card-sub" style="color:var(--ink2);white-space:normal">${escapeHtml(t.lease.intent)}</div>${cwdLine}`;
   } else if (section === 'done') {
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">${t.resolvedAgo || '—'} · 耗时 ${totalDur} · ${rounds} · ${cost}</div>`;
+    mainLine = `${t.resolvedAgo || '—'} · 耗时 ${totalDur}${rounds ? ' · ' + rounds : ''}${cost ? ' · ' + cost : ''}`;
   } else if (section === 'awaiting-human') {
-    // awaiting-human 有两类：① 真失败/中断（checker 收孤儿、session error、用户中断）带 failureReason/outcome
-    // → 红字显原因；② 一轮收敛等你回复（outcome=null 无 failureReason）→ 非失败，显工作目录（对齐 CLI 卡片），
-    // 不再兜底成误导性红字"未知"。
+    // 失败/中断（带 failureReason/outcome）→ 红字原因占副行；否则副行显工作目录
+    mainLine = `${t.resolvedAgo || '待处理'} · 耗时 ${totalDur}`;
     const failReason = t.outcomeDetail?.failureReason || t.outcome;
-    const tail = `<div style="font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px">${t.resolvedAgo || '—'} · 耗时 ${totalDur}</div>`;
     if (failReason) {
       const short = failReason.length > 60 ? failReason.slice(0, 60) + '…' : failReason;
-      statusLine = `<div style="font-size:11px;color:var(--coral);font-family:var(--mono)">${escapeHtml(short)}</div>${tail}`;
-    } else {
-      const cwd = t.cwd || '—';
-      const cwdShort = cwd.length > 40 ? '…' + cwd.slice(-38) : cwd;
-      statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(cwd)}">${escapeHtml(cwdShort)}</div>${tail}`;
+      extra = `<div class="card-sub" style="color:var(--coral)" title="${escapeAttr(failReason)}">${escapeHtml(short)}</div>`;
     }
-  } else {
-    statusLine = `<div style="font-size:11px;color:var(--mut);font-family:var(--mono)">${t.resolvedAgo || '—'} · 耗时 ${totalDur}</div>`;
+  } else {   // archived 及其他终态
+    mainLine = `${t.resolvedAgo || '—'} · 耗时 ${totalDur}`;
   }
+  const statusLine = `<div class="${mainCls}">${mainLine}</div>${extra}`;
 
   const sourceTag = sourceTagHtml(t);
   const isPlan = section === 'plan';
@@ -310,8 +306,9 @@ function taskCardHtml(t, section) {
   // 标题：优先 customTitle > 第一条真人 cc: > taskKey
   const titleText = t.title || t.taskKey;
   const titleShort = titleText.length > 60 ? titleText.slice(0, 60) + '…' : titleText;
-  // 状态变更标记：本轮判定「有更新」的任务，标题前显一个更新点（点开卡片/编辑即清）
-  const updateDot = updatedTaskKeys.has(t.taskKey) ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
+  // 状态变更标记：本轮判定「有更新」的任务，卡片左侧高亮竖条 + 标题前脉冲点（点开卡片/编辑即清）
+  const hasUpdate = updatedTaskKeys.has(t.taskKey);
+  const updateDot = hasUpdate ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
 
   // 卡片点击：plan 态弹编辑弹窗（任务未开始，不进详情页）；其余进详情页
   const cardClick = isPlan
@@ -319,7 +316,7 @@ function taskCardHtml(t, section) {
     : `openTaskModal('${escapeAttr(t.taskKey)}')`;
 
   return `
-    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="${cardClick}">
+    <div class="taskcard${hasUpdate ? ' has-update' : ''}" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="${cardClick}">
       <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
       ${statusLine}
       ${descLine}
@@ -339,8 +336,8 @@ function cardActionButtons(t, section) {
   const _k = escapeAttr(t.taskKey);
   const descBtn = `<button class="btn" onclick="editTaskDesc('${_k}')" title="自己看的备注，不发给 claude">✎ 描述</button>`;
   const editBtn = `<button class="btn" onclick="openEditTask('${_k}')" title="编辑任务（标题 / prompt / 模型 / 工作目录 / 描述）">✎ 编辑</button>`;
-  const removeBtn = `<button class="btn" style="color:var(--coralT)" onclick="deleteTaskAction('${_k}')" title="删除该计划任务（不可恢复）">移除</button>`;
-  const archiveBtn = `<button class="btn" onclick="archiveTask('${_k}')" title="收进已归档区">归档</button>`;
+  const removeBtn = `<button class="btn" style="color:var(--coralT)" onclick="deleteTaskAction('${_k}')" title="删除该计划任务（不可恢复）">✕ 移除</button>`;
+  const archiveBtn = `<button class="btn" onclick="archiveTask('${_k}')" title="收进已归档区">▾ 归档</button>`;
   const unarchiveBtn = `<button class="btn" onclick="unarchiveTaskAction('${_k}')" title="取消归档，回落自动判态">↺ 取消归档</button>`;
   const completeBtn = `<button class="btn" style="color:var(--jade)" onclick="completeTaskAction('${_k}')" title="人工确认已完成 → 移入 done">✓ 完成</button>`;
   const uncompleteBtn = `<button class="btn" style="color:var(--mut)" onclick="uncompleteTaskAction('${_k}')" title="取消完成，退回 awaiting-human">↺ 取消完成</button>`;
@@ -350,15 +347,15 @@ function cardActionButtons(t, section) {
   if (section === 'plan') {
     actionBtn = `<button class="btn" style="color:var(--jade)" onclick="approveTaskAction('${_k}')">▶ 排队</button>${removeBtn}`;
   } else if (section === 'processing') {
-    actionBtn = isCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">中断</button>`;
+    actionBtn = isCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
   } else if (section === 'queued') {
-    actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">中断</button>`;
+    actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
   } else if (section === 'awaiting-human') {
     actionBtn = completeBtn + archiveBtn;
   } else if (section === 'done') {
     actionBtn = uncompleteBtn + archiveBtn;
   } else if (section === 'archived') {
-    const rmBtn = isCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">移除</button>` : '';
+    const rmBtn = isCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">✕ 移除</button>` : '';
     actionBtn = unarchiveBtn + rmBtn;
   }
   return lead + actionBtn;
