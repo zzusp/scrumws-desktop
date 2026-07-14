@@ -4,7 +4,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { P } from './paths.js';
 import { fmt, parse, ago } from './timeutil.js';
-import { CHECKER, checkerEnabled, checkerIntervalSec } from './jobs/checker-meta.js';
+import { CHECKER, checkerIntervalSec } from './jobs/checker-meta.js';
 import * as scheduler from './scheduler.js';
 import { readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
@@ -343,7 +343,7 @@ export async function collectState() {
     id: CHECKER.id,
     label: CHECKER.label,
     hint: CHECKER.hint,
-    ...liveJobCard(CHECKER.id, CHECKER.logFile, checkerEnabled(), checkerIntervalSec(), sched, now),
+    ...liveJobCard(CHECKER.id, CHECKER.logFile, true, checkerIntervalSec(), sched, now),   // 项目固有调度：常开
   };
 
   const buckets = collectAll(now);
