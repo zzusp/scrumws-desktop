@@ -172,6 +172,12 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
     s.transcript = seedTranscript.slice(-TRANSCRIPT_CAP);
     s.claudeSessionId = resume || null;
     s.adopted = true;
+  } else if (prompt) {
+    // 首条用户消息经 sendUserMessage 写进 stdin，但 claude 的 stdout stream-json 不回显用户输入文本，
+    // 故它从不进 transcript → 详情页连上 SSE 回放（server.js 的 transcript 回放）看不到第一条 user message。
+    // 这里在 spawn 前把它补进 transcript 打头（此刻尚无 SSE 客户端订阅，无需 emit）；resume 分支不走这里，
+    // 其 seed 已含该消息，避免重复。形状对齐 reply 乐观回显 / seed（content 为字符串，前端 mbToRounds 会归一化）。
+    s.transcript.push({ type: 'user', message: { role: 'user', content: prompt } });
   }
   try {
     // Windows 须走 shell：CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd（同步抛 spawn EINVAL）；shell 由 PATHEXT 解析 claude.exe/.cmd
