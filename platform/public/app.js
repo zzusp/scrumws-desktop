@@ -1705,12 +1705,12 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
   units.forEach((u) => {
     if (u.kind === 'u') {
       // 分派（学 claude-code-session/server/lib/system-tags.ts 与 web/MessageBubble.tsx）：
-      //   1. SYSTEM_TAG_RE 命中 → isMeta 灰细横线（<local-command-stdout/caveat/stderr> + <system-reminder>）
+      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE 命中 → 灰细横线（<local-command-*> + <system-reminder> + CC 工具重试合成消息）
       //   2. CMD_HEAD_RE 命中 → 提取 <command-args> body 当用户真实 prompt；无 args → 整条跳过（/clear /model）
       //   3. 兜底 isMeta 字段 → 灰细横线
       //   4. 否则 → 正常 user 气泡
       const text = (u.m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
-      if (SYSTEM_TAG_RE.test(text)) {
+      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text)) {
         blocks.push({ t: 'meta', m: u.m });
       } else if (CMD_HEAD_RE.test(text)) {
         const argsBody = pickCommandArgs(text);
@@ -1793,6 +1793,10 @@ function renderMetaTurn(m) {
 //   - /clear、/model 之类无 args 命令 → 跳过不显示（视觉噪声）
 const SYSTEM_TAG_RE = /^\s*<(local-command|system-reminder|caveat)/i;
 const CMD_HEAD_RE = /^\s*<command-(?:name|message|args)>/;
+// CC 在工具调用解析失败时自动注入的合成 user 消息（非真人输入，会自动重试）→ 也走 system 灰细横线。
+// 磁盘 jsonl 里这条带 isMeta:true（disk 路径已按 isMeta 归位）；但 Mode B live 的 stream-json 输出不带
+// isMeta envelope（见 mbToRounds 硬编 isMeta:false），live 详情只能按内容识别，否则被错渲成用户气泡。
+const CC_SYNTHETIC_RE = /^\s*Your tool call was malformed and could not be parsed\. Please retry\.\s*$/;
 function pickCommandArgs(text) {
   if (!CMD_HEAD_RE.test(text)) return null;
   const m = text.match(/<command-args>([\s\S]*?)<\/command-args>/);
