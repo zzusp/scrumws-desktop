@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { P, ROOT } from './paths.js';
 import { fmt } from './timeutil.js';
-import { CHECKER, checkerEnabled, checkerIntervalSec } from './jobs/checker-meta.js';
+import { CHECKER, checkerIntervalSec } from './jobs/checker-meta.js';
 import { pidAlive } from './lease.js';
 
 // 看板进程内调度器（2026-07-12 去派发器后只调度平台守护 Runner Checker 一个 job）：
@@ -124,7 +124,7 @@ export function reload() {
   const desired = new Map();
   if (mode === 'running' || mode === 'stopped') {
     desired.set(CHECKER.id, {
-      id: CHECKER.id, kind: 'checker', label: CHECKER.label, enabled: checkerEnabled(),
+      id: CHECKER.id, kind: 'checker', label: CHECKER.label, enabled: true,   // 项目固有调度：常开不可停
       intervalSec: checkerIntervalSec(), scriptFile: CHECKER.script, logFile: CHECKER.logFile,
     });
   }

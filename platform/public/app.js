@@ -2,7 +2,13 @@
 // 页面：任务看板（状态分区）· 归档 · 数据看板 · 设置（含平台守护 Runner Checker）
 // 任务由外部来源经 CLI / API（/api/task/create）或看板「新建任务」按钮推入，落 plan/queued 桶
 
-const REFRESH_STATE_MS = 15000;
+// 看板自动刷新间隔（本机偏好，设置页可调）：默认 15s，夹到 [5, 600] 秒
+const REFRESH_MS_MIN = 5000, REFRESH_MS_MAX = 600000, REFRESH_MS_DEFAULT = 15000;
+function loadRefreshMs() {
+  const v = Number(localStorage.getItem('dash-refresh-ms'));
+  return Number.isFinite(v) && v >= REFRESH_MS_MIN && v <= REFRESH_MS_MAX ? v : REFRESH_MS_DEFAULT;
+}
+let refreshStateMs = loadRefreshMs();
 
 const $ = (id) => document.getElementById(id);
 
@@ -29,8 +35,7 @@ tickClock(); setInterval(() => { tickClock(); tickLiveTimers(); }, 1000);
 
 // ---- 状态 ----
 let stateData = null;
-let autoRefresh = true;
-// modal 打开时暂停看板刷新 —— 用户焦点在 modal 上、看板轮询 5s 刷 detail；关闭时立即 refreshState + 重置 15s 计时
+// modal 打开时暂停看板刷新 —— 用户焦点在 modal 上、看板轮询 5s 刷 detail；关闭时立即 refreshState + 重置计时
 let modalOpen = false;
 let modalPollTimer = null;
 let modalPollTaskKey = null;
@@ -45,67 +50,68 @@ async function api(url, opts) {
 }
 
 // ---- 平台守护卡（设置页 Runner Checker）----
-// job 实况卡的公共 HTML（去派发器后仅 checker 卡用）
-function liveJobCardHtml(t, { title, mono, hint, actions = '' }) {
-  const stateTag = !t.enabled
-    ? '<span class="tag tag-coral">Disabled</span>'
-    : t.running
-      ? '<span class="tag tag-jade">Running</span>'
-      : '<span class="tag tag-jade">Ready</span>';
+// 卡片 HTML（去派发器后仅 Runner Checker 用）：项目固有调度常开不可停，节拍以分钟为单位可编辑
+function liveJobCardHtml(t, { title, mono, hint }) {
+  const stateTag = t.running
+    ? '<span class="tag tag-jade">Running</span>'
+    : '<span class="tag tag-jade">Ready</span>';
   const lastTag = t.lastOutcome == null
     ? '<span class="tag tag-mut">last=—</span>'
     : t.lastOutcome === 'ok'
       ? '<span class="tag tag-mut">last=ok</span>'
       : `<span class="tag tag-amber" title="${escapeAttr(t.lastError || '')}">last=${escapeHtml(t.lastOutcome)}</span>`;
-  const iv = t.intervalSec >= 60 && t.intervalSec % 60 === 0 ? `${t.intervalSec / 60}min` : `${t.intervalSec}s`;
+  const min = Math.max(1, Math.round((t.intervalSec || 60) / 60));
   return `
     <div style="border:1px solid var(--hair);border-radius:11px;padding:14px 16px;background:var(--card2)">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         ${title}
         ${stateTag}
-        <label class="switch" style="margin-left:auto" title="启停 ${escapeAttr(t.id)}">
-          <input type="checkbox" data-livejob="${escapeAttr(t.id)}" ${t.enabled ? 'checked' : ''}>
-          <span class="slider"></span>
-        </label>
+        <span class="int-edit" style="margin-left:auto" title="调度节拍（分钟）">
+          每 <input type="number" class="int-input" data-checker-interval min="1" max="60" step="1" value="${min}"> 分钟
+        </span>
       </div>
       <div style="font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:8px">${mono}</div>
       <div style="font-size:11px;color:var(--mut);line-height:1.55;margin-bottom:8px">${hint}</div>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px;color:var(--mut);font-family:var(--mono)">
         <span>心跳 <b style="color:var(--ink2)">${t.heartbeat}</b></span>
-        <span>每 <b style="color:var(--ink2)">${iv}</b></span>
         ${lastTag}
-        ${actions}
       </div>
     </div>
   `;
 }
 
-// 数据看板页：平台守护卡（Runner Checker —— 平台内置 Node job，去派发器后调度器唯一的 job）
+// 设置页：平台守护卡（Runner Checker —— 平台内置 Node job，去派发器后调度器唯一的 job）
 function renderChecker(checker) {
   const grid = $('checkerGrid');
   if (!grid || !checker) return;
+  // 用户正在编辑节拍输入时不重画，避免轮询覆盖输入（同 syncProxyInput 的护栏）
+  if (grid.querySelector('input[data-checker-interval]') === document.activeElement) return;
   grid.innerHTML = liveJobCardHtml(checker, {
     title: `<div style="font-weight:600;font-size:13px;color:var(--ink2)">${escapeHtml(checker.label)}</div>`,
     mono: 'platform/lib/jobs/runner-checker.js · 平台内置',
     hint: escapeHtml(checker.hint || ''),
   });
-  bindLiveJobSwitches(grid, () => '/api/checker/{action}');
+  bindCheckerInterval(grid);
 }
 
-// 启停开关公共绑定：urlFor(id) 返回带 {action} 占位的端点
-function bindLiveJobSwitches(rootEl, urlFor) {
-  rootEl.querySelectorAll('input[type="checkbox"][data-livejob]').forEach((cb) => {
-    cb.addEventListener('change', async () => {
-      const action = cb.checked ? 'start' : 'stop';
-      try {
-        const r = await api(urlFor(cb.dataset.livejob).replace('{action}', action), { method: 'POST' });
-        if (r && r.ok === false) await customAlert({ title: '操作失败', message: escapeHtml(r.error || '未知错误') });
-        await refreshState();
-      } catch (e) {
-        await customAlert({ title: '操作失败', message: escapeHtml(e.message) });
-        await refreshState();
-      }
-    });
+// 平台守护节拍编辑：改值→POST /api/checker/interval（秒）；成功后 refreshState 重画回填最新值
+function bindCheckerInterval(rootEl) {
+  const inp = rootEl.querySelector('input[data-checker-interval]');
+  if (!inp) return;
+  inp.addEventListener('change', async () => {
+    let min = Math.round(Number(inp.value));
+    if (!Number.isFinite(min)) min = 1;
+    min = Math.min(Math.max(min, 1), 60);
+    try {
+      const r = await api('/api/checker/interval', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ intervalSec: min * 60 }),
+      });
+      if (r && r.ok === false) await customAlert({ title: '操作失败', message: escapeHtml(r.error || '未知错误') });
+    } catch (e) {
+      await customAlert({ title: '操作失败', message: escapeHtml(e.message) });
+    }
+    await refreshState();
   });
 }
 
@@ -1690,7 +1696,21 @@ async function refreshState() {
   } catch (e) { console.error('state error:', e); }
 }
 
-$('autoRefreshSwitch').addEventListener('change', (e) => { autoRefresh = e.target.checked; });
+// 自动刷新间隔（设置页）：改值即存本机 + 重排计时器；打开详情时轮询仍由 modalOpen 门控暂停
+(function initAutoRefreshInput() {
+  const inp = $('autoRefreshSecInput');
+  if (!inp) return;
+  inp.value = String(Math.round(refreshStateMs / 1000));
+  inp.addEventListener('change', () => {
+    let sec = Math.round(Number(inp.value));
+    if (!Number.isFinite(sec)) sec = REFRESH_MS_DEFAULT / 1000;
+    sec = Math.min(Math.max(sec, REFRESH_MS_MIN / 1000), REFRESH_MS_MAX / 1000);
+    inp.value = String(sec);
+    refreshStateMs = sec * 1000;
+    localStorage.setItem('dash-refresh-ms', String(refreshStateMs));
+    scheduleStateRefresh();
+  });
+})();
 
 // 设置页出网代理：从 state 回填（不覆盖用户正在编辑的输入），保存走 /api/config/proxy
 function syncProxyInput() {
@@ -2137,10 +2157,10 @@ function initNewTaskModelSelector() {
   });
 }
 
-// 计时器重排（modal 关闭时调用即可"重新计时 15s"；modal 打开期间轮询由 modalOpen 门控跳过）
+// 计时器重排（modal 关闭时 / 改间隔时调用即可按最新间隔重新计时；modal 打开期间轮询由 modalOpen 门控跳过）
 function scheduleStateRefresh() {
   if (stateTimer) clearInterval(stateTimer);
-  stateTimer = setInterval(() => { if (autoRefresh && !modalOpen) refreshState(); }, REFRESH_STATE_MS);
+  stateTimer = setInterval(() => { if (!modalOpen) refreshState(); }, refreshStateMs);
 }
 
 // ==== Mode B 交互会话（S5：看板持有的 claude 会话 · 逐字 / 权限确认 / 打断）====

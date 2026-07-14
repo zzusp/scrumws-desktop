@@ -277,12 +277,21 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // 平台守护 Runner Checker 启停（数据看板页；runner-config.json.checkerEnabled）
-    const checkerMatch = pathname.match(/^\/api\/checker\/(start|stop)$/);
-    if (req.method === 'POST' && checkerMatch) {
-      writeConfig({ checkerEnabled: checkerMatch[1] === 'start' });
-      scheduler.reload();
-      return sendJson(res, 200, { ok: true, checkerEnabled: checkerMatch[1] === 'start' });
+    // 平台守护 Runner Checker 节拍（设置页）：项目固有调度常开不可停，只调间隔。
+    // body {intervalSec}；夹到 [30, 3600] 秒，存 runner-config.json 后热更调度器。
+    if (req.method === 'POST' && pathname === '/api/checker/interval') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const sec = Math.round(Number(payload?.intervalSec));
+        if (!Number.isFinite(sec) || sec < 30 || sec > 3600) return sendJson(res, 400, { ok: false, error: '间隔需为 30–3600 秒' });
+        writeConfig({ checkerIntervalSec: sec });
+        scheduler.reload();
+        sendJson(res, 200, { ok: true, intervalSec: sec });
+      });
+      return;
     }
     // 归档 done 任务
     if (req.method === 'POST' && pathname === '/api/archive') {

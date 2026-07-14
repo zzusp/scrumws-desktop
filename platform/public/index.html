@@ -139,6 +139,12 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 .set-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .set-name{font-size:13px;font-weight:600;color:var(--ink)}
 .set-desc{font-size:11px;color:var(--mut);line-height:1.5}
+/* 调度间隔编辑（设置页「自动刷新」行 + 平台守护节拍卡共用）*/
+.set-row.set-static{cursor:default}
+.int-edit{display:inline-flex;align-items:center;gap:6px;flex:none;font-size:12px;color:var(--mut);font-family:var(--mono)}
+.int-input{width:52px;font-family:var(--mono);font-size:12.5px;text-align:right;padding:6px 8px;border:1px solid var(--input);border-radius:var(--r-md);
+  background:transparent;color:var(--ink);outline:none;transition:border-color .12s,box-shadow .12s}
+.int-input:focus{border-color:var(--ring);box-shadow:var(--focus-ring)}
 
 /* 主题按钮：只保留亮色后不再暴露，但 app.js 对 #themeBtn 有 addEventListener，元素必须保留 → 仅 CSS 隐藏
    （.btn.theme-btn 双类提高优先级：后文 .btn{display:inline-flex} 同特异性会按顺序反超单类规则） */
@@ -686,13 +692,13 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <span class="sec-sub">运行控制 · 本地偏好（存本机 localStorage，不影响其他实例）</span>
             </div>
             <div class="set-list">
-              <label class="set-row" title="自动刷新（关闭则暂停 15s 轮询）">
+              <div class="set-row set-static" title="看板自动刷新间隔（本机偏好）">
                 <span class="set-main">
                   <span class="set-name">自动刷新</span>
-                  <span class="set-desc">关闭后暂停 15s 轮询；手动刷新按钮仍可用</span>
+                  <span class="set-desc">看板每隔一段时间拉取最新状态；打开任务详情时自动暂停。本机偏好，不影响其他实例</span>
                 </span>
-                <span class="switch"><input type="checkbox" id="autoRefreshSwitch" checked><span class="slider"></span></span>
-              </label>
+                <span class="int-edit">每 <input type="number" id="autoRefreshSecInput" class="int-input" min="5" max="600" step="5"> 秒</span>
+              </div>
             </div>
             <button class="btn theme-btn" id="themeBtn" title="切换明暗主题">☀️</button>
           </section>
@@ -712,7 +718,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             </div>
           </section>
 
-          <!-- 平台守护（req5 从数据看板迁入）：runner-checker 启停 -->
+          <!-- 平台守护（req5 从数据看板迁入）：runner-checker 项目固有调度，常开不可停，仅可调节拍 -->
           <section class="card" style="max-width:640px">
             <div class="sec-head">
               <h2>平台守护</h2>
