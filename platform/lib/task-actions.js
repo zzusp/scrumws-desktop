@@ -111,6 +111,39 @@ export function completeTask({ taskKey }) {
   return { ok: true, taskKey, resolvedAt: nowStr };
 }
 
+// 取消完成（done → awaiting-human）：completeTask 的逆操作，清 outcome/resolvedBy 退回待人工处理。
+// CLI 会话走 watchlist.doneAt（server 按来源分派到 uncompleteCliTask），此处只处理分身任务包。
+export function uncompleteTask({ taskKey }) {
+  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
+  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话取消完成走 watchlist' };
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
+  const stateFile = path.join(taskDir, 'state.json');
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { }
+  if (state.state !== 'done') {
+    return { ok: false, error: `只有 done 任务可取消完成（当前 ${state.state || '未知'}）` };
+  }
+  const p2 = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
+  const history = Array.isArray(state.history) ? state.history : [];
+  history.push({ state: 'awaiting-human', at: nowStr, by: 'user' });
+  const newState = {
+    ...state,
+    state: 'awaiting-human',
+    outcome: null,
+    resolvedAt: nowStr,
+    enteredAt: nowStr,
+    outcomeDetail: { ...(state.outcomeDetail || {}), resolvedBy: null, failureReason: null },
+    history,
+  };
+  try { fs.writeFileSync(stateFile, JSON.stringify(newState, null, 2), 'utf8'); }
+  catch (e) { return { ok: false, error: `写 state.json 失败: ${e.message}` }; }
+  return { ok: true, taskKey, state: 'awaiting-human' };
+}
+
 // 回复任务：CLI 会话走 cli-reply-runner（观察侧，另一功能）；其余走 Mode B（复用 live 会话 / --resume 重挂）
 export function replyToTask({ taskKey, message, model }) {
   if (String(taskKey || '').startsWith('cli:')) return replyCliSession({ taskKey, message, model });

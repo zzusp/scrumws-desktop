@@ -2,9 +2,9 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { collectState } from './lib/collect.js';
-import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveCliTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed } from './lib/logs.js';
+import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, completeTask, restartTask, taskCwds, readTaskEdit, editTask } from './lib/task-actions.js';
+import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, restartTask, taskCwds, readTaskEdit, editTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
@@ -349,6 +349,13 @@ const server = http.createServer(async (req, res) => {
       const r = taskKey.startsWith('cli:') ? completeCliSession(taskKey) : completeTask({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
+    // 取消完成（done → awaiting-human）；按来源分派：CLI 清 watchlist.doneAt / 分身改 state.json
+    if (req.method === 'POST' && pathname === '/api/task/uncomplete') {
+      const taskKey = searchParams.get('taskKey');
+      if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
+      const r = taskKey.startsWith('cli:') ? uncompleteCliTask(taskKey) : uncompleteTask({ taskKey });
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
     // 回复任务（跨 chat/issue/manual）：body = {message, model?}；taskKey 从 query 拿
     if (req.method === 'POST' && pathname === '/api/task/reply') {
       const taskKey = searchParams.get('taskKey');
@@ -461,18 +468,11 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // CLI 取消归档（archive 复用 /api/archive；unarchive 是 CLI 特有）
-    if (req.method === 'POST' && pathname === '/api/cli/unarchive') {
+    // 取消归档（archive 复用 /api/archive）；按来源分派：CLI 清 watchlist.archivedAt / 分身目录移回 runner-state
+    if (req.method === 'POST' && pathname === '/api/unarchive') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
-      const r = unarchiveCliTask(taskKey);
-      return sendJson(res, r.ok ? 200 : 400, r);
-    }
-    // CLI 取消完成（complete 复用 /api/task/complete；uncomplete 是 CLI 特有）
-    if (req.method === 'POST' && pathname === '/api/cli/uncomplete') {
-      const taskKey = searchParams.get('taskKey');
-      if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
-      const r = uncompleteCliTask(taskKey);
+      const r = unarchiveTask(taskKey);
       return sendJson(res, r.ok ? 200 : 400, r);
     }
     if (req.method === 'POST' && pathname === '/api/cli/remove') {

@@ -263,31 +263,27 @@ function taskCardHtml(t, section) {
   const descBtn = `<button class="btn" onclick="event.stopPropagation();editTaskDesc('${escapeAttr(t.taskKey)}')" title="${t.description ? '编辑' : '添加'}任务描述（自己看的备注，不发给 claude）">✎ 描述</button>`;
   // plan 态任务：整任务可编辑（prompt 是确认排队后真正发给 claude 的指令）——顶掉「✎ 描述」
   const editBtn = `<button class="btn" onclick="event.stopPropagation();openEditTask('${escapeAttr(t.taskKey)}')" title="编辑任务（标题 / prompt / 模型 / 工作目录 / 描述）">✎ 编辑</button>`;
+  // 操作按钮按 section（分桶=状态）统一：完成/取消完成/归档/取消归档 对所有来源一致；
+  // 仅执行差异按 isCli 分支——CLI processing 不干预运行中会话、CLI 归档区额外「移除」出观测名单。
   let actionBtn = '';
-  if (isCli) {
-    // CLI 卡片只读：awaiting-human 仅可归档；归档后（archived）才可「移除」+ 取消归档；
-    // processing（会话正在跑）禁归档/移除——不动正在运行的会话
-    const rmBtn = `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">移除</button>`;
-    if (section === 'processing') {
-      actionBtn = '';
-    } else if (section === 'archived' || t.cli?.archivedAt) {
-      actionBtn = `<button class="btn" onclick="event.stopPropagation();unarchiveCliTask('${escapeAttr(t.taskKey)}')" title="取消归档，回落 mtime 自动判态（processing/awaiting-human）">↺ 取消归档</button>${rmBtn}`;
-    } else if (section === 'done') {
-      // 人工标完成的 CLI 会话：可取消完成（回落存活判态）或归档收走
-      actionBtn = `<button class="btn" style="color:var(--mut)" onclick="event.stopPropagation();uncompleteCliTask('${escapeAttr(t.taskKey)}')" title="取消完成，回落存活自动判态">↺ 取消完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
-    } else {
-      // awaiting-human（终端空闲/退出）：可人工标完成 → done，或归档
-      actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="收进已归档区（不影响 CLI session 本体，可随时取消归档）">归档</button>`;
-    }
-  } else if (section === 'plan') {
-    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')" title="不做了，直接归档">归档</button>`;
-  } else if (section === 'processing' || section === 'queued') {
-    actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();cancelTaskAction('${escapeAttr(t.taskKey)}')">中断</button>`;
+  const _k = escapeAttr(t.taskKey);
+  const archiveBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${_k}')" title="收进已归档区">归档</button>`;
+  const unarchiveBtn = `<button class="btn" onclick="event.stopPropagation();unarchiveTaskAction('${_k}')" title="取消归档，回落自动判态">↺ 取消归档</button>`;
+  const completeBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${_k}')" title="人工确认已完成 → 移入 done">✓ 完成</button>`;
+  const uncompleteBtn = `<button class="btn" style="color:var(--mut)" onclick="event.stopPropagation();uncompleteTaskAction('${_k}')" title="取消完成，退回 awaiting-human">↺ 取消完成</button>`;
+  if (section === 'plan') {
+    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();approveTaskAction('${_k}')">▶ 确认排队</button>${archiveBtn}`;
+  } else if (section === 'processing') {
+    actionBtn = isCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();cancelTaskAction('${_k}')">中断</button>`;
+  } else if (section === 'queued') {
+    actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();cancelTaskAction('${_k}')">中断</button>`;
   } else if (section === 'awaiting-human') {
-    // 人工复查后判定其实已完成 → 确认完成（移入 done）；或归档收走
-    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="event.stopPropagation();completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此任务已完成 → 移入 done">✓ 完成</button><button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
+    actionBtn = completeBtn + archiveBtn;
   } else if (section === 'done') {
-    actionBtn = `<button class="btn" onclick="event.stopPropagation();archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`;
+    actionBtn = uncompleteBtn + archiveBtn;
+  } else if (section === 'archived') {
+    const rmBtn = isCli ? `<button class="btn" style="color:var(--coralT)" onclick="event.stopPropagation();removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">移除</button>` : '';
+    actionBtn = unarchiveBtn + rmBtn;
   }
   // 任务描述（用户备注）：有则显示一行截断，点击直接编辑（plan 态点击进整任务编辑，与「✎ 编辑」按钮一致）
   const descLine = t.description
@@ -1079,6 +1075,13 @@ function escapeAttr(s) { return escapeHtml(s); }
 // 用户消息展示前剥掉钉钉链的指令前缀（cc: 是 dws 群聊的触发词，任务视图里不出现这种用法）
 function stripDirectivePrefix(s) { return String(s || '').replace(/^\s*cc[:：]\s*/i, ''); }
 
+// 详情流 assistant 文本按 markdown 渲染，但绝不透传原始 HTML：模型偶发把工具调用输出成文本
+// （court<invoke name=…><parameter…>），marked v9 默认原样吐 HTML → 浏览器当标签吞内容 / 破版 / XSS。
+// 覆写 renderer.html 把裸 HTML 转义成字面量显示，markdown（粗体/表格/代码）不受影响。
+if (window.marked?.use) {
+  window.marked.use({ renderer: { html: (t) => escapeHtml(typeof t === 'string' ? t : (t?.text ?? '')) } });
+}
+
 // ---- Claude Code 账号级用量（详情页卡片）：套餐 + Pro/Max 的 5h/7d 滚动窗，账号全局非按任务 ----
 // 后端 /api/claude-usage 已 60s 缓存；前端再缓存一层，详情页 5s 轮询不必每 tick 拉。
 let claudeUsage = null;          // 最近一次 /api/claude-usage 结果
@@ -1210,29 +1213,24 @@ function renderTaskSide(taskKey) {
   const commentHtml = t.business?.commentUrl
     ? `<div style="margin-top:10px;font-size:12px"><a href="${escapeAttr(t.business.commentUrl)}" target="_blank" style="color:var(--cyan)">↗ 已发 issue 评论</a></div>`
     : '';
-  // 快捷操作（与看板卡片同一套全局动作）；CLI 卡片：归档/取消归档 + 从看板移除
+  // 快捷操作（与看板卡片同一套全局动作，按状态统一）：完成/取消完成/归档/取消归档 对所有来源一致；
+  // 仅执行差异按 isCli 分支——CLI processing 不干预运行中会话、CLI 归档区额外「从看板移除」。
   const btns = [];
-  if (isCli) {
-    // awaiting-human 可标完成/续接/归档；done 可取消完成/归档；归档后可移除 + 取消归档；processing（会话正在跑）禁操作
-    if (t.state === 'processing') {
-      // 无操作按钮
-    } else if (t.cli?.archivedAt) {
-      btns.push(`<button class="btn" onclick="unarchiveCliTask('${escapeAttr(t.taskKey)}')">↺ 取消归档</button>`);
-      btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
-    } else if (t.state === 'done') {
-      // 人工标完成的 CLI 会话：取消完成（回落存活判态）或归档
-      btns.push(`<button class="btn" onclick="uncompleteCliTask('${escapeAttr(t.taskKey)}')">↺ 取消完成</button>`);
-      btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
-    } else {
-      // 终端已退出（非 processing）→ 可人工标完成 或 归档；续接对话走详情底部 composer（发消息即收养成 Mode B 实时会话）
-      btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')" title="人工确认此 CLI 会话已完成 → 移入 done（之后若又去跑会自动退出 done）">✓ 完成</button>`);
-      btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
-    }
-  } else {
-    if (t.state === 'plan' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${escapeAttr(t.taskKey)}')">▶ 确认排队</button>`);
-    if (['queued', 'processing'].includes(t.state) && !t.isArchive) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${escapeAttr(t.taskKey)}')">中断</button>`);
-    if (t.state === 'awaiting-human' && !t.isArchive) btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${escapeAttr(t.taskKey)}')">✓ 完成</button>`);
-    if ((t.resolvedAt || t.state === 'plan') && !t.isArchive) btns.push(`<button class="btn" onclick="archiveTask('${escapeAttr(t.taskKey)}')">归档</button>`);
+  const _bk = escapeAttr(t.taskKey);
+  if (t.isArchive) {
+    btns.push(`<button class="btn" onclick="unarchiveTaskAction('${_bk}')">↺ 取消归档</button>`);
+    if (isCli) btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
+  } else if (t.state === 'plan') {
+    btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${_bk}')">▶ 确认排队</button>`);
+    btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
+  } else if (['queued', 'processing'].includes(t.state)) {
+    if (!isCli) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
+  } else if (t.state === 'awaiting-human') {
+    btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${_bk}')">✓ 完成</button>`);
+    btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
+  } else if (t.state === 'done') {
+    btns.push(`<button class="btn" onclick="uncompleteTaskAction('${_bk}')">↺ 取消完成</button>`);
+    btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   }
   const descText = t.description || '';
   // 工作时长：claude 实际在算的时长（区别于创建→结束墙钟）；CLI 单 round、分身多 round，累加逻辑通用。
@@ -1984,18 +1982,19 @@ window.addCliFromSearch = async (sid) => {
 };
 
 // S10 收养：终端起的 CLI 会话 → 看板 Mode B 交互会话（--resume 续接，带全部历史）
-window.unarchiveCliTask = async (taskKey) => {
+// 取消归档 / 取消完成：统一端点（/api/unarchive、/api/task/uncomplete），后端按来源分派——所有来源同一入口
+window.unarchiveTaskAction = async (taskKey) => {
   try {
-    const r = await api(`/api/cli/unarchive?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
+    const r = await api(`/api/unarchive?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
     if (!r.ok) { customAlert({ title: '取消归档失败', message: escapeHtml(r.error || '未知错误') }); return; }
     await refreshState();
     if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);
   } catch (e) { customAlert({ title: '取消归档失败', message: escapeHtml(e.message) }); }
 };
 
-window.uncompleteCliTask = async (taskKey) => {
+window.uncompleteTaskAction = async (taskKey) => {
   try {
-    const r = await api(`/api/cli/uncomplete?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
+    const r = await api(`/api/task/uncomplete?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
     if (!r.ok) { customAlert({ title: '取消完成失败', message: escapeHtml(r.error || '未知错误') }); return; }
     await refreshState();
     if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);

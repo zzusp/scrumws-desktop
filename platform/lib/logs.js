@@ -628,14 +628,25 @@ export function archiveTask(taskKey) {
   return { ok: true, taskKey, safeKey, from, to };
 }
 
-// CLI 取消归档：清 watchlist.archivedAt，回落 mtime 自动判态
-export function unarchiveCliTask(taskKey) {
-  if (typeof taskKey !== 'string' || !taskKey.startsWith('cli:')) return { ok: false, error: 'not a cli task' };
-  const shortSid = taskKey.slice(4);
-  const w = _cliWatchlist.readWatchlist();
-  const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
-  if (!entry) return { ok: false, error: 'cli session not in watchlist' };
-  return _cliWatchlist.setArchivedWatchlist(entry[0], false);
+// 取消归档：archiveTask 的逆操作，内部按来源分派——CLI 清 watchlist.archivedAt 回落自动判态；
+// 分身 runner-archive/<safeKey> 目录移回 runner-state/<safeKey>（collect 重新按 state.json 判态）。
+export function unarchiveTask(taskKey) {
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:')) {
+    const shortSid = taskKey.slice(4);
+    const w = _cliWatchlist.readWatchlist();
+    const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
+    if (!entry) return { ok: false, error: 'cli session not in watchlist' };
+    return _cliWatchlist.setArchivedWatchlist(entry[0], false);
+  }
+  const safeKey = safeKeyOf(taskKey);
+  if (!safeKey) return { ok: false, error: 'invalid taskKey' };
+  const from = path.join(P.archiveRoot, safeKey);
+  const to = path.join(P.runnerRoot, safeKey);
+  if (!fs.existsSync(from)) return { ok: false, error: 'task not found in archive' };
+  if (fs.existsSync(to)) return { ok: false, error: '取消归档目标已存在（runner-state 同名任务）' };
+  if (!fs.existsSync(P.runnerRoot)) fs.mkdirSync(P.runnerRoot, { recursive: true });
+  fs.renameSync(from, to);
+  return { ok: true, taskKey, safeKey, from, to };
 }
 
 // CLI 人工完成：写 watchlist.doneAt（照抄归档机制，不动 jsonl）。会话之后又有活动 collect 会自动清 doneAt 退出 done。
