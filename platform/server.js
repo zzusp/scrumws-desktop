@@ -6,6 +6,8 @@ import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTa
 import { writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
+import { detectGit } from './lib/git.js';
+import { drainQueued } from './lib/task-runner.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
 import { getClaudeUsage, invalidateClaudeUsage, getModelContextLimit } from './lib/claude-usage.js';
@@ -303,6 +305,22 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    // processing 并发上限（设置页）：同时运行的分身任务上限。body {max}；夹到 [0, 50]，0=不限。
+    // 存 runner-config.json 后立即排空一次（上调即放行等待的 queued）。
+    if (req.method === 'POST' && pathname === '/api/config/max-runners') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const max = Math.round(Number(payload?.max));
+        if (!Number.isFinite(max) || max < 0 || max > 50) return sendJson(res, 400, { ok: false, error: '并发上限需为 0–50（0=不限）' });
+        writeConfig({ maxConcurrentRunners: max });
+        try { drainQueued(); } catch { /* 排空失败不影响保存 */ }
+        sendJson(res, 200, { ok: true, maxConcurrentRunners: max });
+      });
+      return;
+    }
     // 归档 done 任务
     if (req.method === 'POST' && pathname === '/api/archive') {
       const taskKey = searchParams.get('taskKey');
@@ -341,8 +359,22 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: false, error: `目录选择失败：${e.message}` });
       }
     }
-    // 新增任务（推送式，任意来源）：body = {source?, title, prompt, model?, description?, plan?, cwd?}
-    // 只入队（state=plan/queued），不 spawn；看板新建按钮与外部 CLI/API 共用此端点
+    // 探测工作目录是否 git 项目（= 是否支持 worktree）：body {cwd} → {ok, isGit, root, currentBranch, branches}
+    // 新建任务表单选目录后调，决定是否显示 worktree 开关 + 签出分支下拉。
+    if (req.method === 'POST' && pathname === '/api/git/detect') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 8 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = detectGit(payload?.cwd || '');
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    // 新增任务（推送式，任意来源）：body = {source?, title, prompt, model?, effort?, description?, plan?, cwd?,
+    //   scheduledAt?, worktree?, baseBranch?, dynamicWorkflow?}。只入队（state=plan/queued），不 spawn；
+    // 看板新建按钮与外部 CLI/API 共用此端点
     if (req.method === 'POST' && pathname === '/api/task/create') {
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 32 * 1024) req.destroy(); });
@@ -384,7 +416,7 @@ const server = http.createServer(async (req, res) => {
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const r = replyToTask({ taskKey, message: payload?.message, model: payload?.model });
+        const r = replyToTask({ taskKey, message: payload?.message, model: payload?.model, effort: payload?.effort });
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;

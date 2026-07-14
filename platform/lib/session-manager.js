@@ -144,7 +144,7 @@ function armInitWatchdog(s) {
 
 // ---- 对外 API ----
 
-export function createSession({ cwd, model, effort, resume, prompt, seedTranscript, taskKey, bypass, gitBranch } = {}) {
+export function createSession({ cwd, model, effort, resume, prompt, seedTranscript, taskKey, bypass, gitBranch, dynamicWorkflow } = {}) {
   if (cwd) {
     try { if (!fs.statSync(cwd).isDirectory()) return { ok: false, error: `cwd 不是目录：${cwd}` }; }
     catch { return { ok: false, error: `cwd 不存在：${cwd}` }; }
@@ -164,6 +164,11 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
 
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;   // 防经宿主扩散到 claude 后代（README 宿主适配点 1）
+  // 动态工作流（Claude Code Workflows 能力）任务级开关：走环境变量而非 --settings，避开 Windows shell:true
+  // spawn 下 JSON 参数的引号/大括号被 cmd 解析坏的坑。二进制实测：CLAUDE_CODE_WORKFLOWS truthy=可用、
+  // CLAUDE_CODE_DISABLE_WORKFLOWS truthy=禁用。undefined=不干预、继承 claude 默认。
+  if (dynamicWorkflow === true) { env.CLAUDE_CODE_WORKFLOWS = '1'; delete env.CLAUDE_CODE_DISABLE_WORKFLOWS; }
+  else if (dynamicWorkflow === false) { env.CLAUDE_CODE_DISABLE_WORKFLOWS = '1'; delete env.CLAUDE_CODE_WORKFLOWS; }
 
   const id = randomUUID();
   const s = new Session({ id, cwd, model, effort, taskKey, gitBranch });
@@ -172,6 +177,12 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
     s.transcript = seedTranscript.slice(-TRANSCRIPT_CAP);
     s.claudeSessionId = resume || null;
     s.adopted = true;
+  } else if (prompt) {
+    // 首条用户消息经 sendUserMessage 写进 stdin，但 claude 的 stdout stream-json 不回显用户输入文本，
+    // 故它从不进 transcript → 详情页连上 SSE 回放（server.js 的 transcript 回放）看不到第一条 user message。
+    // 这里在 spawn 前把它补进 transcript 打头（此刻尚无 SSE 客户端订阅，无需 emit）；resume 分支不走这里，
+    // 其 seed 已含该消息，避免重复。形状对齐 reply 乐观回显 / seed（content 为字符串，前端 mbToRounds 会归一化）。
+    s.transcript.push({ type: 'user', message: { role: 'user', content: prompt } });
   }
   try {
     // Windows 须走 shell：CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd（同步抛 spawn EINVAL）；shell 由 PATHEXT 解析 claude.exe/.cmd

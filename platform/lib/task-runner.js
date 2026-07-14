@@ -6,9 +6,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
-import { fmt } from './timeutil.js';
+import { fmt, parse } from './timeutil.js';
 import { createSession, sendUserMessage, getSession, closeSession, getSessionIdByTaskKey } from './session-manager.js';
 import { readCcSessionForAdopt, ccMessagesToModeBSeed } from './logs.js';
+import { ensureWorktree } from './git.js';
+import { readConfig } from './runner-config.js';
 
 // taskKey → 内存会话 id（reply 复用 / 详情接 live SSE / 判活）
 const registry = new Map();
@@ -118,12 +120,14 @@ function bind(taskKey, id) {
         leakRetry.delete(taskKey);
         setTaskState(taskKey, { state: 'awaiting-human', outcome: null, resolvedAt: fmt(new Date()) }, 'session');
         removeLease(taskKey);            // 一轮收敛：进程常驻但不算 processing
+        scheduleDrain();                 // 名额释放 → 放行等待中的 queued 任务
       } else if (ev.type === 'closed') {
         setTaskState(taskKey, { state: 'awaiting-human', outcome: null, resolvedAt: fmt(new Date()) }, 'session');
         removeLease(taskKey);
         leakRetry.delete(taskKey);
         registry.delete(taskKey);
         s.emitter.off('event', onEvent);
+        scheduleDrain();
       } else if (ev.type === 'error') {
         const sd = readJson(path.join(taskDirOf(taskKey), 'state.json')) || {};
         setTaskState(taskKey, {
@@ -131,6 +135,7 @@ function bind(taskKey, id) {
           outcomeDetail: { ...(sd.outcomeDetail || {}), failureReason: ev.error || 'session error' },
         }, 'session');
         removeLease(taskKey);
+        scheduleDrain();
       }
     } catch { /* 写盘失败不拖垮会话事件流 */ }
   };
@@ -150,20 +155,99 @@ function markProcessing(taskKey, id) {
   writeLease(taskKey, s?.child?.pid || 0);
 }
 
+// ---- processing 并发上限（复用 runner-config.maxConcurrentRunners；0 = 不限）----
+// 语义：同时处于 processing 的分身任务上限。达上限时新执行请求落 queued 等待，名额释放即自动排空。
+// 仅约束「新起任务」（create/approve/restart/定时提升）；不拦回复续轮（人工交互不该被并发闸卡住）。
+function maxConcurrent() { const n = Number(readConfig().maxConcurrentRunners ?? 5); return Number.isFinite(n) && n > 0 ? n : 0; }
+function processingCount() {
+  let names = [];
+  try { names = fs.readdirSync(P.runnerRoot); } catch { return 0; }
+  let n = 0;
+  for (const name of names) {
+    const s = readJson(path.join(P.runnerRoot, name, 'state.json'));
+    if (s && s.state === 'processing') n++;
+  }
+  return n;
+}
+function capReached() { const max = maxConcurrent(); return max > 0 && processingCount() >= max; }
+
+// 起任务但受并发上限约束：满则落 queued 等待（不 spawn），未满则真起。
+// 起成功统一带 spawned:true（startTask 原生返回不含该字段，调用方靠它区分「起了/排队了」）。
+export function tryStartOrQueue(taskKey) {
+  if (getTaskSessionId(taskKey)) return { ok: false, error: '该任务已有活跃会话在跑' };
+  if (capReached()) {
+    setTaskState(taskKey, { state: 'queued', outcome: null, resolvedAt: null }, 'cap');
+    return { ok: true, taskKey, queued: true, spawned: false };
+  }
+  const r = startTask(taskKey);
+  return r.ok ? { ...r, spawned: true } : r;
+}
+
+// 排空 queued：名额释放 / 定时兜底时，按入队先后（enteredAt）把 queued 任务起到并发上限。
+let draining = false;
+export function drainQueued() {
+  if (draining) return { started: [] };
+  draining = true;
+  const started = [];
+  try {
+    while (!capReached()) {
+      let names = [];
+      try { names = fs.readdirSync(P.runnerRoot); } catch { break; }
+      const waiting = [];
+      for (const name of names) {
+        const s = readJson(path.join(P.runnerRoot, name, 'state.json'));
+        if (!s || s.state !== 'queued') continue;
+        const t = readJson(path.join(P.runnerRoot, name, 'task.json'));
+        const taskKey = t?.taskKey || (name.includes('__') ? name.replace('__', ':') : name);
+        if (getTaskSessionId(taskKey)) continue;   // 已在跑（罕见）跳过
+        waiting.push({ taskKey, at: s.enteredAt || '' });
+      }
+      if (!waiting.length) break;
+      waiting.sort((a, b) => String(a.at).localeCompare(String(b.at)));   // 先入队先起
+      const next = waiting[0];
+      const r = startTask(next.taskKey);
+      if (!r.ok) break;   // 起不动（如 claude 不可用）→ 停，留 queued 下轮再试
+      started.push(next.taskKey);
+    }
+  } finally { draining = false; }
+  return { started };
+}
+function scheduleDrain() { setImmediate(() => { try { drainQueued(); } catch { /* 排空失败不拖垮事件流 */ } }); }
+
+// 解析任务真正运行的 cwd：worktree 开启且 cwd 是 git → 建/复用 worktree，运行在 worktree 目录；否则用 task.cwd。
+// worktreeDir/branch 落 meta.json：reply/resume 复用同目录续跑，且供 collect 侧栏展示。首次建失败即回错、不降级到主库。
+function resolveRunCwd(taskKey, task) {
+  const cwd = task?.cwd || null;
+  if (!task?.worktree || !cwd) return { cwd };
+  const metaFile = path.join(taskDirOf(taskKey), 'meta.json');
+  const meta = readJson(metaFile) || {};
+  if (meta.worktreeDir && fs.existsSync(meta.worktreeDir)) return { cwd: meta.worktreeDir };   // 已建，复用
+  const name = String(taskKey).split(':').slice(1).join('-').replace(/[^A-Za-z0-9._-]/g, '-') || safeKeyOf(taskKey);
+  const r = ensureWorktree({ repoDir: cwd, name, baseBranch: task.baseBranch || null });
+  if (!r.ok) return { error: r.error };
+  meta.worktreeDir = r.worktreeDir;
+  meta.worktreeBranch = r.branch;
+  try { writeJson(metaFile, meta); } catch { /* 落盘失败不阻断，用返回值 */ }
+  return { cwd: r.worktreeDir };
+}
+
 // 起任务执行会话（queued/approve/restart → 起绑定会话，task.prompt 作首条消息）
 export function startTask(taskKey) {
   const task = readJson(path.join(taskDirOf(taskKey), 'task.json'));
   if (!task) return { ok: false, error: 'task.json 不存在，无法起会话' };
   if (getTaskSessionId(taskKey)) return { ok: false, error: '该任务已有活跃会话在跑' };
-  const r = createSession({ taskKey, cwd: task.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, prompt: task.prompt, bypass: true });
+  const rc = resolveRunCwd(taskKey, task);
+  if (rc.error) return { ok: false, error: rc.error };
+  const r = createSession({ taskKey, cwd: rc.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, prompt: task.prompt, bypass: true });
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);
   return { ok: true, taskKey, sessionUiId: r.id };
 }
 
-// 回复任务：live 会话在则复用（多轮）；已死则 --resume 重挂
-export function replyTask(taskKey, message, model) {
+// 回复任务：live 会话在则复用（多轮）；已死则 --resume 重挂。model/effort 覆盖仅在 --resume 重挂时生效
+// （live 会话的 model/effort 在 spawn 时已定、无法中途改）。
+export function replyTask(taskKey, message, model, effort) {
   const msg = String(message || '').trim();
   if (!msg) return { ok: false, error: 'message required' };
   const liveId = getTaskSessionId(taskKey);
@@ -184,7 +268,9 @@ export function replyTask(taskKey, message, model) {
   const hist = readCcSessionForAdopt(sid);
   const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
   seed.push({ type: 'user', message: { content: msg } });
-  const r = createSession({ taskKey, cwd: task?.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: model || task?.model || undefined, effort: task?.effort || undefined, resume: sid, prompt: msg, seedTranscript: seed, bypass: true });
+  const rc = resolveRunCwd(taskKey, task || {});
+  if (rc.error) return { ok: false, error: rc.error };
+  const r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: model || task?.model || undefined, effort: effort || task?.effort || undefined, dynamicWorkflow: task?.dynamicWorkflow, resume: sid, prompt: msg, seedTranscript: seed, bypass: true });
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);
@@ -205,4 +291,34 @@ export function cancelTaskSession(taskKey) {
   }, 'user');
   removeLease(taskKey);
   return { ok: true, taskKey, killed: id, resolvedAt };
+}
+
+// 定时提升：扫 plan 态任务，scheduledAt 到点（<=now）即 startTask 起会话执行（本看板 queued 即刻转 processing，
+// 无独立消费 queued 的 loop，故「定时转 queued」= 到点执行）。清 scheduledAt 防重复触发。
+// 由主进程调度器持锁实例定时调用（in-process，与 session-manager 同进程才能 spawn）；重启后下一轮扫描自动补偿过期项。
+export function promoteDueScheduledTasks() {
+  let names = [];
+  try { names = fs.readdirSync(P.runnerRoot); } catch { return { promoted: [], errors: [] }; }
+  const nowMs = Date.now();
+  const promoted = [];
+  const errors = [];
+  for (const name of names) {
+    const dir = path.join(P.runnerRoot, name);
+    const state = readJson(path.join(dir, 'state.json'));
+    if (!state || state.state !== 'plan') continue;
+    const task = readJson(path.join(dir, 'task.json'));
+    const sched = task?.scheduledAt;
+    if (!sched) continue;
+    const at = parse(sched);
+    if (!at || at.getTime() > nowMs) continue;
+    const taskKey = task?.taskKey || (name.includes('__') ? name.replace('__', ':') : name);
+    const r = tryStartOrQueue(taskKey);   // 到点提升，受并发上限约束：满则落 queued 等排空
+    if (r.ok) {
+      try { const tj = readJson(path.join(dir, 'task.json')) || {}; delete tj.scheduledAt; writeJson(path.join(dir, 'task.json'), tj); } catch { /* 清失败无妨：state 已非 plan、下轮不再命中 */ }
+      promoted.push(taskKey);
+    } else {
+      errors.push({ taskKey, error: r.error });
+    }
+  }
+  return { promoted, errors };
 }

@@ -827,6 +827,14 @@ function stateTagHtml(state) {
   return `<span class="tag ${m.cls}" style="font-size:10px">${escapeHtml(m.label)}</span>`;
 }
 
+// 滚到真正底部：innerHTML 后同帧读 scrollHeight，常因等宽字体/折叠块/代码块布局尚未稳定而少滚几行
+// → 下一帧 requestAnimationFrame 布局稳定后再补一次，确保停在最新内容处（进详情/追尾都用）。
+function scrollBodyToEnd(body) {
+  if (!body) return;
+  body.scrollTop = body.scrollHeight;
+  requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+}
+
 // keepScroll=true（poll 重画）保住滚动位置；首次打开滚到底部显示最新消息
 function renderModalBody(keepScroll = false) {
   if (!currentModalData) return;
@@ -838,7 +846,8 @@ function renderModalBody(keepScroll = false) {
   const html = renderDetailTab(currentModalData);
   body.innerHTML = html || '<div style="color:var(--dim);padding:12px 0">无数据</div>';
   // 首次打开 → 滚到底（最新消息在下面）；poll 重画 → 贴底则追尾、否则保持用户当前位置
-  body.scrollTop = keepScroll ? (wasAtBottom ? body.scrollHeight : prevScroll) : body.scrollHeight;
+  if (keepScroll && !wasAtBottom) body.scrollTop = prevScroll;   // 用户上滚看历史 → 原位保持
+  else scrollBodyToEnd(body);                                     // 首次打开 / 追尾贴底 → 滚到真正底部（含下一帧补滚）
 }
 
 // stateData 里按 mbSessionId 反查任务 key（旧 #/session/<id> 链接重定向用）
@@ -954,7 +963,8 @@ function updateReplyBoxAvailability(taskKey) {
     if (stateTag.parentElement) stateTag.parentElement.style.display = 'none';
     if (mb && mb.id === t.mbSessionId) {
       const running = mb.state === 'running' || mb.state === 'starting';
-      if (interruptBtn) { interruptBtn.style.display = ''; interruptBtn.disabled = !running; interruptBtn.onclick = () => mbInterrupt(); }
+      // 打断只在「正在生成」时有意义：非 running 用 display 隐藏（而非灰化占位），一轮收敛即消失。
+      if (interruptBtn) { interruptBtn.style.display = running ? '' : 'none'; interruptBtn.onclick = () => mbInterrupt(); }
     }
     updateReplyCount(text.value.length, countEl);
     send.onclick = () => mbSend();
@@ -1088,11 +1098,14 @@ async function sendReply(taskKey) {
   const text = $('modalReplyText');
   const send = $('modalReplySend');
   const model = $('modalReplyModel').value;
+  const effort = $('modalReplyEffort').value;   // req3：per-reply effort 覆盖（仅 --resume 重挂新会话时生效）
   const msg = text.value.trim();
   if (!msg) { showReplyToast('消息不能为空', 'err'); return; }
   send.disabled = true; text.disabled = true; send.textContent = '发送中…';
   try {
-    const body = model ? { message: msg, model } : { message: msg };
+    const body = { message: msg };
+    if (model) body.model = model;
+    if (effort) body.effort = effort;
     const r = await api(`/api/task/reply?taskKey=${encodeURIComponent(taskKey)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1120,8 +1133,10 @@ let pendingCliMessage = null;
 // 收养 CLI session 成 Mode B live 会话：taskKey 透传绑该任务，msg 不塞进 adopt 而是置 pendingCliMessage，
 // 详情连上 live 会话 synced 后经 mbSend 乐观回显发出（保证可见），再跳详情进 live。
 // 续接（sendCliContinue）与 rewind（先截断再收养）共用。返回 api 结果（{ok} 或 {ok:false,error}）。
-async function adoptCliToLive({ taskKey, sessionId, msg, model }) {
-  const body = model ? { sessionId, model, taskKey } : { sessionId, taskKey };
+async function adoptCliToLive({ taskKey, sessionId, msg, model, effort }) {
+  const body = { sessionId, taskKey };
+  if (model) body.model = model;
+  if (effort) body.effort = effort;
   const r = await api('/api/session/adopt', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -1137,6 +1152,7 @@ async function sendCliContinue(taskKey) {
   const text = $('modalReplyText');
   const send = $('modalReplySend');
   const model = $('modalReplyModel').value;
+  const effort = $('modalReplyEffort').value;
   const msg = text.value.trim();
   if (!msg) { showReplyToast('消息不能为空', 'err'); return; }
   const t = findTaskInState(taskKey);
@@ -1145,7 +1161,7 @@ async function sendCliContinue(taskKey) {
   if (t?.state === 'processing') { showReplyToast('会话仍在运行——先退出终端再续接，避免两个进程同写一个会话', 'err'); return; }
   send.disabled = true; text.disabled = true; send.textContent = '续接中…';
   try {
-    const r = await adoptCliToLive({ taskKey, sessionId, msg, model });
+    const r = await adoptCliToLive({ taskKey, sessionId, msg, model, effort });
     if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
   } catch (e) {
     showReplyToast(e.message, 'err');
@@ -1394,7 +1410,11 @@ function renderTaskSide(taskKey) {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${_bk}')">▶ 确认排队</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   } else if (['queued', 'processing'].includes(t.state)) {
-    if (!isCli) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
+    // live 会话已收敛（idle/closed）但任务 state 还没轮询刷成 awaiting-human 的空窗期，不再显示「中断」——
+    // 与「打断」同源于 mb.state，result 一到即随 mbSyncLiveHead→renderTaskSide 一起隐藏，不必等 5s 轮询。
+    // 非 live 任务（无 mb / 不匹配）→ liveRunning 恒真，按 t.state 原逻辑显示，不受影响。
+    const liveRunning = !mb || mb.id !== t.mbSessionId || mb.state === 'running' || mb.state === 'starting';
+    if (!isCli && liveRunning) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
   } else if (t.state === 'awaiting-human') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${_bk}')">✓ 完成</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
@@ -1456,6 +1476,10 @@ function renderTaskSide(taskKey) {
       ${kv('taskKey', escapeHtml(t.taskKey))}
       ${kv('cwd', escapeHtml(cwdVal))}
       ${kv('git', escapeHtml(gitVal))}
+      ${t.effort ? kv('effort', escapeHtml(t.effort)) : ''}
+      ${t.scheduledAt ? kv('定时执行', `<span style="color:var(--amber)">${escapeHtml(t.scheduledAt)}</span>`) : ''}
+      ${t.worktree ? kv('worktree', escapeHtml(t.worktreeBranch || (t.baseBranch ? `基于 ${t.baseBranch}` : '开启'))) : ''}
+      ${t.dynamicWorkflow != null ? kv('动态工作流', t.dynamicWorkflow ? '<span style="color:var(--jade)">开</span>' : '关') : ''}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
       ${bgAgent > 0 ? kv('后台 agent', `<span style="color:var(--amber)">${bgAgent} 个运行中（主进程已让出，等后台完成）</span>`) : ''}
       ${/* turns / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / jsonlVal，待定放置位置）*/''}
@@ -1863,6 +1887,7 @@ async function refreshState() {
     renderRuntime(stateData.runtime);
     renderLifecycle(stateData.lifecycle);
     syncProxyInput();
+    syncMaxRunnersInput();
   } catch (e) { console.error('state error:', e); }
 }
 
@@ -1908,28 +1933,65 @@ function syncProxyInput() {
   });
 }
 
+// 设置页 processing 并发上限：从 state 回填（编辑中不覆盖），保存走 /api/config/max-runners
+function syncMaxRunnersInput() {
+  const inp = $('maxRunnersInput');
+  if (!inp || inp === document.activeElement || inp.dataset.dirty === '1') return;
+  inp.value = String(stateData?.runnerConfig?.maxConcurrentRunners ?? 5);
+}
+{
+  const inp = $('maxRunnersInput');
+  const btn = $('maxRunnersSaveBtn');
+  const hint = $('maxRunnersSaveHint');
+  if (inp) inp.addEventListener('input', () => { inp.dataset.dirty = '1'; if (hint) hint.textContent = ''; });
+  if (btn) btn.addEventListener('click', async () => {
+    let max = Math.round(Number(inp.value));
+    if (!Number.isFinite(max)) max = 5;
+    max = Math.min(Math.max(max, 0), 50);
+    inp.value = String(max);
+    btn.disabled = true; if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '保存中…'; }
+    try {
+      const r = await api('/api/config/max-runners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ max }) });
+      if (r.ok) {
+        delete inp.dataset.dirty;
+        if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = max === 0 ? '已保存 · 不限并发' : `已保存 · 最多 ${max} 个同时执行`; }
+        refreshState();
+      } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
+    } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
+    finally { btn.disabled = false; }
+  });
+}
+
 // ---- 新建任务 Modal（同一弹窗兼作 plan 任务「编辑」：editingTaskKey 非空即编辑模式）----
-const NEWTASK_HEAD = '新建 manual 任务';
-const NEWTASK_HINT = 'source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 默认存为 plan，在看板确认后才执行';
+const NEWTASK_HEAD = '新建任务';
+const NEWTASK_HINT = 'source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 默认存为 plan，在看板确认或到点定时后才执行';
 let editingTaskKey = null;   // null=新建；非空=正在编辑该 plan 任务，提交走 /api/task/edit
 $('newTaskBtn').addEventListener('click', () => {
   editingTaskKey = null;
   $('newTaskModal').querySelector('.modal-head h2').textContent = NEWTASK_HEAD;
   $('newTaskModal').querySelector('.modal-hint').textContent = NEWTASK_HINT;
-  $('newTaskPlanFirst').closest('label').style.display = '';   // 新建才显示「先计划」勾选
   $('newTaskSubmit').textContent = '提交';
   $('newTaskModal').style.display = 'flex';
   $('newTaskTitle').value = '';
   $('newTaskPrompt').value = '';
   $('newTaskDesc').value = '';
-  $('newTaskCwd').value = '';              // req3：工作目录（可选）
+  $('newTaskCwd').value = '';              // 工作目录（可选）
   loadNewTaskCwds();                       // 填充「已有工作目录」下拉（现有任务 cwd + 近期 CLI session cwd）
-  $('newTaskPlanFirst').checked = true;    // req4：页面新建任务默认进入 plan（可取消勾选改为立即执行）
   newTaskModelCtl?.setValue('claude-opus-4-8');
+  newTaskEffortCtl?.setValue('high');      // req3：默认 effort=high
+  resetNewTaskExtras();                    // req4/5/6：定时 / worktree / 动态工作流 归默认
+  refreshWorktreeUi('');                   // 无 cwd → 隐藏 worktree 区
   $('newTaskErr').style.display = 'none';
   $('newTaskWarn').style.display = 'none';
   setTimeout(() => $('newTaskTitle').focus(), 100);
 });
+
+// req4/5/6 表单附加字段归默认（新建打开时调）
+function resetNewTaskExtras() {
+  $('newTaskScheduledAt').value = '';
+  $('newTaskWorktree').checked = true;         // req5：支持 worktree 时默认开启
+  $('newTaskDynamicWorkflow').checked = false; // req6：默认关闭
+}
 
 // plan 任务「编辑」：复用新建弹窗，先拉 /api/task/detail 回填，提交走 /api/task/edit（仅 plan 可编辑）
 async function openEditTask(taskKey) {
@@ -1941,7 +2003,6 @@ async function openEditTask(taskKey) {
   editingTaskKey = taskKey;
   $('newTaskModal').querySelector('.modal-head h2').textContent = '编辑任务';
   $('newTaskModal').querySelector('.modal-hint').textContent = `source=${r.source} · ${taskKey} · plan 态可编辑；prompt 是确认排队后真正发给 claude 的指令`;
-  $('newTaskPlanFirst').closest('label').style.display = 'none';   // 编辑不改变 plan 态，隐藏「先计划」勾选
   $('newTaskSubmit').textContent = '保存';
   $('newTaskModal').style.display = 'flex';
   $('newTaskTitle').value = r.title || '';
@@ -1950,6 +2011,11 @@ async function openEditTask(taskKey) {
   $('newTaskCwd').value = r.cwd || '';
   loadNewTaskCwds();
   newTaskModelCtl?.setValue(r.model || 'claude-opus-4-8');
+  newTaskEffortCtl?.setValue(r.effort || 'high');                         // req3
+  $('newTaskScheduledAt').value = toDatetimeLocal(r.scheduledAt || '');   // req4
+  $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
+  // req5：git 探测后回填 worktree 勾选 + 签出分支（默认开启沿用旧值；旧 plan 无该字段则默认开）
+  refreshWorktreeUi(r.cwd || '', { worktree: r.worktree !== false, baseBranch: r.baseBranch || '' });
   $('newTaskErr').style.display = 'none';
   $('newTaskWarn').style.display = 'none';
   setTimeout(() => $('newTaskPrompt').focus(), 100);
@@ -1980,15 +2046,53 @@ function openCwdMenu() { renderCwdMenu(); $('newTaskCwdMenu')?.classList.add('op
   caret.addEventListener('click', () => (menu.classList.contains('open') ? closeCwdMenu() : openCwdMenu()));
   input.addEventListener('focus', openCwdMenu);
   input.addEventListener('input', () => { renderCwdMenu(); menu.classList.add('open'); });
+  input.addEventListener('change', () => refreshWorktreeUi(input.value));   // req5：手填/回车后探测 git
   menu.addEventListener('mousedown', (e) => {   // mousedown 先于 input blur，避免选中前菜单被关
     const item = e.target.closest('.cwd-item');
     if (!item) return;
     e.preventDefault();
     input.value = item.dataset.cwd;
     closeCwdMenu();
+    refreshWorktreeUi(input.value);   // req5：选目录即探测 git
   });
   document.addEventListener('click', (e) => { if (!combo.contains(e.target)) closeCwdMenu(); });
 })();
+
+// req5：worktree 勾选切换 → 联动签出分支行显隐
+$('newTaskWorktree').addEventListener('change', toggleBranchRow);
+function toggleBranchRow() { $('newTaskBranchRow').style.display = $('newTaskWorktree').checked ? 'flex' : 'none'; }
+
+// req5：探测工作目录是否 git 项目 → 切 worktree 区显隐 + 填签出分支下拉。opts 用于编辑回填(worktree/baseBranch)。
+async function refreshWorktreeUi(cwd, opts) {
+  const row = $('newTaskWorktreeRow');
+  const c = String(cwd || '').trim();
+  if (!c) { row.style.display = 'none'; return; }
+  let r = null;
+  try {
+    r = await api('/api/git/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: c }) });
+  } catch { r = null; }
+  if (($('newTaskCwd').value || '').trim() !== c) return;   // 期间又改了目录 → 丢弃这次结果（防竞态）
+  if (!r || !r.ok || !r.isGit) { row.style.display = 'none'; return; }
+  row.style.display = 'flex';
+  const branches = r.branches || [];
+  const want = (opts && opts.baseBranch) || r.currentBranch || branches[0] || '';
+  const sel = $('newTaskBaseBranch');
+  sel.innerHTML = branches.length
+    ? branches.map((b) => `<option value="${escapeAttr(b)}"${b === want ? ' selected' : ''}>${escapeHtml(b)}${b === r.currentBranch ? '（当前）' : ''}</option>`).join('')
+    : '<option value="">（无本地分支 · 基于 HEAD 新建）</option>';
+  if (opts && typeof opts.worktree === 'boolean') $('newTaskWorktree').checked = opts.worktree;
+  toggleBranchRow();
+}
+
+// scheduledAt 本地串 'yyyy-MM-dd HH:mm:ss' ↔ datetime-local 'yyyy-MM-ddTHH:mm' 互转
+function toDatetimeLocal(s) {
+  const m = String(s || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}` : '';
+}
+function toLocalStamp(dtLocal) {
+  const m = String(dtLocal || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:00` : '';
+}
 
 // req3：浏览按钮 → 系统目录选择（桌面端 Electron dialog；web 模式回退提示手填）
 $('newTaskCwdBrowse').addEventListener('click', async () => {
@@ -1997,7 +2101,7 @@ $('newTaskCwdBrowse').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const r = await api('/api/pick-dir', { method: 'POST' });
-    if (r.ok && r.dir) { $('newTaskCwd').value = r.dir; closeCwdMenu(); }
+    if (r.ok && r.dir) { $('newTaskCwd').value = r.dir; closeCwdMenu(); refreshWorktreeUi(r.dir); }
     else if (!r.ok && r.error) { errBox.textContent = r.error; errBox.style.display = 'block'; }
   } catch (e) {
     errBox.textContent = e.message; errBox.style.display = 'block';
@@ -2012,8 +2116,14 @@ $('newTaskSubmit').addEventListener('click', async () => {
   const prompt = $('newTaskPrompt').value.trim();
   const description = $('newTaskDesc').value.trim();
   const cwd = $('newTaskCwd').value.trim();
-  const planFirst = $('newTaskPlanFirst').checked;
   const model = $('newTaskModel').value;
+  const effort = $('newTaskEffort').value;                          // req3
+  const scheduledAt = toLocalStamp($('newTaskScheduledAt').value);  // req4
+  const dynamicWorkflow = $('newTaskDynamicWorkflow').checked;      // req6
+  // req5：worktree 仅在 git 目录（worktree 区可见）且勾选时生效；分支取下拉当前值
+  const worktreeVisible = $('newTaskWorktreeRow').style.display !== 'none';
+  const worktree = worktreeVisible && $('newTaskWorktree').checked;
+  const baseBranch = worktree ? ($('newTaskBaseBranch').value || '') : '';
   const errBox = $('newTaskErr');
   const warnBox = $('newTaskWarn');
   errBox.style.display = 'none';
@@ -2029,17 +2139,18 @@ $('newTaskSubmit').addEventListener('click', async () => {
       const r = await api(`/api/task/edit?taskKey=${encodeURIComponent(editing)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, prompt, model, description, cwd }),
+        body: JSON.stringify({ title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }),
       });
       if (!r.ok) { errBox.textContent = r.error || '未知错误'; errBox.style.display = 'block'; return; }
       closeNewTaskModal();
       await refreshState();
       return;
     }
+    // req2：新建任务默认进 plan 桶（plan:true 固定）
     const r = await api('/api/task/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, prompt, model, description, plan: planFirst, cwd }),
+      body: JSON.stringify({ title, prompt, model, description, plan: true, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }),
     });
     if (!r.ok) {
       errBox.textContent = r.error || '未知错误';
@@ -2225,6 +2336,15 @@ const BASE_MODELS = [
   { value: 'claude-haiku-4-5-20251001',     name: 'Haiku 4.5',      desc: '最快 · 最省 token',                     tier: 'amber',tierLabel: '高速' },
 ];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];   // claude --effort 档位（后端白名单一致）；默认 high
+// effort 下拉选项（复用 initModelDropdown 组件的形状）；新建表单默认 high，回复条首项为「继承任务 effort」
+const EFFORT_OPTIONS = [
+  { value: 'low',    name: 'low',    desc: '最省 · 浅推理、最快',       tier: 'amber', tierLabel: '省' },
+  { value: 'medium', name: 'medium', desc: '中等推理',                 tier: 'cyan',  tierLabel: '中' },
+  { value: 'high',   name: 'high',   desc: '默认 · 深入推理',          tier: 'jade',  tierLabel: '深' },
+  { value: 'xhigh',  name: 'xhigh',  desc: '更深推理',                 tier: 'jade',  tierLabel: '很深' },
+  { value: 'max',    name: 'max',    desc: '最强推理 · 最耗 token',    tier: 'coral', tierLabel: '最强' },
+];
+const EFFORT_INHERIT = { value: '', name: '继承任务 effort', desc: '默认 · 不覆盖任务原本的 effort', tier: 'mut', tierLabel: '默认' };
 
 // 通用初始化：wrapId/btnId/menuId/selectId 四元素 + models 列表 + 是否首项后加分隔线
 // inScroll=true：宿主在 overflow:auto 容器内（如新建任务表单）——absolute 定位会被容器裁剪，
@@ -2311,20 +2431,30 @@ function initModelDropdown({ wrapId, btnId, menuId, selectId, models, hairAfterF
 }
 
 let replyModelCtl = null;
+let replyEffortCtl = null;
 function initReplyModelSelector() {
   replyModelCtl = initModelDropdown({
     wrapId: 'modalReplyModelWrap', btnId: 'modalReplyModelBtn', menuId: 'modalReplyModelMenu', selectId: 'modalReplyModel',
     models: [INHERIT_OPTION, ...BASE_MODELS], hairAfterFirst: true,
   });
+  replyEffortCtl = initModelDropdown({
+    wrapId: 'modalReplyEffortWrap', btnId: 'modalReplyEffortBtn', menuId: 'modalReplyEffortMenu', selectId: 'modalReplyEffort',
+    models: [EFFORT_INHERIT, ...EFFORT_OPTIONS], hairAfterFirst: true,
+  });
   // 暴露给状态机：切换 taskKey 时把 UI 同步回默认（继承）
-  window.__resetReplyModel = () => replyModelCtl?.setValue('');
+  window.__resetReplyModel = () => { replyModelCtl?.setValue(''); replyEffortCtl?.setValue(''); };
 }
 
 let newTaskModelCtl = null;
+let newTaskEffortCtl = null;
 function initNewTaskModelSelector() {
   newTaskModelCtl = initModelDropdown({
     wrapId: 'newTaskModelWrap', btnId: 'newTaskModelBtn', menuId: 'newTaskModelMenu', selectId: 'newTaskModel',
     models: BASE_MODELS, hairAfterFirst: false, inScroll: true,
+  });
+  newTaskEffortCtl = initModelDropdown({
+    wrapId: 'newTaskEffortWrap', btnId: 'newTaskEffortBtn', menuId: 'newTaskEffortMenu', selectId: 'newTaskEffort',
+    models: EFFORT_OPTIONS, hairAfterFirst: false, inScroll: true,
   });
 }
 
@@ -2468,7 +2598,8 @@ function mbToRounds() {
 function mbSyncLiveHead() {
   if (!mb) return;
   if (modalPollTaskKey) renderTaskSide(modalPollTaskKey);
-  const ib = $('modalReplyInterrupt'); if (ib) ib.disabled = mb.state !== 'running';
+  // 打断按钮用 display 即时显隐（result → mb.state=idle 即隐藏），与 updateReplyBoxAvailability 装配逻辑一致。
+  const ib = $('modalReplyInterrupt'); if (ib) ib.style.display = (mb.state === 'running' || mb.state === 'starting') ? '' : 'none';
   const st = $('modalReplyState');
   if (st && mb.id && findTaskInState(modalPollTaskKey)?.mbSessionId === mb.id) {
     st.className = 'tag ' + (mb.state === 'running' ? 'tag-amber' : 'tag-jade');
@@ -2548,7 +2679,7 @@ function mbRenderBody() {
       </div></div>`;
   }
   body.innerHTML = html;
-  if (atBottom) body.scrollTop = body.scrollHeight;
+  if (atBottom) scrollBodyToEnd(body);   // 含下一帧补滚：进 live 详情大段历史一次性渲染，布局稳定后才到真正底部
   if (running) mbStartStatusTimer(); else mbStopStatusTimer();
 }
 

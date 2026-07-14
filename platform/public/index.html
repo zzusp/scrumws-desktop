@@ -741,6 +741,27 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             </div>
           </section>
 
+          <!-- 任务并发：processing 桶上限（存 runner-config.json，本数据根共享，非本机 localStorage） -->
+          <section class="card" style="max-width:640px;margin-bottom:var(--gap)">
+            <div class="sec-head">
+              <h2>任务并发</h2>
+              <span class="sec-sub">同时处于 processing 的分身任务上限；达上限的新任务在 queued 排队，名额释放后自动放行（0 = 不限）</span>
+            </div>
+            <div class="set-list">
+              <div class="set-row set-static" title="processing 并发上限">
+                <span class="set-main">
+                  <span class="set-name">并发上限</span>
+                  <span class="set-desc">控制同时起多少个 claude 会话执行任务；不影响进行中的回复续轮</span>
+                </span>
+                <span class="int-edit">最多 <input type="number" id="maxRunnersInput" class="int-input" min="0" max="50" step="1"> 个</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+              <button class="btn" id="maxRunnersSaveBtn">保存</button>
+              <span id="maxRunnersSaveHint" style="font-size:11.5px;color:var(--dim)"></span>
+            </div>
+          </section>
+
           <!-- 平台守护（req5 从数据看板迁入）：runner-checker 项目固有调度，常开不可停，仅可调节拍 -->
           <section class="card" style="max-width:640px">
             <div class="sec-head">
@@ -786,6 +807,23 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
                   </button>
                   <div class="reply-model-menu" id="modalReplyModelMenu" role="listbox"></div>
                 </div>
+                <!-- effort 下拉（req3 同步）：隐藏 native select 只作 value 载体；不选=继承任务 effort -->
+                <select id="modalReplyEffort" style="display:none">
+                  <option value="">继承任务 effort</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max</option>
+                </select>
+                <div class="reply-model-wrap" id="modalReplyEffortWrap">
+                  <button type="button" class="reply-model-btn" id="modalReplyEffortBtn" title="切换 effort（不选=继承任务 effort · 仅 --resume 重挂新会话时生效）">
+                    <span class="reply-model-btn-icon">◐</span>
+                    <span class="reply-model-btn-label">继承任务 effort</span>
+                    <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div class="reply-model-menu" id="modalReplyEffortMenu" role="listbox"></div>
+                </div>
                 <!-- 上下文用量环形（app.js syncContextRing 填充；无会话上下文时留空，但保留 margin-right:auto 支撑布局）-->
                 <div class="ctx-ring-wrap" id="modalCtxRing"></div>
                 <button class="btn" id="modalReplyInterrupt" style="display:none" title="打断当前轮（interrupt）">■ 打断</button>
@@ -812,10 +850,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
   <div id="newTaskModal" class="overlay" style="display:none">
     <div class="modal-card" style="max-width:720px;max-height:88vh">
       <div class="modal-head">
-        <h2>新建 manual 任务</h2>
+        <h2>新建任务</h2>
         <span class="modal-x" onclick="closeNewTaskModal()">×</span>
       </div>
-      <div class="modal-hint">source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 默认存为 plan，在看板确认后才执行</div>
+      <div class="modal-hint">source=manual · taskKey 自动生成（manual:mYYYYMMDDHHMMSS-NNN）· 默认存为 plan，在看板确认或到点定时后才执行</div>
       <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0;scrollbar-gutter:stable">
         <label class="field">
           <span class="f-label">Title（任务标题）</span>
@@ -829,25 +867,45 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <span class="f-label">描述（可选 · 自己看的备注，不会发给 claude）</span>
           <textarea id="newTaskDesc" class="field-input" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…"></textarea>
         </label>
-        <label class="field">
-          <span class="f-label">Model</span>
-          <!-- 自定义 model 下拉：与详情页同款组件，隐藏 native select 只作 value 载体 -->
-          <select id="newTaskModel" style="display:none">
-            <option value="claude-opus-4-8" selected>Opus 4.8</option>
-            <option value="claude-fable-5">Fable 5</option>
-            <option value="claude-opus-4-7">Opus 4.7</option>
-            <option value="claude-sonnet-5">Sonnet 5</option>
-            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-          </select>
-          <div class="reply-model-wrap" id="newTaskModelWrap">
-            <button type="button" class="reply-model-btn form-size" id="newTaskModelBtn" title="选择 model" style="width:100%">
-              <span class="reply-model-btn-icon">✦</span>
-              <span class="reply-model-btn-label">Opus 4.8</span>
-              <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
-            </button>
-            <div class="reply-model-menu" id="newTaskModelMenu" role="listbox"></div>
-          </div>
-        </label>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label class="field" style="flex:2;min-width:220px">
+            <span class="f-label">Model</span>
+            <!-- 自定义 model 下拉：与详情页同款组件，隐藏 native select 只作 value 载体 -->
+            <select id="newTaskModel" style="display:none">
+              <option value="claude-opus-4-8" selected>Opus 4.8</option>
+              <option value="claude-fable-5">Fable 5</option>
+              <option value="claude-opus-4-7">Opus 4.7</option>
+              <option value="claude-sonnet-5">Sonnet 5</option>
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+            </select>
+            <div class="reply-model-wrap" id="newTaskModelWrap">
+              <button type="button" class="reply-model-btn form-size" id="newTaskModelBtn" title="选择 model" style="width:100%">
+                <span class="reply-model-btn-icon">✦</span>
+                <span class="reply-model-btn-label">Opus 4.8</span>
+                <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="reply-model-menu" id="newTaskModelMenu" role="listbox"></div>
+            </div>
+          </label>
+          <label class="field" style="flex:1;min-width:150px">
+            <span class="f-label">Effort（推理档位）</span>
+            <select id="newTaskEffort" style="display:none">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high" selected>high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+            <div class="reply-model-wrap" id="newTaskEffortWrap">
+              <button type="button" class="reply-model-btn form-size" id="newTaskEffortBtn" title="选择推理 effort 档位" style="width:100%">
+                <span class="reply-model-btn-icon">◐</span>
+                <span class="reply-model-btn-label">high</span>
+                <span class="reply-model-btn-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="reply-model-menu" id="newTaskEffortMenu" role="listbox"></div>
+            </div>
+          </label>
+        </div>
         <label class="field">
           <span class="f-label">工作目录（可选 · claude 在此目录下运行；留空用默认根目录）</span>
           <div class="cwd-row">
@@ -859,14 +917,35 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <button type="button" class="btn" id="newTaskCwdBrowse" title="打开系统目录选择（桌面端）；web 模式请手填绝对路径">浏览…</button>
           </div>
         </label>
+        <!-- req5：工作目录是 git 项目时才显示（app.js 探测 /api/git/detect 后切显隐）——worktree 开关 + 签出基分支 -->
+        <div class="field" id="newTaskWorktreeRow" style="display:none;gap:8px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);cursor:pointer;user-select:none">
+            <input type="checkbox" id="newTaskWorktree" checked style="accent-color:var(--primary)">
+            使用独立 git worktree 运行（隔离主库；分支 <code style="font-family:var(--mono);font-size:11px">worktree-&lt;slug&gt;</code>）
+          </label>
+          <div id="newTaskBranchRow" style="display:flex;align-items:center;gap:8px">
+            <span class="f-label" style="flex:none;margin:0">签出基分支</span>
+            <select id="newTaskBaseBranch" class="field-input" style="flex:1"></select>
+          </div>
+          <span style="font-size:11px;color:var(--dim)">worktree 基于所选分支的最新代码新建；不勾选则直接在工作目录本身运行</span>
+        </div>
+        <label class="field">
+          <span class="f-label">定时执行（可选 · 到点自动把任务从计划桶转为执行）</span>
+          <input type="datetime-local" id="newTaskScheduledAt" class="field-input" style="cursor:text">
+          <span style="font-size:11px;color:var(--dim)">留空 = 不定时，在看板手动「确认执行」；设置后到点由调度器自动起会话执行</span>
+        </label>
+        <label class="field">
+          <span style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);cursor:pointer;user-select:none">
+            <input type="checkbox" id="newTaskDynamicWorkflow" style="accent-color:var(--primary)">
+            动态工作流（Claude Code 多智能体编排能力 · Workflows）
+          </span>
+          <span style="font-size:11px;color:var(--dim)">开启后允许 claude 在执行时按需展开多智能体工作流（更强但更耗 token）；默认关闭</span>
+        </label>
       </div>
       <div id="newTaskErr" class="form-err"></div>
       <div id="newTaskWarn" class="form-warn"></div>
       <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex:none">
-        <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);cursor:pointer;user-select:none" title="默认勾选：任务存为 plan 态，在看板确认排队后才执行">
-          <input type="checkbox" id="newTaskPlanFirst" style="accent-color:var(--primary)">先计划（确认后再执行）
-        </label>
-        <span style="font-size:11px;color:var(--dim);flex:1">默认先计划；取消勾选则提交后立即 spawn 独立 worker</span>
+        <span style="font-size:11px;color:var(--dim);flex:1">新建任务默认进入计划桶；在看板「确认执行」或到点定时后才执行</span>
         <button class="btn" onclick="closeNewTaskModal()">取消</button>
         <button class="btn btn-primary" id="newTaskSubmit">提交</button>
       </div>
