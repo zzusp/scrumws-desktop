@@ -2000,7 +2000,7 @@ $('newTaskBtn').addEventListener('click', () => {
   $('newTaskCwd').value = '';              // 工作目录（可选）
   loadNewTaskCwds();                       // 填充「已有工作目录」下拉（现有任务 cwd + 近期 CLI session cwd）
   newTaskMesCtl?.setModel('claude-opus-4-8');
-  newTaskMesCtl?.setEffort('high');        // req3：默认 effort=high
+  newTaskMesCtl?.setEffort('xhigh');       // 默认 effort=xhigh（对齐 CC 默认档）
   resetNewTaskExtras();                    // req4/5/6：定时 / worktree / 动态工作流 归默认
   refreshWorktreeUi('');                   // 无 cwd → 隐藏 worktree 区
   $('newTaskErr').style.display = 'none';
@@ -2033,7 +2033,7 @@ async function openEditTask(taskKey) {
   $('newTaskCwd').value = r.cwd || '';
   loadNewTaskCwds();
   newTaskMesCtl?.setModel(r.model || 'claude-opus-4-8');
-  newTaskMesCtl?.setEffort(r.effort || 'high');                           // req3
+  newTaskMesCtl?.setEffort(r.effort || 'xhigh');                          // 默认 xhigh
   $('newTaskScheduledAt').value = toDatetimeLocal(r.scheduledAt || '');   // req4
   $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
   // req5：git 探测后回填 worktree 勾选 + 签出分支（默认开启沿用旧值；旧 plan 无该字段则默认开）
@@ -2365,11 +2365,13 @@ function normalizeModelValue(raw) {
     || BASE_MODELS.find((m) => strip(m.value) === strip(raw) || raw.startsWith(strip(m.value)));
   return hit ? hit.value : raw;
 }
+// 档位 = claude CLI --effort 真实枚举（值全部合法）；显示名对齐 CC 菜单（xhigh→xHigh），默认 xhigh
+// 注：ultracode 不是 --effort 值（是「xhigh + 全模型」的会话模式，靠关键词/设置开启），故不入此列表
 const EFFORT_OPTIONS = [
   { value: 'low',    name: 'Low' },
   { value: 'medium', name: 'Medium' },
-  { value: 'high',   name: 'High', isDefault: true },
-  { value: 'xhigh',  name: 'Extra' },
+  { value: 'high',   name: 'High' },
+  { value: 'xhigh',  name: 'xHigh', isDefault: true },
   { value: 'max',    name: 'Max', info: '最深推理 · 最慢、最耗额度' },
 ];
 const EFFORT_HEAD = '更高档位推理更充分，但更慢、也更快消耗额度。';
@@ -2529,7 +2531,7 @@ function initReplyModelSelector() {
   // 装配 composer 时按任务当前实际 model/effort 播种（不再显示「继承」占位）——发送时带的实际值 == 不带时后端继承的同一值，语义等价
   window.__seedReplyModel = (model, effort) => {
     replyMesCtl?.setModel(normalizeModelValue(model) || 'claude-opus-4-8');
-    replyMesCtl?.setEffort(effort || 'high');
+    replyMesCtl?.setEffort(effort || 'xhigh');
   };
 }
 
