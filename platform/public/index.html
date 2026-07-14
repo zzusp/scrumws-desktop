@@ -217,11 +217,17 @@ a.crumb-app:hover,a.crumb-mid:hover{color:var(--ink2)}
 .taskcard:hover{transform:translateY(-1px);background:color-mix(in oklab, var(--muted) 40%, var(--card));
   box-shadow:var(--ring1-hover),0 4px 10px -2px rgba(0,0,0,.08)}
 .card-foot{display:flex;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--hair)}
-.card-key{font-family:var(--mono);font-size:10.5px;color:var(--dim);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cardbtns{display:flex;gap:2px;flex:none;opacity:.55;transition:opacity .15s}
-.taskcard:hover .cardbtns{opacity:1}
-.cardbtns .btn{background:transparent;border-color:transparent;color:var(--dim);font-size:10px;padding:2px 7px}
-.cardbtns .btn:hover{background:var(--accent);border-color:transparent;color:var(--accent-foreground)}
+/* 状态变更更新点：标题前小圆点 */
+.update-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--brand,#3b82f6);margin-right:6px;vertical-align:middle;flex:none}
+/* 卡片「···」操作按钮 */
+.card-menu-btn{flex:none;background:transparent;border-color:transparent;color:var(--dim);font-size:14px;line-height:1;letter-spacing:1px;padding:0 8px;height:22px;opacity:.55;transition:opacity .15s}
+.taskcard:hover .card-menu-btn{opacity:1}
+.card-menu-btn:hover{background:var(--accent);border-color:transparent;color:var(--accent-foreground)}
+/* 「···」浮层操作菜单（单例，随点定位） */
+.card-menu{position:fixed;z-index:9000;display:none;flex-direction:column;gap:2px;padding:5px;min-width:120px;
+  background:var(--popover,var(--card));border:1px solid var(--hair);border-radius:var(--r-lg);box-shadow:0 8px 24px -6px rgba(0,0,0,.28)}
+.card-menu .btn{justify-content:flex-start;background:transparent;border-color:transparent;color:var(--ink2);font-size:12px;padding:5px 9px}
+.card-menu .btn:hover{background:var(--accent);border-color:transparent;color:var(--accent-foreground)}
 
 /* ---------- 表单 ---------- */
 .field{display:flex;flex-direction:column;gap:4px}
@@ -879,6 +885,9 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
       </div>
     </div>
   </div>
+
+  <!-- 卡片「···」操作浮层菜单（单例，app.js 的 openCardMenu 填充并定位） -->
+  <div id="cardMenu" class="card-menu"></div>
 
 <script>
 // 壳层交互（G5 新增，独立于 app.js）：侧边栏折叠持久化 + 顶栏视图名 / 滚动复位随 hash 同步

@@ -71,6 +71,24 @@ export function cancelTask({ taskKey }) {
   return { ok: true, taskKey, killedPid, resolvedAt: nowStr };
 }
 
+// 移除 plan 态任务（从未 spawn 的计划草稿）：直接删除任务包目录。
+// 仅限 plan——已排队/运行/收敛的任务有真实执行记录，不走删除（用中断/归档）。
+export function deleteTask({ taskKey }) {
+  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
+  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话请用「从看板移除」' };
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
+  if (state.state !== 'plan') {
+    return { ok: false, error: `state=${state.state || '?'} 非 plan，不能移除（用中断/归档）` };
+  }
+  try { fs.rmSync(taskDir, { recursive: true, force: true }); }
+  catch (e) { return { ok: false, error: `删除任务目录失败: ${e.message}` }; }
+  return { ok: true, taskKey, safeKey, removed: taskDir };
+}
+
 // 人工确认完成（awaiting-human → done）：人工复查后判定任务其实已完成，落成成功终态。
 // 与 worker 自动 done 区分：outcomeDetail.resolvedBy='user'（卡片「人工完成」标据此显示）。
 // 仅对 awaiting-human 分身任务；CLI 无可写 state.json / 无 done 态、processing/queued/plan/done 语义不符，一律拒绝。
