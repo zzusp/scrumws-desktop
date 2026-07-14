@@ -217,8 +217,21 @@ a.crumb-app:hover,a.crumb-mid:hover{color:var(--ink2)}
 .taskcard:hover{transform:translateY(-1px);background:color-mix(in oklab, var(--muted) 40%, var(--card));
   box-shadow:var(--ring1-hover),0 4px 10px -2px rgba(0,0,0,.08)}
 .card-foot{display:flex;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--hair)}
-/* 状态变更更新点：标题前小圆点 */
-.update-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--brand,#3b82f6);margin-right:6px;vertical-align:middle;flex:none}
+/* 卡片副信息（统一结构）：主状态行 + 副行（工作目录 / AI 意图 / 失败原因） */
+.card-status{font-size:11px;color:var(--mut);font-family:var(--mono);margin-top:2px}
+.card-status.warn{color:var(--coral)}
+.card-sub{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 状态变更标记（醒目化）：卡片左侧高亮竖条 + 标题前脉冲点 */
+.taskcard.has-update{box-shadow:inset 3px 0 0 0 var(--amber),var(--card-shadow)}
+.taskcard.has-update:hover{box-shadow:inset 3px 0 0 0 var(--amber),var(--ring1-hover),0 4px 10px -2px rgba(0,0,0,.08)}
+.update-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--amber);margin-right:7px;vertical-align:middle;flex:none;
+  animation:updatePulse 1.8s ease-out infinite}
+@keyframes updatePulse{
+  0%{box-shadow:0 0 0 0 color-mix(in oklab,var(--amber) 55%,transparent)}
+  70%{box-shadow:0 0 0 6px color-mix(in oklab,var(--amber) 0%,transparent)}
+  100%{box-shadow:0 0 0 0 color-mix(in oklab,var(--amber) 0%,transparent)}
+}
+@media (prefers-reduced-motion:reduce){.update-dot{animation:none}}
 /* 卡片「···」操作按钮 */
 .card-menu-btn{flex:none;background:transparent;border-color:transparent;color:var(--dim);font-size:14px;line-height:1;letter-spacing:1px;padding:0 8px;height:22px;opacity:.55;transition:opacity .15s}
 .taskcard:hover .card-menu-btn{opacity:1}
