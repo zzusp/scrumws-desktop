@@ -1775,8 +1775,9 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
 }
 
 // 非真人消息（<local-command-*> / <system-reminder> / <caveat> / jsonl.isMeta / CC·runner 注入的工具重试）
-// → 作为「Claude Code 端运行输出」左对齐细line 展示：跟在执行流里、灰淡一档，读作运行时提示/错误，
+// → 作为「Claude Code 端运行输出」左对齐细line 展示：跟在执行流里，读作运行时提示/错误，
 // 既不是用户气泡（右侧只放真人消息），也不再用之前那条居中的 system 分隔线。
+// 这类消息（工具调用失败重试等）需要用户注意，故与错误同色——红：点用 cc-dot.err(--coral)、正文用 --coralT。
 // 命令 XML 由 renderCcFlow 前置分派处理（args body 变正常 user；无 args 命令直接跳过）。
 function renderMetaTurn(m) {
   const text = (m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
@@ -1787,8 +1788,8 @@ function renderMetaTurn(m) {
   if (!short) return '';
   return `
     <div class="cc-line cc-sysnote" title="${escapeAttr(fmtTime(m.at))}">
-      <span class="cc-dot" style="color:var(--dim)">⏺</span>
-      <div style="flex:1;min-width:0;font-size:12px;color:var(--mut);line-height:1.6;white-space:pre-wrap;word-break:break-word">${escapeHtml(short)}</div>
+      <span class="cc-dot err">⏺</span>
+      <div style="flex:1;min-width:0;font-size:12px;color:var(--coralT);line-height:1.6;white-space:pre-wrap;word-break:break-word">${escapeHtml(short)}</div>
     </div>`;
 }
 
