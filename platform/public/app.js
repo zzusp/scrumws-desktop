@@ -1715,12 +1715,13 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
   units.forEach((u) => {
     if (u.kind === 'u') {
       // 分派（学 claude-code-session/server/lib/system-tags.ts 与 web/MessageBubble.tsx）：
-      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE 命中 → 灰细横线（<local-command-*> + <system-reminder> + CC 工具重试合成消息）
+      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE / INJECTED_RETRY_RE 命中 → 归 Claude Code 运行输出（左侧细line）：
+      //      <local-command-*> + <system-reminder> + CC/runner 注入的工具重试消息（都非真人发送）
       //   2. CMD_HEAD_RE 命中 → 提取 <command-args> body 当用户真实 prompt；无 args → 整条跳过（/clear /model）
-      //   3. 兜底 isMeta 字段 → 灰细横线
-      //   4. 否则 → 正常 user 气泡
+      //   3. 兜底 isMeta 字段 → 同上归运行输出
+      //   4. 否则 → 正常 user 气泡（右侧只放真人真实发送的消息）
       const text = (u.m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
-      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text)) {
+      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text) || INJECTED_RETRY_RE.test(text)) {
         blocks.push({ t: 'meta', m: u.m });
       } else if (CMD_HEAD_RE.test(text)) {
         const argsBody = pickCommandArgs(text);
@@ -1773,28 +1774,26 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
   return out.join('');
 }
 
-// meta user 消息 → 灰细横线居中：<local-command-*> / <system-reminder> / <caveat> / jsonl.isMeta 全走这条
-// 命令 XML 由 renderCcFlow 前置分派处理（args body 变正常 user；无 args 命令直接跳过）
+// 非真人消息（<local-command-*> / <system-reminder> / <caveat> / jsonl.isMeta / CC·runner 注入的工具重试）
+// → 作为「Claude Code 端运行输出」左对齐细line 展示：跟在执行流里、灰淡一档，读作运行时提示/错误，
+// 既不是用户气泡（右侧只放真人消息），也不再用之前那条居中的 system 分隔线。
+// 命令 XML 由 renderCcFlow 前置分派处理（args body 变正常 user；无 args 命令直接跳过）。
 function renderMetaTurn(m) {
   const text = (m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
   // 剥 XML tag 只留内容：<local-command-stdout>Enabled plan mode</local-command-stdout> → Enabled plan mode
   const stripped = text.replace(/<\/?(?:local-command-[a-z-]+|system-reminder|caveat)>/gi, '').trim();
   const trimmed = (stripped || text).replace(/\s+/g, ' ').trim();
-  const short = trimmed.length > 200 ? trimmed.slice(0, 200) + '…' : trimmed;
+  const short = trimmed.length > 300 ? trimmed.slice(0, 300) + '…' : trimmed;
   if (!short) return '';
   return `
-    <div style="display:flex;align-items:center;gap:12px;margin:14px 0" title="${escapeAttr(fmtTime(m.at))}">
-      <span style="flex:1;height:1px;background:var(--hair)"></span>
-      <div style="max-width:640px;text-align:center">
-        <div style="font-size:10.5px;color:var(--dim);font-weight:500;letter-spacing:.02em">system · ${fmtTime(m.at)}</div>
-        <div style="margin-top:3px;font-size:11.5px;color:var(--mut);line-height:1.55;white-space:pre-wrap;word-break:break-word">${escapeHtml(short)}</div>
-      </div>
-      <span style="flex:1;height:1px;background:var(--hair)"></span>
+    <div class="cc-line cc-sysnote" title="${escapeAttr(fmtTime(m.at))}">
+      <span class="cc-dot" style="color:var(--dim)">⏺</span>
+      <div style="flex:1;min-width:0;font-size:12px;color:var(--mut);line-height:1.6;white-space:pre-wrap;word-break:break-word">${escapeHtml(short)}</div>
     </div>`;
 }
 
 // 学 claude-code-session/server/lib/system-tags.ts：
-// SYSTEM_TAG_RE 匹配"纯 system 注入"消息 → 走 isMeta 灰细横线：
+// SYSTEM_TAG_RE 匹配"纯 system 注入"消息 → 归 Claude Code 运行输出（左侧细line，不是用户气泡）：
 //   - <local-command-*>（stdout / stderr / caveat）
 //   - <system-reminder>
 //   - <caveat>（legacy 命名）
@@ -1803,10 +1802,16 @@ function renderMetaTurn(m) {
 //   - /clear、/model 之类无 args 命令 → 跳过不显示（视觉噪声）
 const SYSTEM_TAG_RE = /^\s*<(local-command|system-reminder|caveat)/i;
 const CMD_HEAD_RE = /^\s*<command-(?:name|message|args)>/;
-// CC 在工具调用解析失败时自动注入的合成 user 消息（非真人输入，会自动重试）→ 也走 system 灰细横线。
-// 磁盘 jsonl 里这条带 isMeta:true（disk 路径已按 isMeta 归位）；但 Mode B live 的 stream-json 输出不带
-// isMeta envelope（见 mbToRounds 硬编 isMeta:false），live 详情只能按内容识别，否则被错渲成用户气泡。
+// 非真人发送、但以 role:user 混进 transcript 的「工具重试」注入消息 —— 都不是用户说的话，
+// 归 Claude Code 运行输出（renderMetaTurn 左侧细line），绝不能当用户气泡展示在右侧。
+//   1. CC_SYNTHETIC_RE：CC 自身在工具调用解析失败时注入的重试提示。
+//   2. INJECTED_RETRY_RE：本看板 runner 的「泄漏空转」自动重试（见 task-runner.js isLeakedToolTurn 里
+//      sendUserMessage 的原文）——模型把 tool_use 输出成了文本、没真执行，runner 补一条让它用结构化工具重发。
+// 磁盘 jsonl 里 CC 那条带 isMeta:true（disk 路径靠 isMeta 也能归位），但 runner 注入的这条 isMeta 缺失、
+// 且 Mode B live 的 stream-json 输出根本不带 isMeta envelope（见 mbToRounds 硬编 isMeta:false），
+// 两路都只能按内容识别，否则被错渲成用户气泡。
 const CC_SYNTHETIC_RE = /^\s*Your tool call was malformed and could not be parsed\. Please retry\.\s*$/;
+const INJECTED_RETRY_RE = /把工具调用输出成了文本[\s\S]*请用结构化工具重新发起这次调用/;
 function pickCommandArgs(text) {
   if (!CMD_HEAD_RE.test(text)) return null;
   const m = text.match(/<command-args>([\s\S]*?)<\/command-args>/);
