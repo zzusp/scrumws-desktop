@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { collectState } from './lib/collect.js';
-import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed } from './lib/logs.js';
+import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
@@ -159,7 +159,11 @@ function startSessionStream(req, res, id) {
     s.emitter.off('event', onEvent);
     try { res.end(); } catch { /* socket 已断 */ }
   };
-  try { res.write(`event: info\ndata: ${JSON.stringify(s.info())}\n\n`); } catch { /* 早断 */ }
+  // fresh 任务的 Session.gitBranch 为空（createSession 未传、live 流事件也不带）→ 连接时从该 session 的
+  // CC jsonl 补「最新分支」，与非 live 的 worker-log 同源，详情侧栏 git 两条路径显示一致（收养/resume 已带则保留）。
+  const info = s.info();
+  if (!info.gitBranch && info.claudeSessionId) info.gitBranch = latestGitBranchBySid(info.claudeSessionId);
+  try { res.write(`event: info\ndata: ${JSON.stringify(info)}\n\n`); } catch { /* 早断 */ }
   for (const ev of s.transcript) send(ev);      // 回放已 settled 消息
   try { res.write('event: synced\ndata: {}\n\n'); } catch { /* 早断 */ }
   s.emitter.on('event', onEvent);               // 订阅实时
