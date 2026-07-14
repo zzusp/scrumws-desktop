@@ -35,13 +35,15 @@ function tailLine(file, bytes = 8192) {
 }
 // lease alive：单份实现在 lease.js（pid 为主 + HardTTL，与 scripts/lib/runner-common.ps1 同语义）
 
-// 后台维度派生（runner/cli 统一语义）：主 agent 一轮收敛写 awaiting-human，但若会话进程仍活着
-// (mbSessionId 非空) 且该 CC session 还有后台 agent 在跑 → 整体仍是 processing——主进程只是让出
-// 等后台完成（CC 会自动注入 <task-notification> 唤醒续跑），任务未结束。
-// 仅对"疑似空闲的活会话"读一次 jsonl 探测：其他状态无需（processing 已在忙 / 终态无后台）；
-// 会话进程死则后台必随之结束（后台 agent 是该进程子进程），mbSessionId 短路避免用陈旧 pbg 误判。
-export function deriveBackgroundState(state, mbSessionId, sessionId) {
-  if (state !== 'awaiting-human' || !mbSessionId || !sessionId) {
+// 后台维度派生（runner/cli 统一语义）：主 agent 一轮收敛写 awaiting-human，但若会话进程仍活着且该
+// CC session 还有后台 subagent 在跑 → 整体仍是 processing——主进程只是让出等后台完成（CC 自动注入
+// <task-notification> 唤醒续跑），任务未结束。
+// sessionAlive 判据必须含 CC 注册表活进程，不能只认看板 Mode B：task-runner 的 claude -p --resume
+// 会话登记在 ~/.claude/sessions（att），看板重启后其 mbSessionId 丢失，只认 Mode B 会漏判成 awaiting。
+// 会话进程死则后台 subagent 必随之结束（是该进程子进程），sessionAlive 短路避免用陈旧的未配平 launched 误判。
+// 仅对"疑似空闲的活会话"读一次 jsonl 探测：其他状态无需（processing 已在忙 / 终态无后台）。
+export function deriveBackgroundState(state, sessionAlive, sessionId) {
+  if (state !== 'awaiting-human' || !sessionAlive || !sessionId) {
     return { backgroundAgentCount: 0, displayState: state };
   }
   const backgroundAgentCount = backgroundAgentCountBySid(sessionId);
@@ -49,7 +51,7 @@ export function deriveBackgroundState(state, mbSessionId, sessionId) {
 }
 
 // ---------- 采集单个任务包 ----------
-function collectOne(safeTaskKey, dir, now, isArchive = false) {
+function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = null) {
   const state = readJson(path.join(dir, 'state.json'));
   const task  = readJson(path.join(dir, 'task.json'));
   const meta  = readJson(path.join(dir, 'meta.json'));
@@ -98,8 +100,11 @@ function collectOne(safeTaskKey, dir, now, isArchive = false) {
 
   // 内存中活跃 Mode B 会话 id（有=会话进程活，idle-but-alive 也在）
   const mbSessionId = getTaskSessionId(taskKey);
+  // 会话活性：看板 Mode B 活会话 ∪ CC 注册表(~/.claude/sessions)里有活进程持有该 sessionId
+  // （task-runner 的 claude -p --resume 也登记在 att，看板重启后 mbSessionId 丢失仍据此判活）
+  const sessionAlive = !!mbSessionId || (meta?.sessionId && attachedSids ? attachedSids.has(meta.sessionId) : false);
   // 后台维度（统一：与 cli 任务同字段 backgroundAgentCount）
-  const { backgroundAgentCount, displayState } = deriveBackgroundState(effectiveState, mbSessionId, meta?.sessionId);
+  const { backgroundAgentCount, displayState } = deriveBackgroundState(effectiveState, sessionAlive, meta?.sessionId);
 
   return {
     taskKey,
@@ -154,13 +159,15 @@ function collectAll(now) {
   // cancelled 不再是独立 state（2026-07-10 并入 awaiting-human，outcome=cancelled 记录"谁停的"）；旧值落 other 仍可见
   // plan = 待用户确认的计划态（queued 之前；per-source 配置或 manual 勾选"先计划"进入）
   const buckets = { plan: [], processing: [], queued: [], done: [], 'awaiting-human': [], archived: [], other: [] };
+  // CC 注册表活进程的 sessionId 集合（读一次，供 collectOne 判会话活性——含 task-runner 的 claude -p --resume）
+  const attachedSids = new Set(readAttachedSessions().keys());
   const scan = (root, isArchive) => {
     let names = [];
     try { names = fs.readdirSync(root); } catch { return; }
     for (const name of names) {
       const dir = path.join(root, name);
       try { if (!fs.statSync(dir).isDirectory()) continue; } catch { continue; }
-      const task = collectOne(name, dir, now, isArchive);
+      const task = collectOne(name, dir, now, isArchive, attachedSids);
       if (!task) continue;
       // 「真正处理过」判据：只过滤阶段 2 迁移进来的历史（outcomeDetail.migratedFrom 有值 = migration by 标记）
       // 新建/运行中的任务（无论跑成功/中/失败）都要显示——processing/queued 阶段无 meta 也是"正在处理"

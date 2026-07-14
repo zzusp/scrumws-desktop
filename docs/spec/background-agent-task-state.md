@@ -1,69 +1,65 @@
-# 后台 agent（subagent）识别与任务状态统一
+# 后台 subagent 识别与任务状态统一
 
 ## 症状
 
-用户报告：任务 `manual:20260713163053-373` "并没有结束，只是把主进程空出来，等待后台 subagent 处理完成，这时应该还是 processing"。实测该任务盘上 `state=awaiting-human`（`~/.scrumws/runtime/runner-state/manual__20260713163053-373/state.json`），history 末段 `18:33 processing → 18:50 awaiting-human`——主 agent 一轮收敛即被判为"等人"，未识别"后台 agent 仍在跑"。
+用户报告 manual 任务"没结束、主进程让出等后台 subagent、应为 processing"。收集完整信息后厘清两层：
 
-## CC 后台 subagent 机制（学习自 claude-code-leak + 真实 jsonl 反证）
+1. **具体任务(373)当前其实没有后台在跑**：其 session(`737089c7`）全程 `Agent`/`Task` 工具调用=0、进程 idle(CPU 不动)、jsonl 静止 → `awaiting-human` 正确，"主进程退出后台在跑"是表象（27900 是 idle 的 `claude -p --resume` Mode B 进程）。
+2. **但通用能力缺失且第一版方案用错了信号** —— 见下。
 
-### 事件模型
-- **主 agent 让出**：一轮结束 emit `system/turn_duration`（stream-json 里对应 `result`）。
-- **后台计数字段**：`turn_duration.pendingBackgroundAgentCount`（简称 pbg）= 该轮结束时仍在跑的后台 agent 数。
-- **自动续跑**：后台 agent 完成 → CC 自动注入 `queue-operation` + `<task-notification>` user 消息唤醒主 agent → 新一轮 `turn_duration`，pbg 递减。全自动，无需真人发消息。
+## 关键发现（真实数据 + claude-code-leak）
 
-证据（真实 jsonl `D--baibu-agent/04689bb1-3ae6-461d-8d74-3a0d74aeb0c8.jsonl`）：
-```
-行38 system/turn_duration pbg=3   ← 主 agent 让出，3 个后台 Explore/Plan agent 在跑
-行39-41 queue-operation + user <task-notification>  ← 自动注入，唤醒
-行45 system/turn_duration pbg=2   ← 一个后台完成
-行52 system/turn_duration pbg=1
-行72 system/turn_duration pbg=1
-```
+### CC 后台任务/subagent 的信号（headless 与交互不同）
 
-### 字段挂载与陷阱（全局扫 484 jsonl / 14 万行）
-- `pendingBackgroundAgentCount` **只挂在 `type:system, subtype:turn_duration` 事件上**（全局 26 次全是 system）。
-- 含 pbg 的 8 个文件，其**最后一条 JSON 事件的 pbg 全为 ABSENT**——末尾恒为 `last-prompt/ai-title/mode/permission-mode` 元事件。
-- ⇒ 取 pbg 必须找**最后一条 turn_duration**，不能取末行事件。
-- `isSidechain:true` 全局 **0 命中**——subagent transcript 落独立 sidechain 文件，不进主 session jsonl，故**不能**用它识别 subagent，只能用 pbg。
-- stream-json 的 `result` 事件 schema（leak `coreSchemas.ts:1407` SDKResultSuccessSchema）**不含** pbg——task-runner 消费的事件流拿不到，只能反读 jsonl。
+| 后台类型 | 启动信号 | 完成信号 | 可靠性 |
+|---|---|---|---|
+| **Agent subagent** | 后台 Agent 的 tool_result 含 `"Async agent launched successfully"` + agentId | 注入的 **user** 消息 `<task-notification>` 带匹配的 `<tool-use-id>` + `<status>completed</status>` | 高：launched−notified 配平 |
+| Bash run_in_background | tool_result `"Command running in background with ID: <id>"` | 无自动通知，靠 BashOutput 轮询 `<retrieval_status>`（success≠命令结束） | 低，**不纳入**（纳入会因永不减而永久误报） |
 
-## 根因（本项目现状）
+证据：`1076925d`（sdk-cli）启动 3 个 subagent、2 个 task-notification，`JYagVyK3` 未完成=在跑 1 个，与实际吻合；`toolu id === <tool-use-id>` 精确匹配。
 
-1. **死代码 bug**：`collect-cli.js:263` `const pendingBg = Number(last?.pendingBackgroundAgentCount) || 0` —— `last` 是末尾元事件，pbg 永远 0，`bg×N` 徽章从不显示。应取 `lastTurn`（已在 `extractTailInfo` 里解析）。
-2. **仅 cli 任务**：pbg 只在 `collectOneCli` 读取写入 `cli.pendingBackgroundAgentCount`；runner-state 任务（manual/file/issue/chat）`collectOne` 完全不读——违背"不同来源都是任务，字段统一"（恰是本 manual 任务的主题）。
-3. **不参与 state**：pbg>0 时，卡片仍按主 agent 状态落 `awaiting-human` 桶。
+### 第一版 pbg 方案为何失效（已推翻）
 
-## 方案（在采集/展示层统一叠加"后台维度"，不改 task-runner/checker）
+- `pendingBackgroundAgentCount` 只挂在 `system/turn_duration` 事件上。
+- `turn_duration` **只有交互式会话(`entrypoint=cli`)写；headless `claude -p`(`entrypoint=sdk-cli`)不写**（实测 262 个 sdk-cli 会话该事件全为 0）。
+- 所有 manual/file/issue/chat 任务都走 task-runner 的 headless Mode B(sdk-cli) → pbg 恒 0，方案对它们完全失效。
+- 另：活性判据只认看板 Mode B(`mbSessionId`)也不够——task-runner 的 `claude -p --resume` 会话登记在 CC 注册表 `~/.claude/sessions`，看板重启后 mbSessionId 丢失。
 
-选择在 collect 层叠加而非改 task-runner 的理由：
-- pbg 是 jsonl 派生信号，collect 层已在读 jsonl；stream-json 流不带 pbg。
-- `runner-checker` 跳过 `awaiting-human`（line 31），叠加只影响展示、`state.json` 语义不变，不会被误收孤儿。
-- 一处逻辑对两类任务（runner / cli）同时生效，符合"统一"。
+## 方案（在采集/展示层统一叠加"后台 subagent 维度"）
 
-### 数据层
-1. 新增共享函数 `readBackgroundAgentCount(jsonlPath)`（collect-cli.js，复用现有 `readLinesSplit`/`extractTailInfo`）：反读 jsonl，返回最后一条 `turn_duration` 的 `pendingBackgroundAgentCount`（无则 0）。
-2. `collectOneCli`：`pendingBg` 改从 `lastTurn?.pendingBackgroundAgentCount` 读（修 bug）。
-3. `collectOne`（runner-state）：经 `meta.sessionId` + `task.cwd` 直接拼 jsonl 路径（`~/.claude/projects/<enc-cwd>/<sid>.jsonl`，fallback `locateJsonlBySid`）读 pbg。**仅当** `state==awaiting-human && mbSessionId 活` 时才读（性能：只有"疑似空闲但可能有后台"的任务读一次 jsonl tail）。
+### 数据层（`collect-cli.js`）
+`countRunningSubagents(jsonlPath)`：读会话 jsonl，统计当前在跑的后台 subagent 数，对 headless(sdk-cli)+交互(cli) 统一：
+- 记录 assistant 真正发起的 `Agent`/`Task` tool_use 的 id（`agentUseIds`）——用于排除本会话在 tool_result 里恰好读到 `"Async agent launched"` 字符串（如读别的 jsonl / 调试打印）的误配。
+- 启动：`tool_result`（tool_use_id ∈ agentUseIds）含 `"Async agent launched successfully"` → `launched`。
+- 完成：CC 注入的独立 **user** 消息（`content` 为纯 `<task-notification>` 字符串）的 `<tool-use-id>` → `done`（排除 assistant 复述 / tool_result 里读到的通知文本）。
+- 在跑 = `launched − done`（去重集合）。
+- **不含** Bash run_in_background（完成信号不可靠）。
 
-### 状态判定（统一字段）
-- 卡片新增统一字段 `backgroundAgentCount: number`（runner + cli 都有）。
-- 覆盖规则：**会话进程活 + 主 agent 已收敛(awaiting-human) + backgroundAgentCount>0 → state 覆盖为 processing**。
-  - runner 活性：`mbSessionId` 非空（Mode B idle-but-alive）。
-  - cli 活性：`isCliSessionActive`（board/att/replyRunner）。
-- pbg 归零（后台全完成）→ 自然回落 awaiting-human。
+### 状态判定（`collect.js` `deriveBackgroundState`）
+- 卡片统一字段 `backgroundAgentCount`（runner + cli）。
+- 覆盖规则：`state==awaiting-human && sessionAlive && backgroundAgentCount>0 → processing`。
+- `sessionAlive = mbSessionId(看板 Mode B 活会话) ∪ attachedSids(CC 注册表 ~/.claude/sessions 活进程，含 task-runner 的 claude -p --resume)`。
+- 会话进程死 → 短路（后台 subagent 是该进程子进程，进程死则必随之结束；避免用陈旧的未配平 launched 误判）。
+- `collectOne` 只对"疑似空闲的活会话"读一次 jsonl。
 
-### 渲染层
-- 卡片：`bg×N` 徽章数据源从 `t.cli.pendingBackgroundAgentCount` 改为统一 `t.backgroundAgentCount`，所有来源任务可显。
-- 详情"任务信息"：落地 `app.js:1189` 预留的"后台 agent"字段，用统一字段展示。
-- processing 卡片：后台运行态给一句可读文案（"后台 N 个 agent 运行中"）。
+### 渲染层（`app.js`）
+- 卡片琥珀「后台×N」徽章（runner/cli 同源 `t.backgroundAgentCount`），cli 分支 + processing 分支。
+- 详情「后台 agent: N 个运行中（主进程已让出，等后台完成）」。
 
 ## 改动清单
-- `platform/lib/collect-cli.js`：新增 `readBackgroundAgentCount`；`collectOneCli` 修 pbg 源 + 输出统一 `backgroundAgentCount`。
-- `platform/lib/collect.js`：`collectOne` 读 runner 任务 pbg + 统一字段 + state 覆盖。
-- `platform/public/app.js`：徽章/详情改用统一字段 + processing 后台文案。
-- （不改）`task-runner.js` / `runner-checker.js`：语义不变。
+- `collect-cli.js`：`countRunningSubagents`（替换旧 `readBackgroundAgentCount` 的 pbg 逻辑）+ `backgroundAgentCountBySid` + `collectOneCli` 用它。
+- `collect.js`：`deriveBackgroundState`（签名 `mbSessionId`→`sessionAlive`）+ `collectOne`/`collectAll` 计算并传 `attachedSids`。
+- `app.js`：徽章 / 详情字段（同上版，未变）。
+- 不改 `task-runner.js` / `runner-checker.js`。
 
-## 验证计划
-1. 单元：直接对真实 jsonl（04689bb1，含 pbg 序列）调 `readBackgroundAgentCount`，断言取到最后 turn_duration 的 pbg 值。
-2. 集成：构造一个 `state=awaiting-human` + 活会话 + jsonl 末 turn_duration pbg>0 的场景，调 `collectState`，断言该卡片进 processing 桶且带 `backgroundAgentCount`。
-3. 前端：起服务（空闲端口），看卡片 `bg×N` 徽章 + 详情后台字段渲染。
+## 验证（真实数据，全 PASS）
+- `countRunningSubagents`：`1076925d`→1（未完成 subagent JYagVyK3）、`737089c7`(373)→0（从无 Agent 调用）。
+- 误报修复：`559e848e`（本会话读过别的 jsonl）2→0（agentUseIds 匹配排除字符串污染）。
+- 全库反误报：485 个 jsonl 仅 4 个 >0，均为真调 Agent 且中断的会话（抽查 c6c3bdfd：4 启动 0 完成、末事件 last-prompt=中断）；死会话由 sessionAlive 守护兜底不误报。
+- `deriveBackgroundState` 6 态：会话活+在跑→processing(bg=1)、373 真无后台→awaiting、会话死短路→awaiting、非 awaiting 不探测。
+- 全链路 collectState 19 卡片字段统一；前端徽章渲染。
+
+## 已知局限
+- 373 当前无后台在跑 → 仍 awaiting-human（正确）；能力在"headless 任务真启动后台 subagent 且会话活"时生效。
+- Bash run_in_background 不纳入（完成信号不可靠）。
+- 完整"活会话 + 后台在跑 → processing"的视觉端到端需真实场景触发；已用真函数 + 真实 sid 验证逻辑。

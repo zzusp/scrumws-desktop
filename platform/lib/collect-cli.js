@@ -170,22 +170,59 @@ function extractTailInfo(tailLines) {
   return { last, lastTurn, lastAssistant, lastUser, lastMode, lastEnv };
 }
 
-// 反读 jsonl 的后台 agent 计数（subagent/background）。pendingBackgroundAgentCount 只挂在
-// system/turn_duration 事件上，且其后 CC 恒追加 last-prompt/ai-title/mode 元事件——取末行事件
-// 永远拿不到，必须取最后一条 turn_duration。返回值 >0 = 主 agent 让出后仍有后台 agent 在跑。
-export function readBackgroundAgentCount(jsonlPath) {
-  try {
-    const { tail } = readLinesSplit(jsonlPath);
-    const { lastTurn } = extractTailInfo(tail);
-    return Number(lastTurn?.pendingBackgroundAgentCount) || 0;
-  } catch { return 0; }
+// 统计会话 jsonl 里"当前在跑的后台 subagent"数——对 headless(entrypoint=sdk-cli，task-runner 的
+// claude -p) 与交互(entrypoint=cli) 会话统一。
+// 为什么不用 pendingBackgroundAgentCount：它只挂在 system/turn_duration 事件上，而 turn_duration
+// 仅交互会话写、headless -p 根本不写（实测 262 个 sdk-cli 会话该事件全为 0）——对 manual/file 等
+// 走 task-runner 的任务恒 0，不通用。
+// 通用信号（都在 assistant/user 事件内容里，两种会话都有）：
+//   启动：后台 Agent 的 tool_result 含 "Async agent launched successfully"，记其 tool_use_id
+//   完成：注入的 <task-notification> 携带 <tool-use-id>，与启动的 tool_use_id 精确匹配
+//   当前在跑 = 启动集合 − 完成集合（agent 每次停都 fire notification，用集合去重）
+// 不含 Bash run_in_background（"Command running in background"）：其无自动完成通知、BashOutput 检索
+//   success≠命令结束，无法可靠判在跑，纳入会因永不减而永久误报 processing。
+export function countRunningSubagents(jsonlPath) {
+  let content;
+  try { content = fs.readFileSync(jsonlPath, 'utf8'); } catch { return 0; }
+  const agentUseIds = new Set();   // assistant 真正发起的 Agent/Task 工具调用 id
+  const launched = new Set(), done = new Set();
+  for (const line of content.split(/\r?\n/)) {
+    // 粗筛：只 parse 可能相关的行（Agent 调用 / 后台启动回执 / 完成通知），大 jsonl 省 JSON.parse
+    if (!line.includes('"name":"Agent"') && !line.includes('"name":"Task"')
+      && !line.includes('Async agent launched successfully') && !line.includes('<task-notification>')) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    const c = o.message?.content;
+    // 完成：CC 注入的独立 user 消息，content 为纯 <task-notification> 字符串（排除 assistant 复述 /
+    // tool_result 里读到的 output 文件内容——那些不是完成信号，会把在跑的 agent 误配平掉）。
+    if (o.type === 'user' && typeof c === 'string' && c.includes('<task-notification>')) {
+      const m = c.match(/<tool-use-id>(toolu_[^<]+)<\/tool-use-id>/);
+      if (m) done.add(m[1]);
+      continue;
+    }
+    if (!Array.isArray(c)) continue;
+    for (const b of c) {
+      if (!b || typeof b !== 'object') continue;
+      // 记录真正的 Agent/Task 工具调用 id（assistant 发起）。后台启动回执须匹配它——排除本会话在
+      // tool_result 里恰好读到 "Async agent launched" 字符串（如读别的 jsonl / 调试打印）的误配。
+      if (b.type === 'tool_use' && (b.name === 'Agent' || b.name === 'Task') && b.id) agentUseIds.add(b.id);
+      // 启动：Agent 的 tool_result 回执（tool_use_id 命中真调用）含 "Async agent launched successfully"
+      else if (b.type === 'tool_result' && b.tool_use_id && agentUseIds.has(b.tool_use_id)) {
+        const t = typeof b.content === 'string' ? b.content
+          : Array.isArray(b.content) ? b.content.map((x) => x?.text || '').join(' ') : '';
+        if (t.includes('Async agent launched successfully')) launched.add(b.tool_use_id);
+      }
+    }
+  }
+  let n = 0;
+  for (const id of launched) if (!done.has(id)) n++;
+  return n;
 }
 
-// 经 sessionId 定位 jsonl 再读后台计数——runner-state 任务无 jsonlPath，靠 meta.sessionId 反查。
+// 经 sessionId 定位 jsonl 再统计——runner-state 任务无 jsonlPath，靠 meta.sessionId 反查。
 export function backgroundAgentCountBySid(sid) {
   if (!sid) return 0;
   const found = locateJsonlBySid(sid);
-  return found ? readBackgroundAgentCount(found.jsonlPath) : 0;
+  return found ? countRunningSubagents(found.jsonlPath) : 0;
 }
 
 // 单个 watchlist entry → 卡片对象；jsonl 缺失时返回 stub 卡片（提示"文件已消失"）
@@ -264,9 +301,9 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   // 看板持有的 Mode B 会话在跑=权威 processing 信号（sdk-cli 进程不写 att.status，只能靠它判在跑）。
   // running/starting=正在生成回复 → processing；idle=一轮收敛等下一条 → awaiting-human。
   const boardState = board ? (board.bySid.get(sid) || board.byTask.get(`cli:${sid.slice(0, 8)}`) || null) : null;
-  // 后台 agent 计数（统一维度，见 readBackgroundAgentCount）。会话进程活着才算数——后台 agent 是该
-  // 进程的子进程，进程死则后台必随之结束，pbg 便是陈旧历史值。
-  const backgroundAgentCount = Number(lastTurn?.pendingBackgroundAgentCount) || 0;
+  // 后台 subagent 计数（统一维度，见 countRunningSubagents）。会话进程活着才算数——后台 agent 是该
+  // 进程的子进程，进程死则后台必随之结束，历史 jsonl 里未配平的 launched 便是陈旧值。
+  const backgroundAgentCount = countRunningSubagents(jsonlPath);
   const sessionAlive = !!(boardState || att || replyRunnerPid);
   let state;
   if (sidEntry.archivedAt) state = 'archived';
