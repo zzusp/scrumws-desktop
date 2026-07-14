@@ -75,8 +75,7 @@ function acknowledgeTask(taskKey) {
   if (seenSections[taskKey] !== sec) {
     seenSections[taskKey] = sec;
     saveSeenSections();
-    const card = document.querySelector(`.taskcard[data-taskkey="${cssEscape(taskKey)}"]`);
-    if (card) { card.classList.remove('has-update'); card.querySelector('.update-dot')?.remove(); }
+    document.querySelector(`.taskcard[data-taskkey="${cssEscape(taskKey)}"] .update-dot`)?.remove();
   }
 }
 function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&'); }
@@ -306,9 +305,8 @@ function taskCardHtml(t, section) {
   // 标题：优先 customTitle > 第一条真人 cc: > taskKey
   const titleText = t.title || t.taskKey;
   const titleShort = titleText.length > 60 ? titleText.slice(0, 60) + '…' : titleText;
-  // 状态变更标记：本轮判定「有更新」的任务，卡片左侧高亮竖条 + 标题前脉冲点（点开卡片/编辑即清）
-  const hasUpdate = updatedTaskKeys.has(t.taskKey);
-  const updateDot = hasUpdate ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
+  // 状态变更标记：本轮判定「有更新」的任务，标题前显一个更新点（点开卡片/编辑即清）
+  const updateDot = updatedTaskKeys.has(t.taskKey) ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
 
   // 卡片点击：plan 态弹编辑弹窗（任务未开始，不进详情页）；其余进详情页
   const cardClick = isPlan
@@ -316,7 +314,7 @@ function taskCardHtml(t, section) {
     : `openTaskModal('${escapeAttr(t.taskKey)}')`;
 
   return `
-    <div class="taskcard${hasUpdate ? ' has-update' : ''}" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="${cardClick}">
+    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="${cardClick}">
       <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
       ${statusLine}
       ${descLine}
