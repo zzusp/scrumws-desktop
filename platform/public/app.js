@@ -1079,6 +1079,13 @@ function escapeAttr(s) { return escapeHtml(s); }
 // 用户消息展示前剥掉钉钉链的指令前缀（cc: 是 dws 群聊的触发词，任务视图里不出现这种用法）
 function stripDirectivePrefix(s) { return String(s || '').replace(/^\s*cc[:：]\s*/i, ''); }
 
+// 详情流 assistant 文本按 markdown 渲染，但绝不透传原始 HTML：模型偶发把工具调用输出成文本
+// （court<invoke name=…><parameter…>），marked v9 默认原样吐 HTML → 浏览器当标签吞内容 / 破版 / XSS。
+// 覆写 renderer.html 把裸 HTML 转义成字面量显示，markdown（粗体/表格/代码）不受影响。
+if (window.marked?.use) {
+  window.marked.use({ renderer: { html: (t) => escapeHtml(typeof t === 'string' ? t : (t?.text ?? '')) } });
+}
+
 // ---- Claude Code 账号级用量（详情页卡片）：套餐 + Pro/Max 的 5h/7d 滚动窗，账号全局非按任务 ----
 // 后端 /api/claude-usage 已 60s 缓存；前端再缓存一层，详情页 5s 轮询不必每 tick 拉。
 let claudeUsage = null;          // 最近一次 /api/claude-usage 结果
