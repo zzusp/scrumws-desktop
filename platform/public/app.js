@@ -1291,7 +1291,15 @@ function ensureModelCtxLimit(model, taskKey) {
   }).catch(() => { modelCtxCache[model] = { at: Date.now(), maxInputTokens: null, error: 'fetch-failed' }; })
     .finally(() => { delete modelCtxInflight[model]; });
 }
-function ctxTipRow(k, v) { return `<div class="ctx-tip-row"><span>${k}</span><span>${v}</span></div>`; }
+// 环形 tooltip 专用紧凑单位（306.4K / 1.0M）：一位小数、观感优先；精确值放行内 title 悬浮可见。
+// 不复用 compactTokens（其 M 为两位小数「1.00M」且被运行时聚合/CC 卡片共用，改它会波及别处）。
+function fmtCtxTok(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+function ctxTipRow(k, v, title) { return `<div class="ctx-tip-row"><span>${k}</span><span${title ? ` title="${escapeAttr(title)}"` : ''}>${v}</span></div>`; }
 // 环形 + hover 明细。半径 8 → 周长 2π·8≈50.27；进度弧用 dashoffset 收缩，≥80% 红 / ≥50% 琥珀 / 否则绿（对齐用量条）
 function contextRingHtml(ctxSize, model, limInfo) {
   const C = 50.27;
@@ -1308,13 +1316,14 @@ function contextRingHtml(ctxSize, model, limInfo) {
   const rows = [`<div class="ctx-tip-title">上下文用量</div>`];
   if (limit) {
     rows.push(`<div class="ctx-tip-big"><span style="color:${color}">${pctTxt}</span> <span class="ctx-tip-dim">已用</span></div>`);
-    rows.push(ctxTipRow('已用', ctxSize.toLocaleString('en-US')));
-    rows.push(ctxTipRow('上限', limit.toLocaleString('en-US')));
-    rows.push(ctxTipRow('剩余', Math.max(0, limit - ctxSize).toLocaleString('en-US')));
+    const remain = Math.max(0, limit - ctxSize);
+    rows.push(ctxTipRow('已用', fmtCtxTok(ctxSize), ctxSize.toLocaleString('en-US')));
+    rows.push(ctxTipRow('上限', fmtCtxTok(limit), limit.toLocaleString('en-US')));
+    rows.push(ctxTipRow('剩余', fmtCtxTok(remain), remain.toLocaleString('en-US')));
     rows.push(ctxTipRow('模型', escapeHtml(model)));
     rows.push(`<div class="ctx-tip-note">上限为该模型真实上下文窗口（Anthropic Models API）</div>`);
   } else {
-    rows.push(ctxTipRow('已用', ctxSize.toLocaleString('en-US')));
+    rows.push(ctxTipRow('已用', fmtCtxTok(ctxSize), ctxSize.toLocaleString('en-US')));
     rows.push(ctxTipRow('模型', escapeHtml(model)));
     const why = (limInfo && limInfo.error) ? `上限获取失败（${escapeHtml(limInfo.error)}）` : '上限获取中…';
     rows.push(`<div class="ctx-tip-note">${why}</div>`);
