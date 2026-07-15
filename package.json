@@ -12,7 +12,10 @@
     "start": "electron .",
     "start:web": "node platform/standalone.js",
     "task": "node platform/cli.js",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "electron": "^43.1.0",
@@ -24,7 +27,18 @@
     "asar": false,
     "files": ["electron/**", "platform/**", "package.json"],
     "directories": { "output": "dist" },
-    "win": { "target": ["nsis"] },
-    "nsis": { "oneClick": true, "perMachine": false }
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+    },
+    "nsis": { "oneClick": true, "perMachine": false },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+    }
   }
 }
