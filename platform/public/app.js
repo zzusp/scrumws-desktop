@@ -1124,6 +1124,37 @@ function router() {
 }
 window.addEventListener('hashchange', router);
 
+// 任务详情页左右分栏拖拽调宽：拖 #detailResizer 改 .detail-side 宽度，夹在 [280, 容器宽-360] 之间
+// （给左侧正文留至少 360px），记 localStorage 跨会话保留上次拖到的宽度。
+const DETAIL_SIDE_W_MIN = 280;
+(function initDetailResizer() {
+  const resizer = $('detailResizer'), side = $('taskSide'), container = $('view-task');
+  if (!resizer || !side || !container) return;
+  const saved = Number(localStorage.getItem('dash-detail-side-w'));
+  if (Number.isFinite(saved) && saved >= DETAIL_SIDE_W_MIN) side.style.width = saved + 'px';
+  let dragging = false;
+  resizer.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    resizer.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const rect = container.getBoundingClientRect();
+    const max = Math.max(DETAIL_SIDE_W_MIN, rect.width - 360);   // 左侧正文至少留 360px
+    const w = Math.min(max, Math.max(DETAIL_SIDE_W_MIN, rect.right - e.clientX));
+    side.style.width = w + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    localStorage.setItem('dash-detail-side-w', String(parseInt(side.style.width, 10) || 420));
+  });
+})();
+
 // 决定 composer 形态的字段集指纹：常驻轮询据此判定"要不要重装回复框"——只有这些变了才重装，
 // 否则每 tick 重装会清空用户正在输入的文本 + 抢焦点（CLI 空闲 / 可对话分支会 text.value='' + focus）。
 function replyBoxFp(t) {
@@ -1686,6 +1717,10 @@ function renderTaskSide(taskKey) {
   const rtCwds = [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
   const rtCwd = rtCwds[rtCwds.length - 1] || null;
   const cwdVal = rtCwd || t.cli?.cwd || t.cwd || '—';
+  // worktree 任务：实际运行目录（rtCwd/meta.worktreeDir）是隔离出来的 worktree 目录，与 task.cwd 配的工作目录不是一回事，
+  // 拆两行分别展示，避免「cwd」这一行看着像工作目录、实为 worktree 目录的误导。非 worktree 任务仍只有一个目录，维持单行。
+  const baseCwdVal = t.cwd || t.cli?.cwd || '—';
+  const worktreeDirVal = t.worktree ? (t.worktreeDir || rtCwd || '（首轮起会话时新建）') : null;
   const gitVal = lastOk?.gitBranch || t.cli?.gitBranch || '—';
   const permMode = (t.cli?.mode && t.cli.mode !== 'normal') ? t.cli.mode : null;   // CLI 非 normal 权限模式才显
   const bgAgent = Number(t.backgroundAgentCount) || 0;   // 统一后台维度：>0 = 主进程让出后仍有后台 agent 在跑
@@ -1702,10 +1737,12 @@ function renderTaskSide(taskKey) {
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0">${tags}</div>
       ${kv('taskKey', escapeHtml(t.taskKey))}
-      ${kv('cwd', escapeHtml(cwdVal))}
+      ${t.worktree
+        ? `${kv('工作目录', escapeHtml(baseCwdVal))}${kv('worktree 目录', escapeHtml(worktreeDirVal))}`
+        : kv('cwd', escapeHtml(cwdVal))}
       ${kv('git', escapeHtml(gitVal))}
       ${t.scheduledAt ? kv('定时执行', `<span style="color:var(--amber)">${escapeHtml(t.scheduledAt)}</span>`) : ''}
-      ${t.worktree ? kv('worktree', escapeHtml(t.worktreeBranch || (t.baseBranch ? `基于 ${t.baseBranch}` : '开启'))) : ''}
+      ${t.worktree ? kv('worktree 分支', escapeHtml(t.worktreeBranch || (t.baseBranch ? `基于 ${t.baseBranch}` : '开启'))) : ''}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
       ${bgAgent > 0 ? kv('后台 agent', `<span style="color:var(--amber)">${bgAgent} 个运行中（主进程已让出，等后台完成）</span>`) : ''}
       ${/* turns / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / jsonlVal，待定放置位置）*/''}
