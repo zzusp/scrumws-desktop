@@ -213,14 +213,17 @@ function collectAll(now) {
     else buckets.other.push(cli);
   }
 
-  // 排序：所有桶统一按「最近更新时间」倒序（新的靠前）
-  const byUpdatedDesc = (a, b) => taskUpdatedMs(b) - taskUpdatedMs(a);
-  buckets.plan.sort(byUpdatedDesc);
-  buckets.processing.sort(byUpdatedDesc);
-  buckets.queued.sort(byUpdatedDesc);
-  buckets.done.sort(byUpdatedDesc);
-  buckets['awaiting-human'].sort(byUpdatedDesc);
-  buckets.archived.sort(byUpdatedDesc);
+  // 统一「最近活动」字段（复用 taskUpdatedMs，与排序同源）：卡片显示 + 各桶按其倒序。
+  // runner 分身与 CLI 会话共用同一时间戳全集，卡片跨来源一致展示「最后一次活动时间」。
+  for (const b of Object.values(buckets)) {
+    for (const t of b) {
+      const ms = taskUpdatedMs(t);
+      t.lastActivityMs = ms || null;
+      t.lastActivityAt = ms ? fmt(new Date(ms)) : null;
+      t.lastActivityAgo = ms ? ago(fmt(new Date(ms)), now).text : null;
+    }
+    b.sort((a, x) => (x.lastActivityMs || 0) - (a.lastActivityMs || 0));
+  }
   return buckets;
 }
 

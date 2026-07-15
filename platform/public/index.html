@@ -223,6 +223,9 @@ a.crumb-app:hover,a.crumb-mid:hover{color:var(--ink2)}
 .taskcard:hover{transform:translateY(-1px);background:color-mix(in oklab, var(--muted) 40%, var(--card));
   box-shadow:var(--ring1-hover),0 4px 10px -2px rgba(0,0,0,.08)}
 .card-foot{display:flex;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--hair)}
+/* 卡片标题（req2：上半部分只留 标题 / 工作目录 / 最后活动时间）：两行截断 */
+.card-title{font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
 /* 卡片副信息（统一结构）：主状态行 + 副行（工作目录 / AI 意图 / 失败原因） */
 .card-status{font-size:11px;color:var(--mut);font-family:var(--mono);margin-top:2px}
 .card-status.warn{color:var(--coral)}
@@ -323,16 +326,28 @@ select.field-input{background:var(--card)}
 .dt-foot .dt-preset:hover{text-decoration:underline}
 .dt-foot .dt-done{margin-left:auto;font-size:11.5px;padding:5px 14px}
 
-/* ---------- 任务看板：筛选工具行（参考 landing-hero 顶部 toolbar 的 outline 按钮风）---------- */
+/* ---------- 任务看板：筛选工具行（「筛选」按钮 → 下拉面板：来源 / 工作目录 / 关键字 / sessionId）---------- */
 .board-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:12px}
-.board-toolbar .bt-label{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--mut);margin-right:2px}
-.filter-chip{padding:4px 10px;font-size:11.5px}
-.filter-chip.active{background:var(--accent);color:var(--accent-foreground);border-color:transparent;font-weight:600}
-/* 来源过滤：属性打在 #view-board 上、卡片带 data-source，app.js 周期重渲染不冲掉筛选态 */
-#view-board[data-filter="chat"] .taskcard:not([data-source="chat"]),
-#view-board[data-filter="issue"] .taskcard:not([data-source="issue"]),
-#view-board[data-filter="manual"] .taskcard:not([data-source="manual"]),
-#view-board[data-filter="cli"] .taskcard:not([data-source="cli"]){display:none}
+.filter-wrap{position:relative}
+.filter-btn{gap:7px;padding:6px 12px;font-size:12px}
+.filter-btn.on{background:var(--accent);border-color:transparent;color:var(--accent-foreground)}
+.filter-btn .filter-caret{color:var(--mut);font-size:9px;transition:transform .15s}
+.filter-btn.on .filter-caret{transform:rotate(180deg)}
+.filter-badge{min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--primary);color:var(--primary-foreground);
+  font-size:9.5px;font-weight:700;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.filter-panel{position:absolute;top:calc(100% + 6px);left:0;width:300px;background:var(--popover);box-shadow:var(--ring1),var(--shadow);
+  border-radius:var(--r-lg);padding:12px;z-index:1100;display:none;flex-direction:column;gap:12px;animation:rise .12s}
+.filter-panel.open{display:flex}
+.fp-group{display:flex;flex-direction:column;gap:6px}
+.fp-label{font-size:11px;color:var(--mut);font-weight:600}
+.fp-chips{display:flex;flex-wrap:wrap;gap:6px}
+.fp-chip{padding:4px 10px;font-size:11.5px;border:1px solid var(--input);border-radius:999px;background:var(--card);color:var(--ink2);
+  cursor:pointer;line-height:1.5;transition:background .12s,border-color .12s,color .12s}
+.fp-chip:hover{background:var(--accent);border-color:var(--hair2);color:var(--accent-foreground)}
+.fp-chip.active{background:var(--primary);color:var(--primary-foreground);border-color:transparent;font-weight:600}
+.filter-panel .field-input{padding:7px 10px;font-size:12px}
+.fp-foot{display:flex;justify-content:flex-end;border-top:1px solid var(--hair);padding-top:10px}
+.fp-foot .btn{font-size:11.5px;padding:5px 12px}
 
 /* ---------- 任务看板：状态列（multica board 范式，参考 landing-hero：状态色浅底列 + 实心状态胶囊 + 白底计数）---------- */
 .col-card{background:color-mix(in oklab, var(--muted) 40%, transparent);border-radius:var(--r-xl);padding:8px;overflow:hidden;display:flex;flex-direction:column}
@@ -693,19 +708,42 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <!-- 状态色语义：processing→warning · done→info · awaiting-human→destructive · queued→muted -->
         <div id="view-board" class="view" style="display:none">
           <div class="board-toolbar" id="boardToolbar">
-            <span class="bt-label"><svg class="ic" viewBox="0 0 24 24" style="width:13px;height:13px"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>来源</span>
-            <button class="btn filter-chip active" data-filter="">全部</button>
-            <button class="btn filter-chip" data-filter="chat">dws</button>
-            <button class="btn filter-chip" data-filter="issue">issue</button>
-            <button class="btn filter-chip" data-filter="manual">manual</button>
-            <button class="btn filter-chip" data-filter="cli">CLI</button>
+            <div class="filter-wrap">
+              <button class="btn filter-btn" id="boardFilterBtn" title="筛选任务（来源 / 工作目录 / 关键字 / sessionId）">
+                <svg class="ic" viewBox="0 0 24 24" style="width:13px;height:13px"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                <span>筛选</span>
+                <span class="tag filter-badge" id="filterBadge" style="display:none">0</span>
+                <span class="filter-caret">▾</span>
+              </button>
+              <div class="filter-panel" id="boardFilterPanel">
+                <div class="fp-group">
+                  <div class="fp-label">来源</div>
+                  <div class="fp-chips" id="fpSourceChips"></div>
+                </div>
+                <div class="fp-group">
+                  <div class="fp-label">工作目录</div>
+                  <select class="field-input" id="fpCwd"><option value="">全部</option></select>
+                </div>
+                <div class="fp-group">
+                  <div class="fp-label">关键字</div>
+                  <input class="field-input" id="fpKeyword" placeholder="标题 / 描述 / taskKey" autocomplete="off">
+                </div>
+                <div class="fp-group">
+                  <div class="fp-label">sessionId</div>
+                  <input class="field-input" id="fpSessionId" placeholder="会话 ID 片段" autocomplete="off">
+                </div>
+                <div class="fp-foot">
+                  <button class="btn" id="fpClear">清除筛选</button>
+                </div>
+              </div>
+            </div>
           </div>
           <div id="lifecycleGrid" style="display:grid;grid-auto-flow:column;grid-auto-columns:minmax(215px,1fr);gap:12px;overflow-x:auto">
             <section class="col-card" id="section-plan">
               <div class="col-head">
                 <span class="col-pill"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="3.5 3.5"/></svg>plan</span>
                 <span id="count-plan" class="col-count">0</span>
-                <span class="col-hint">待确认后排队</span>
+                <span class="col-hint">待定</span>
               </div>
               <div id="list-plan" class="col-body"></div>
             </section>
@@ -721,7 +759,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <div class="col-head">
                 <span class="col-pill fill-warning"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>processing</span>
                 <span id="count-processing" class="col-count">0</span>
-                <span class="col-hint">在跑</span>
+                <span class="col-hint">处理中</span>
               </div>
               <div id="list-processing" class="col-body"></div>
             </section>
@@ -1145,16 +1183,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
   }
   window.addEventListener('hashchange', syncTop);
   syncTop();
-  // 看板来源筛选（视图层：筛选态挂 #view-board 属性 + CSS 匹配卡片 data-source，独立于 app.js 数据刷新）
-  var tb = document.getElementById('boardToolbar');
-  if (tb) tb.addEventListener('click', function (e) {
-    var chip = e.target.closest('.filter-chip');
-    if (!chip) return;
-    tb.querySelectorAll('.filter-chip').forEach(function (c) { c.classList.toggle('active', c === chip); });
-    var vb = document.getElementById('view-board');
-    if (chip.dataset.filter) vb.dataset.filter = chip.dataset.filter;
-    else vb.removeAttribute('data-filter');
-  });
+  // 看板筛选逻辑（来源 / 工作目录 / 关键字 / sessionId）在 app.js：选项取自真实任务数据，视图层过滤各桶
 })();
 </script>
 <script src="./chart.umd.min.js"></script>

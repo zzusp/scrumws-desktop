@@ -1,0 +1,51 @@
+# 任务看板迭代：筛选收纳 + 卡片精简 + 文案
+
+## 需求（6 项）
+1. 任务来源筛选收进「筛选」按钮，点击弹面板选择；来源选项取自**真实任务的来源**（不写死）。
+2. 卡片上半部分只保留：任务标题 + 工作目录 + 最后一次活动时间；其余（状态/耗时/心跳/描述/意图/失败原因）全去掉。底部来源标签 + 操作保留。
+3. 加「工作目录」筛选，选项取自真实任务的 cwd。
+4. 支持「关键字」「sessionId」筛选。
+5. `manual` 来源标签首字母大写为 `Manual`。
+6. plan 桶提示「待确认后排队」→「待定」；processing 桶「在跑」→「处理中」。
+
+## 方案与改动
+
+### 后端 `platform/lib/collect.js`
+- 新增统一「最近活动」字段：在 `collectAll` 里复用既有 `taskUpdatedMs`（与各桶排序同源）给每个任务打
+  `lastActivityMs` / `lastActivityAt` / `lastActivityAgo`（runner 分身与 CLI 会话同字段，跨来源一致）。
+  排序改用已算好的 `lastActivityMs`，避免重复计算。
+
+### 前端 `platform/public/app.js`
+- `sourceLabel(source)`：来源展示名单一实现（chat→dws、cli→CLI、manual→**Manual**、issue→issue，其余原样）；
+  `sourceTagHtml` 兜底分支改用它（req5）。
+- `taskCardHtml` 重写：上半部分只渲染 标题 / 工作目录（`.card-sub`）/「最后活动 {lastActivityAgo}」（`.card-status`），
+  底部 `.card-foot` 保留来源标签 + 「···」操作（req2）。去掉按 section 分叉的状态行 / 描述行 / 意图 / 失败原因。
+- 看板筛选（视图层）：`boardFilter = {source,cwd,keyword,sessionId}` + `matchesBoardFilter(t)`；`renderLifecycle`
+  渲染前按谓词过滤各桶（计数随之显可见数）。`updateBoardFilterOptions(lifecycle)` 依真实数据重建来源 chip /
+  工作目录 option（选项集不变则不重建 DOM，不打断用户输入），并回落已失效的选择。`initBoardFilter` 绑定
+  按钮开合 / chip / select / 输入 / 清除 / 点外关闭。关键字匹配 title+taskKey+description，sessionId 匹配
+  meta.sessionId+mbSessionId+taskKey（子串，忽略大小写）。
+
+### 前端 `platform/public/index.html`
+- 工具行：5 个写死来源 chip → 「筛选」按钮 + 下拉面板（来源 chips 容器 / 工作目录 select / 关键字 input /
+  sessionId input / 清除按钮）+ 激活数徽章。
+- CSS：删除旧的 `#view-board[data-filter]` + `.filter-chip` 规则（改 JS 过滤）；新增 `.filter-btn/.filter-panel/
+  .fp-*` 面板样式 + `.card-title` 两行截断。
+- col-hint 文案：plan「待定」、processing「处理中」（req6）。
+- 删除底部内联的旧来源筛选脚本（逻辑迁 app.js）。
+
+## 验证（本地实跑）
+- 无第三方依赖，`SCRUMWS_DATA_ROOT` 指向临时数据根，`scripts/seed-tasks.mjs` 塞 4 个合成任务
+  （manual/chat/issue × 2 个 cwd × 各自 sessionId），`node platform/standalone.js` 起服务（8790）。
+- 后端：`/api/state` 各桶任务带正确 `lastActivityAgo`（4min/3min/1.5h/4h 前），lease 死时正确回退 meta.lastRoundAt。
+- 前端：`scripts/verify-ui.mjs`（真实 Chrome）20/20 断言全 PASS——覆盖 req1-6：卡片仅 3 项信息 + 底部保留、
+  Manual 大写、桶文案、筛选面板选项取自真实数据、来源/工作目录/关键字/sessionId 各自筛选、计数与徽章联动、清除复位、无 JS 错误。
+- 截图见 `round-1/board-cards.png`、`round-1/filter-panel.png`。
+
+## 复现配方
+```
+SCRUMWS_DATA_ROOT=<tmp> node docs/acceptance/board-filter-iteration/scripts/seed-tasks.mjs
+SCRUMWS_DATA_ROOT=<tmp> SCRUMWS_PORT=8790 node platform/standalone.js &
+npm install puppeteer-core --no-save --prefer-offline
+node docs/acceptance/board-filter-iteration/scripts/verify-ui.mjs   # 20/20 PASS
+```

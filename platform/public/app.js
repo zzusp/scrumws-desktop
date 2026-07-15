@@ -336,6 +336,15 @@ function tickLiveTimers() {
   });
 }
 
+// 来源展示名（筛选面板 chip + 卡片标签同一套）：chat→dws（钉钉工具链）、cli→CLI、manual→Manual（req5 首字母大写），其余原样。
+function sourceLabel(source) {
+  return source === 'chat' ? 'dws'
+    : source === 'cli' ? 'CLI'
+    : source === 'manual' ? 'Manual'
+    : source === 'issue' ? 'issue'
+    : (source || '?');
+}
+
 // 来源标签（卡片左下角 + 详情页「任务信息」状态标签前，同一套）：chat 链走 dws（钉钉工具链），
 // 会话细分（self/group/dm）看底部 taskKey 短码；issue / cli 独立，其余显 source 名。
 function sourceTagHtml(t) {
@@ -345,56 +354,18 @@ function sourceTagHtml(t) {
       ? '<span class="tag tag-amber">issue</span>'
       : t.source === 'cli'
         ? '<span class="tag" style="background:var(--brandS);color:var(--brand)">CLI</span>'
-        : '<span class="tag tag-mut">' + (t.source || '?') + '</span>';
+        : '<span class="tag tag-mut">' + escapeHtml(sourceLabel(t.source)) + '</span>';
 }
 
+// 卡片上半部分只保留：任务标题 + 工作目录 + 最后一次活动时间（req2）；其余状态/耗时/描述/意图/失败原因都进详情页。
 function taskCardHtml(t, section) {
-  const cost = t.meta?.totalCostUsd ? '$' + t.meta.totalCostUsd.toFixed(4) : '';
-  const rounds = t.meta?.rounds ? `${t.meta.rounds} 轮` : '';
-  const totalDur = fmtDuration(t.durationMs);
-  // 统一后台维度徽章（runner/cli 同源 t.backgroundAgentCount）：主进程让出后仍在跑的后台 agent 数
-  const bgBadge = t.backgroundAgentCount > 0 ? ` · <span style="color:var(--amber)">后台×${t.backgroundAgentCount}</span>` : '';
-
-  // 卡片副信息统一为「主状态行 + 副行」结构，所有来源（分身 / CLI）在同一分桶显示一致，字段缺失优雅降级。
-  // 工作目录跨来源统一取（CLI 在 t.cli.cwd，分身在 t.cwd）→ 作为所有卡片一致的副行。
+  // 工作目录跨来源统一取（CLI 在 t.cli.cwd，分身在 t.cwd）
   const cwdVal = t.cwd || t.cli?.cwd || null;
-  const cwdShort = cwdVal ? (cwdVal.length > 40 ? '…' + cwdVal.slice(-38) : cwdVal) : '';
-  const cwdLine = cwdVal ? `<div class="card-sub" title="${escapeAttr(cwdVal)}">${escapeHtml(cwdShort)}</div>` : '';
+  const cwdShort = cwdVal ? (cwdVal.length > 40 ? '…' + cwdVal.slice(-38) : cwdVal) : '—';
+  const cwdLine = `<div class="card-sub" title="${escapeAttr(cwdVal || '')}">${escapeHtml(cwdShort)}</div>`;
 
-  let mainLine = '', mainCls = 'card-status', extra = cwdLine;
-  if (section === 'plan') {
-    mainLine = `待确认 · 建于 ${escapeHtml(t.createdAt || t.enteredAt || '—')}`;
-  } else if (section === 'queued') {
-    const age = t.queuedAgeMin;
-    if (age != null && age > 2) mainCls = 'card-status warn';
-    mainLine = `排队 ${age ?? '?'}min · 总耗时 ${totalDur}`;
-  } else if (section === 'processing') {
-    const durMin = t.lease?.durationMin ?? '?';
-    mainLine = `运行 ${durMin}min · 心跳 ${t.lease?.heartbeatAgo || '—'} · 总耗时 ${totalDur}${bgBadge}`;
-    // AI 意图（仅分身有）优先占副行，工作目录跟其后
-    if (t.lease?.intent) extra = `<div class="card-sub" style="color:var(--ink2);white-space:normal">${escapeHtml(t.lease.intent)}</div>${cwdLine}`;
-  } else if (section === 'done') {
-    mainLine = `${t.resolvedAgo || '—'} · 耗时 ${totalDur}${rounds ? ' · ' + rounds : ''}${cost ? ' · ' + cost : ''}`;
-  } else if (section === 'awaiting-human') {
-    // 失败/中断（带 failureReason/outcome）→ 红字原因占副行；否则副行显工作目录
-    mainLine = `${t.resolvedAgo || '待处理'} · 耗时 ${totalDur}`;
-    const failReason = t.outcomeDetail?.failureReason || t.outcome;
-    if (failReason) {
-      const short = failReason.length > 60 ? failReason.slice(0, 60) + '…' : failReason;
-      extra = `<div class="card-sub" style="color:var(--coral)" title="${escapeAttr(failReason)}">${escapeHtml(short)}</div>`;
-    }
-  } else {   // archived 及其他终态
-    mainLine = `${t.resolvedAgo || '—'} · 耗时 ${totalDur}`;
-  }
-  const statusLine = `<div class="${mainCls}">${mainLine}</div>${extra}`;
-
-  const sourceTag = sourceTagHtml(t);
-  const isPlan = section === 'plan';
-
-  // 任务描述（用户备注）：有则显示一行截断，点击直接编辑（plan 态点击进整任务编辑，与「✎ 编辑」按钮一致）
-  const descLine = t.description
-    ? `<div style="font-size:11px;color:var(--ink2);margin-top:6px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="点击编辑${isPlan ? '任务' : '描述'}：${escapeAttr(t.description)}" onclick="event.stopPropagation();${isPlan ? 'openEditTask' : 'editTaskDesc'}('${escapeAttr(t.taskKey)}')"><span style="color:var(--dim)">✎</span> ${escapeHtml(t.description)}</div>`
-    : '';
+  // 最后一次活动时间（后端统一 lastActivityAgo，与卡片排序同源；缺失优雅降级为 —）
+  const actLine = `<div class="card-status" title="${escapeAttr(t.lastActivityAt || '')}">最后活动 ${escapeHtml(t.lastActivityAgo || '—')}</div>`;
 
   // 标题：优先 customTitle > 第一条真人 cc: > taskKey
   const titleText = t.title || t.taskKey;
@@ -403,17 +374,17 @@ function taskCardHtml(t, section) {
   const updateDot = updatedTaskKeys.has(t.taskKey) ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
 
   // 卡片点击：plan 态弹编辑弹窗（任务未开始，不进详情页）；其余进详情页
-  const cardClick = isPlan
+  const cardClick = section === 'plan'
     ? `openEditTask('${escapeAttr(t.taskKey)}')`
     : `openTaskModal('${escapeAttr(t.taskKey)}')`;
 
   return `
-    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" data-source="${escapeAttr(t.source || '')}" onclick="${cardClick}">
-      <div style="font-weight:600;font-size:13px;color:var(--ink);line-height:1.45;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
-      ${statusLine}
-      ${descLine}
+    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" onclick="${cardClick}">
+      <div class="card-title" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
+      ${cwdLine}
+      ${actLine}
       <div class="card-foot">
-        ${sourceTag}
+        ${sourceTagHtml(t)}
         <span style="flex:1"></span>
         <button class="btn card-menu-btn" title="操作" onclick="event.stopPropagation();openCardMenu(event,'${escapeAttr(t.taskKey)}','${section}')">···</button>
       </div>
@@ -490,9 +461,79 @@ function openCardMenu(event, taskKey, section) {
 }
 window.openCardMenu = openCardMenu;
 
+// ================= 看板筛选（来源 / 工作目录 / 关键字 / sessionId）=================
+// 视图层筛选：状态存 boardFilter，renderLifecycle 渲染前按 matchesBoardFilter 过滤各桶（计数随之显可见数）。
+// 来源 / 工作目录选项从真实任务数据动态生成（不写死），关键字 / sessionId 走子串匹配。
+let boardFilter = { source: '', cwd: '', keyword: '', sessionId: '' };
+let _boardFilterOptSig = '';   // 选项签名：数据变了才重建 chip/option DOM，避免每次刷新清空用户交互
+
+function cwdOf(t) { return t.cwd || t.cli?.cwd || ''; }
+
+function matchesBoardFilter(t) {
+  const f = boardFilter;
+  if (f.source && (t.source || '') !== f.source) return false;
+  if (f.cwd && cwdOf(t) !== f.cwd) return false;
+  if (f.keyword) {
+    const hay = [t.title, t.taskKey, t.description].filter(Boolean).join(' ').toLowerCase();
+    if (!hay.includes(f.keyword.toLowerCase())) return false;
+  }
+  if (f.sessionId) {
+    const ids = [t.meta?.sessionId, t.mbSessionId, t.taskKey].filter(Boolean).join(' ').toLowerCase();
+    if (!ids.includes(f.sessionId.toLowerCase())) return false;
+  }
+  return true;
+}
+
+function allLifecycleTasks(lifecycle) {
+  return [lifecycle.plan, lifecycle.queued, lifecycle.processing, lifecycle.awaitingHuman, lifecycle.done, lifecycle.archived]
+    .filter(Boolean).flat();
+}
+
+// 依真实数据刷新筛选面板选项（保留当前选择；选项集不变则不重建 DOM，不打断用户交互）
+function updateBoardFilterOptions(lifecycle) {
+  const all = allLifecycleTasks(lifecycle);
+  const sources = [...new Set(all.map((t) => t.source).filter(Boolean))].sort();
+  const cwds = [...new Set(all.map(cwdOf).filter(Boolean))].sort();
+  const sig = JSON.stringify([sources, cwds]);
+  if (sig !== _boardFilterOptSig) {
+    _boardFilterOptSig = sig;
+    const chips = $('fpSourceChips');
+    if (chips) chips.innerHTML = ['', ...sources].map((s) =>
+      `<button class="fp-chip" data-src="${escapeAttr(s)}">${s ? escapeHtml(sourceLabel(s)) : '全部'}</button>`).join('');
+    const sel = $('fpCwd');
+    if (sel) sel.innerHTML = `<option value="">全部</option>` + cwds.map((c) => {
+      const short = c.length > 44 ? '…' + c.slice(-42) : c;
+      return `<option value="${escapeAttr(c)}">${escapeHtml(short)}</option>`;
+    }).join('');
+  }
+  // 选中项因数据变化不复存在 → 回落全部
+  if (boardFilter.source && !sources.includes(boardFilter.source)) boardFilter.source = '';
+  if (boardFilter.cwd && !cwds.includes(boardFilter.cwd)) boardFilter.cwd = '';
+  syncBoardFilterUi();
+}
+
+// 把 boardFilter 反映到面板 UI（chip 高亮 / select 值 / 输入框 / 徽章）
+function syncBoardFilterUi() {
+  document.querySelectorAll('#fpSourceChips .fp-chip').forEach((c) =>
+    c.classList.toggle('active', (c.dataset.src || '') === boardFilter.source));
+  const sel = $('fpCwd'); if (sel && sel.value !== boardFilter.cwd) sel.value = boardFilter.cwd;
+  const kw = $('fpKeyword'); if (kw && kw.value !== boardFilter.keyword) kw.value = boardFilter.keyword;
+  const sid = $('fpSessionId'); if (sid && sid.value !== boardFilter.sessionId) sid.value = boardFilter.sessionId;
+  const n = ['source', 'cwd', 'keyword', 'sessionId'].filter((k) => boardFilter[k]).length;
+  const badge = $('filterBadge');
+  if (badge) { badge.textContent = String(n); badge.style.display = n ? 'inline-flex' : 'none'; }
+}
+
+// 筛选变更后重渲看板（复用最近一次 /api/state 数据，不重新拉取）
+function applyBoardFilter() {
+  syncBoardFilterUi();
+  if (stateData?.lifecycle) renderLifecycle(stateData.lifecycle);
+}
+
 function renderLifecycle(lifecycle) {
   closeCardMenu();                                       // 重绘前收起可能残留的「···」浮层菜单
   updatedTaskKeys = reconcileSeenSections(lifecycle);   // 状态变更标记：先补基线、算出本轮「有更新」的任务
+  updateBoardFilterOptions(lifecycle);                  // 依真实数据刷新筛选选项（来源 / 工作目录）
   const map = {
     'plan': lifecycle.plan,
     'queued': lifecycle.queued,
@@ -501,22 +542,54 @@ function renderLifecycle(lifecycle) {
     'done': lifecycle.done,
   };
   for (const [name, tasks] of Object.entries(map)) {
-    $(`count-${name}`).textContent = tasks.length;
+    const shown = tasks.filter(matchesBoardFilter);     // 视图层筛选：计数与卡片均按可见任务
+    $(`count-${name}`).textContent = shown.length;
     const list = $(`list-${name}`);
-    if (tasks.length === 0) {
+    if (shown.length === 0) {
       list.innerHTML = `<div style="color:var(--dim);font-size:12px;padding:6px 0">空</div>`;
     } else {
-      list.innerHTML = tasks.map((t) => taskCardHtml(t, name)).join('');
+      list.innerHTML = shown.map((t) => taskCardHtml(t, name)).join('');
     }
   }
-  $('count-archived').textContent = lifecycle.archived.length;
+  const archShown = lifecycle.archived.filter(matchesBoardFilter);
+  $('count-archived').textContent = archShown.length;
   const arch = $('list-archived');
-  if (lifecycle.archived.length === 0) {
+  if (archShown.length === 0) {
     arch.innerHTML = `<div style="color:var(--dim);font-size:12px;padding:6px 0">空</div>`;
   } else {
-    arch.innerHTML = lifecycle.archived.map((t) => taskCardHtml(t, 'archived')).join('');
+    arch.innerHTML = archShown.map((t) => taskCardHtml(t, 'archived')).join('');
   }
 }
+
+// ---- 筛选面板交互（按钮开合 / chip / select / 输入 / 清除 / 点外关闭）----
+(function initBoardFilter() {
+  const btn = $('boardFilterBtn');
+  const panel = $('boardFilterPanel');
+  if (!btn || !panel) return;
+  let outsideCloser = null;
+  const close = () => {
+    panel.classList.remove('open'); btn.classList.remove('on');
+    if (outsideCloser) { document.removeEventListener('mousedown', outsideCloser, true); outsideCloser = null; }
+  };
+  const open = () => {
+    panel.classList.add('open'); btn.classList.add('on');
+    outsideCloser = (e) => { if (!panel.contains(e.target) && !btn.contains(e.target)) close(); };
+    setTimeout(() => document.addEventListener('mousedown', outsideCloser, true), 0);
+  };
+  btn.addEventListener('click', () => (panel.classList.contains('open') ? close() : open()));
+  $('fpSourceChips')?.addEventListener('click', (e) => {
+    const chip = e.target.closest('.fp-chip'); if (!chip) return;
+    boardFilter.source = chip.dataset.src || '';
+    applyBoardFilter();
+  });
+  $('fpCwd')?.addEventListener('change', (e) => { boardFilter.cwd = e.target.value; applyBoardFilter(); });
+  $('fpKeyword')?.addEventListener('input', (e) => { boardFilter.keyword = e.target.value.trim(); applyBoardFilter(); });
+  $('fpSessionId')?.addEventListener('input', (e) => { boardFilter.sessionId = e.target.value.trim(); applyBoardFilter(); });
+  $('fpClear')?.addEventListener('click', () => {
+    boardFilter = { source: '', cwd: '', keyword: '', sessionId: '' };
+    applyBoardFilter();
+  });
+})();
 
 $('archivedHeader').addEventListener('click', () => {
   const list = $('list-archived');
