@@ -2252,17 +2252,30 @@ function toLocalStamp(dtLocal) {
   }
   function openPop() {
     renderPop();
-    // fixed 定位向上弹出：dt-pop 在 overflow-y:auto 容器内，absolute 会被裁剪，故算屏幕坐标挂 viewport
-    const r = btn.getBoundingClientRect();
+    // fixed 定位挂 viewport（dt-pop 在可滚动 modal 内，absolute 会被裁剪）。先显示再量高，按上下可用空间择向弹出并夹在视口内——
+    // 矮屏 / 定时字段贴视口下缘时上弹会算出负偏移把日历顶到屏外（曾导致「选日期无效」，无法点到日格/确定）。
     pop.style.position = 'fixed';
-    pop.style.left = r.left + 'px';
-    pop.style.bottom = (window.innerHeight - r.top + 6) + 'px';
-    pop.style.top = 'auto';
     pop.style.width = '268px';
+    pop.style.left = '0px'; pop.style.top = '0px'; pop.style.bottom = 'auto';
     pop.classList.add('open'); btn.classList.add('open'); btn.setAttribute('aria-expanded', 'true');
-    scrollHost = wrap.closest('[style*="overflow-y:auto"], [style*="overflow-y: auto"]');
+    const r = btn.getBoundingClientRect();
+    const ph = pop.offsetHeight, gap = 6, pad = 8;
+    // 上方空间够就上弹（保持原视觉），否则下弹；再统一夹进视口，保证整个弹层可见可点
+    let top = (r.top >= ph + gap || r.top >= window.innerHeight - r.bottom) ? r.top - ph - gap : r.bottom + gap;
+    top = Math.max(pad, Math.min(top, window.innerHeight - ph - pad));
+    const left = Math.max(pad, Math.min(r.left, window.innerWidth - 268 - pad));
+    pop.style.top = top + 'px'; pop.style.left = left + 'px';
+    scrollHost = closestScrollable(wrap);
     if (scrollHost) scrollHost.addEventListener('scroll', closePop, { passive: true });
     window.addEventListener('resize', closePop);
+  }
+  // 最近的可滚动祖先（按计算样式判，兼容 class 定义的 overflow——modal-card 的滚动即由 CSS 类给）
+  function closestScrollable(el) {
+    for (let n = el && el.parentElement; n; n = n.parentElement) {
+      const oy = getComputedStyle(n).overflowY;
+      if (oy === 'auto' || oy === 'scroll') return n;
+    }
+    return null;
   }
   function closePop() {
     if (!pop.classList.contains('open')) return;
