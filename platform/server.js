@@ -4,8 +4,8 @@ import path from 'node:path';
 import { collectState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
-import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
+import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask, rewindTaskMessage } from './lib/task-actions.js';
+import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
@@ -536,15 +536,16 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // CLI 原地 rewind：截断 jsonl 到目标消息之前（同一 session，原时间线丢弃不备份），返回 {sid, cwd}
-    // 交前端收养成 Mode B live 会话续跑改写后的消息。body: {taskKey, uuid, message}
-    if (req.method === 'POST' && pathname === '/api/cli/rewind') {
+    // 改写重跑（原地 rewind）：改写某条历史 user 消息、截断 jsonl 到该消息之前（原时间线丢弃不备份），从截断处重跑。
+    // 统一入口（观察态 CLI + 托管任务）：body {taskKey, uuid, message}。
+    // 返回 {hosted}：hosted=false（观察态 cli）→ 前端收养成 live 会话；hosted=true（托管）→ 后端已 --resume 重跑，前端刷 state 进 live。
+    if (req.method === 'POST' && pathname === '/api/task/rewind') {
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const r = rewindCliSession(payload || {});
+        const r = rewindTaskMessage(payload || {});
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;

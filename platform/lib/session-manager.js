@@ -172,17 +172,13 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
 
   const id = randomUUID();
   const s = new Session({ id, cwd, model, effort, taskKey, gitBranch });
-  // S10 收养：预置历史 transcript（终端会话的既往对话）→ SSE 连上即回放，续接体验连续
+  // S10 收养：预置历史 transcript（终端会话的既往对话）→ SSE 连上即回放，续接体验连续。
+  // 首条 prompt 不在这里补 transcript——由下方 sendUserMessage(id, prompt) 统一自记（同续轮 reply 一条路径），
+  // 避免两处各 push 一次导致首条消息重复。seedTranscript 只含历史（不含本轮消息），调用方不再往 seed 尾追消息。
   if (Array.isArray(seedTranscript) && seedTranscript.length) {
     s.transcript = seedTranscript.slice(-TRANSCRIPT_CAP);
     s.claudeSessionId = resume || null;
     s.adopted = true;
-  } else if (prompt) {
-    // 首条用户消息经 sendUserMessage 写进 stdin，但 claude 的 stdout stream-json 不回显用户输入文本，
-    // 故它从不进 transcript → 详情页连上 SSE 回放（server.js 的 transcript 回放）看不到第一条 user message。
-    // 这里在 spawn 前把它补进 transcript 打头（此刻尚无 SSE 客户端订阅，无需 emit）；resume 分支不走这里，
-    // 其 seed 已含该消息，避免重复。形状对齐 reply 乐观回显 / seed（content 为字符串，前端 mbToRounds 会归一化）。
-    s.transcript.push({ type: 'user', message: { role: 'user', content: prompt } });
   }
   try {
     // Windows 须走 shell：CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd（同步抛 spawn EINVAL）；shell 由 PATHEXT 解析 claude.exe/.cmd
@@ -203,6 +199,13 @@ export function sendUserMessage(id, message) {
   const text = String(message || '');
   if (!text.trim()) return { ok: false, error: 'message required' };
   const ok = writeStdin(s, { type: 'user', message: { role: 'user', content: text } });
+  // 记入 transcript（不 emit）：claude stdout stream-json 不回显用户输入，用户消息只有这里自记才进得了历史。
+  // 否则续轮 reply / leak-retry 等经本函数发出的用户消息从不入 transcript → 详情重开(SSE 回放)时全丢。
+  // 不 emit 以免与前端乐观回显重复；对齐 createSession 首条 prompt 的自记做法。
+  if (ok) {
+    s.transcript.push({ type: 'user', message: { role: 'user', content: text } });
+    if (s.transcript.length > TRANSCRIPT_CAP) { s.transcript.shift(); s.truncated++; }
+  }
   if (ok && s.state === 'idle') s.state = 'running';
   // 首条消息喂进去但会话仍未 init（starting）→ 武装 init 看门狗（发了消息才该期待 system/init）
   if (ok && s.state === 'starting') armInitWatchdog(s);

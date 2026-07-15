@@ -3,10 +3,10 @@ import path from 'node:path';
 import { P } from './paths.js';
 import { parse } from './timeutil.js';
 import { readConfig } from './runner-config.js';
-import { replyCliSession } from './cli-actions.js';
+import { replyCliSession, rewindCliSession, truncateSessionJsonlByUuid } from './cli-actions.js';
 import { tryStartOrQueue, replyTask, cancelTaskSession, parkTaskSession } from './task-runner.js';
 import { readCcSessionForAdopt, completeCliSession, uncompleteCliTask } from './logs.js';
-import { readAttachedSessions } from './collect-cli.js';
+import { readAttachedSessions, locateJsonlBySid } from './collect-cli.js';
 import { readWatchlist, removeWatchlist } from './cli-watchlist.js';
 
 // 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
@@ -294,6 +294,52 @@ export function replyToTask({ taskKey, message, model, effort }) {
   }
   // 走 Mode B：live 会话在则复用续轮 / 会话已死则 --resume 重挂（task-runner 内写 state=processing + lease）
   return replyTask(taskKey, msg, model, eff || undefined);
+}
+
+// 改写重跑（原地 rewind）：改写某条历史 user 消息、从那里替换重跑（该消息及之后的时间线丢弃，对齐 CC 交互 double-Esc）。
+// 统一入口——不按 source 特判，只按「有无任务包」这一真实能力差异分支：
+//   · 观察态 CLI 会话（cli: 无包）→ rewindCliSession 截断，前端收养成 live 会话重跑（hosted:false）。
+//   · 托管任务（有包，含物化 cli / manual / api）→ park 空转会话 + 截断 + replyTask 从截断处 --resume 重跑（hosted:true）。
+export function rewindTaskMessage({ taskKey, uuid, message } = {}) {
+  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
+  const msg = String(message || '').trim();
+  if (!msg) return { ok: false, error: 'message required' };
+  if (!uuid || !/^[a-f0-9-]{36}$/i.test(String(uuid))) return { ok: false, error: 'invalid uuid（目标消息）' };
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  const hasPackage = fs.existsSync(taskDir);
+
+  // 观察态 CLI 会话（cli: 且无任务包）→ 观察侧截断，前端收养成 live 会话重跑
+  if (String(taskKey).startsWith('cli:') && !hasPackage) {
+    const r = rewindCliSession({ taskKey, uuid, message: msg });
+    return r.ok ? { ...r, hosted: false } : r;
+  }
+
+  // 托管任务（有包）
+  if (!hasPackage) return { ok: false, error: 'task not found（归档任务请先取消归档再改写重跑）' };
+  let state = null, meta = null;
+  try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
+  if (state?.state === 'processing') return { ok: false, error: '任务正在处理中（state=processing），等它跑完 / 停下再改写重跑' };
+  const sid = meta?.sessionId || null;
+  if (!sid) return { ok: false, error: '该任务无 sessionId，无法改写重跑（会话从未成功起过，请重新发起）' };
+
+  const located = locateJsonlBySid(sid);
+  if (!located || !located.jsonlPath || !fs.existsSync(located.jsonlPath)) {
+    return { ok: false, error: 'session jsonl 未找到（历史久远或已被清）' };
+  }
+  // guard：sid 被活终端进程占用 → 拒绝（双进程写同一 session 会撞）
+  const att = readAttachedSessions().get(sid);
+  if (att) return { ok: false, error: `session 正被终端进程占用（pid=${att.pid}），不能改写历史` };
+
+  // 关掉可能仍存活的 idle Mode B 会话——否则 replyTask 会复用旧进程，其内存里是截断前的全量上下文、rewind 不生效
+  parkTaskSession(taskKey);
+  // 截断 jsonl 到目标消息之前（原时间线丢弃、不备份）
+  const tr = truncateSessionJsonlByUuid(located.jsonlPath, uuid);
+  if (!tr.ok) return tr;
+  // 从截断处 --resume 重跑改写后的消息（无 live 会话 → --resume + 截断后的历史 seed；task-runner 写 state=processing + lease）
+  const rr = replyTask(taskKey, msg);
+  return rr.ok ? { ...rr, hosted: true } : rr;
 }
 
 // 重新发起 / 确认执行：起绑定该任务的 Mode B 会话执行（→processing）。

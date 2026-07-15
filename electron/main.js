@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import { loadConfig } from './config.js';
 import { startServer } from './server-host.js';
 import { createTray } from './tray.js';
@@ -40,6 +40,19 @@ if (!gotLock) {
     });
     mainWindow.loadURL(`http://127.0.0.1:${port}/`);
     mainWindow.once('ready-to-show', () => mainWindow.show());
+
+    // 外链一律用系统默认浏览器打开，不在 app 内部浏览器里跳（详情里 claude 输出的 markdown 超链接、issue 评论链接等）。
+    // 本地 app 自身导航（同 origin，含 #/ hash 路由）不拦——hash 变化根本不触发 will-navigate。
+    const appOrigin = `http://127.0.0.1:${port}`;
+    const openExternal = (url) => { if (/^(https?|mailto):/i.test(url)) shell.openExternal(url); };
+    // target=_blank / window.open（如 issue commentUrl）→ 系统浏览器 + 拒绝开内嵌窗口
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
+    // 无 target 的 <a href> 点击会把整窗导航走 → 拦下外链改用系统浏览器
+    mainWindow.webContents.on('will-navigate', (e, url) => {
+      let external = false;
+      try { external = new URL(url).origin !== appOrigin; } catch { external = false; }
+      if (external) { e.preventDefault(); openExternal(url); }
+    });
 
     // 关窗 = 隐藏到托盘，调度继续；显式退出走托盘菜单
     mainWindow.on('close', (e) => {
