@@ -1483,10 +1483,11 @@ function ccUsageBarHtml(label, win) {
     </div>`;
 }
 
-// Claude Code 卡片：sessionId / 模型 + Pro/Max 的 5h/7d 滚动窗（token 明细行已按需求移除）
+// Claude Code 卡片：sessionId / 模型(拼 effort，如 "claude-sonnet-5 · medium") / 动态工作流 + Pro/Max 的 5h/7d 滚动窗（token 明细行已按需求移除）
 function claudeCodeCardHtml(t, model) {
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const sessionId = t.meta?.sessionId || null;
+  const modelVal = t.effort ? `${model} · ${t.effort}` : model;
   // 用量区：套餐 Pro/Max 才有 5h/7d 滚动窗；数据未到 / 非订阅 / 拉取失败各自提示
   const cu = claudeUsage;
   let usageHtml = '';
@@ -1510,7 +1511,8 @@ function claudeCodeCardHtml(t, model) {
     <div class="side-block">
       <h3>Claude Code ${planTag ? `<span style="margin-left:auto">${planTag}</span>` : ''}</h3>
       ${kv('session', sessionId ? escapeHtml(sessionId) : '<span style="color:var(--dim)">—</span>')}
-      ${kv('模型', escapeHtml(model))}
+      ${kv('模型', escapeHtml(modelVal))}
+      ${t.dynamicWorkflow != null ? kv('动态工作流', t.dynamicWorkflow ? '<span style="color:var(--jade)">开</span>' : '关') : ''}
       ${usageHtml ? `<div class="cc-usage">${usageHtml}</div>` : ''}
     </div>`;
 }
@@ -1702,10 +1704,8 @@ function renderTaskSide(taskKey) {
       ${kv('taskKey', escapeHtml(t.taskKey))}
       ${kv('cwd', escapeHtml(cwdVal))}
       ${kv('git', escapeHtml(gitVal))}
-      ${t.effort ? kv('effort', escapeHtml(t.effort)) : ''}
       ${t.scheduledAt ? kv('定时执行', `<span style="color:var(--amber)">${escapeHtml(t.scheduledAt)}</span>`) : ''}
       ${t.worktree ? kv('worktree', escapeHtml(t.worktreeBranch || (t.baseBranch ? `基于 ${t.baseBranch}` : '开启'))) : ''}
-      ${t.dynamicWorkflow != null ? kv('动态工作流', t.dynamicWorkflow ? '<span style="color:var(--jade)">开</span>' : '关') : ''}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
       ${bgAgent > 0 ? kv('后台 agent', `<span style="color:var(--amber)">${bgAgent} 个运行中（主进程已让出，等后台完成）</span>`) : ''}
       ${/* turns / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / jsonlVal，待定放置位置）*/''}
