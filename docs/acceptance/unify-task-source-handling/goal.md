@@ -14,7 +14,7 @@
 | 1 | 终态动作统一：materialize + toPlan/complete/uncomplete/archive/unarchive/rename/edit 按包统一；CLI 退回计划可用 | ✅ | scripts/verify-cli-unify.mjs；replan-resume 回归 21/21；collector smoke 单卡 |
 | 2 | reply 统一：物化 CLI 走 Mode B `--resume`；reply/cancel/archived-remove UI 门控改「按 t.cli（被旁观）」不按 source | ✅ | verify-cli-unify（含 reply package-first）；collector smoke 物化卡无 t.cli |
 | 3 | worker-log 按包统一；rewind 门控改「按 t.cli」（观察侧操作，去掉物化卡上会报错的按钮） | ✅ | verify-cli-unify 19/19（含 [7] worker-log package-first）；replan 回归 21/21 |
-| 4 | 清扫 deleteTask guard + collect.js platformSids(305) 复核（物化 CLI 有 sessionId 却被排除出平台用量子集） | ⏳ | |
+| 4 | 清扫 deleteTask cli guard + collect.js cliCount(273)/platformSids(305) 改「按 t.cli」 | ✅ | verify-cli-unify 20/20（含 [8] deleteTask）；smoke：物化卡 usage 0.5 聚合进平台、cliCount=0 |
 
 ## sub goal 进展
 
@@ -53,5 +53,13 @@
 - **验证**：`verify-cli-unify.mjs` **19/19**（新增 [7]：物化后 `readWorkerLog` 走包路径读到历史，证明未落 watchlist 侧）；`replan-resume` 回归 **21/21**。
 - **边界**：观察侧 CLI 的 rewind / worker-log 行为不变。托管任务的「改历史重跑」是潜在新特性，不在收敛范围。
 
-### round-4（sub goal 4）— ⏳ 待做
+### round-4（sub goal 4）— ✅（收敛链闭合）
+
+- **`task-actions.js deleteTask`**：删掉 `startsWith('cli:')` 拒绝 guard。物化 CLI 有 `meta.sessionId` → 落到「已执行过→改归档」guard（正确语义，非误导性的「用从看板移除」）；未物化 CLI 无包 → 落「task not found」。删除只对「plan 且无 sessionId」纯草稿放行。
+- **`collect.js` `computeRuntimeUsage`(273) + `platformSids`(305)**：`t.source === 'cli'` → `t.cli`。被旁观 CLI（`t.cli`，meta 无真实 usage）仍单独计数 / 排除；物化 CLI（无 `t.cli`、有真实 usage meta）并入平台聚合与 platformSids。**修正**：round-3 spec 曾把 273 标「展示保留」，实测其 `continue` 会把物化 CLI 的真实 usage 也跳过——应一并按 `t.cli` 判。
+- **验证**：`verify-cli-unify.mjs` **20/20**（新增 [8]：物化 CLI deleteTask 落 sessionId guard）；`replan-resume` 回归 **21/21**；`/api/state` 冒烟：物化卡 `meta.totalCostUsd=0.5` 聚合进 `runtime.usage.totalCostUsd`、`cliCount=0`（证明按平台任务聚合，非当 cli 跳过）。
+
+## 收敛完成
+
+任务动作 / UI 门控 / 聚合三层的 `source==='cli'` / `isCli` / `startsWith('cli:')` 行为特判已全部改为「按状态 / 按有无任务包(`hasTaskPackage`) / 按有无 `t.cli`」。`source` 回归纯展示元数据。剩余 `source` 引用仅用于展示（来源角标 `sourceTagHtml`、`cli` 详情对象）与入库归类，符合 README「任务来源不变量」。潜在**新特性**（非特判清理）：托管任务的「改历史重跑」（managed rewind）。
 </content>

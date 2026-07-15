@@ -79,7 +79,8 @@ export function cancelTask({ taskKey }) {
 // 仅限 plan——已排队/运行/收敛的任务有真实执行记录，不走删除（用中断/归档）。
 export function deleteTask({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
-  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话请用「从看板移除」' };
+  // 不按 source 特判：物化后的 CLI 任务有 meta.sessionId，会被下面「已执行过→改归档」guard 挡下；未物化 CLI 无包→
+  // 落到「task not found」。删除只对「plan 且无 sessionId」的纯草稿放行（见下）。
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };

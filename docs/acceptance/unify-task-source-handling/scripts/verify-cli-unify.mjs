@@ -17,7 +17,7 @@ fs.mkdirSync(runnerRoot, { recursive: true });
 fs.mkdirSync(path.join(CC, 'proj1'), { recursive: true });
 
 const imp = (p) => import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../../platform/lib', p)).href);
-const { moveTaskToPlan, completeTask, uncompleteTask, readTaskEdit, replyToTask } = await imp('task-actions.js');
+const { moveTaskToPlan, completeTask, uncompleteTask, readTaskEdit, replyToTask, deleteTask } = await imp('task-actions.js');
 const { archiveTask, unarchiveTask, readWorkerLog } = await imp('logs.js');
 const { upsertWatchlist, readWatchlist } = await imp('cli-watchlist.js');
 
@@ -119,6 +119,13 @@ console.log('\n[7] 物化后 worker-log 走 package-first（按 meta.sessionId �
   // cli:aabbccdd 已在 [1] 物化 + 摘 watchlist；若仍按前缀路由到 readCliWorkerLog 会「not in watchlist」
   const r = readWorkerLog('cli:aabbccdd');
   assert(r.ok && Array.isArray(r.rounds) && r.rounds.length >= 1, 'readWorkerLog 走包路径读到历史（未路由到 watchlist 侧）', JSON.stringify({ ok: r.ok, rounds: r.rounds?.length, err: r.error }));
+}
+
+console.log('\n[8] deleteTask 去掉 cli 特判：物化 CLI（plan+有 sessionId）落到「已执行过→改归档」guard，不再是「用从看板移除」');
+{
+  // cli:aabbccdd 在 [1] 物化落 plan、有 meta.sessionId；deleteTask 应按 sessionId 拒删（改归档），而非旧的 cli 前缀拒绝
+  const r = deleteTask({ taskKey: 'cli:aabbccdd' });
+  assert(!r.ok && /归档/.test(r.error || '') && !/从看板移除/.test(r.error || ''), '按 sessionId 拒删（改归档），非 cli 前缀特判', JSON.stringify(r));
 }
 
 console.log(`\n==== ${fail === 0 ? '✅ ALL PASS' : '❌ FAIL'} : ${pass} passed, ${fail} failed ====`);
