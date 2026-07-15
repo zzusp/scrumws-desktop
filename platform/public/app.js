@@ -463,9 +463,11 @@ window.openCardMenu = openCardMenu;
 
 // ================= 看板筛选（来源 / 工作目录 / 关键字 / sessionId）=================
 // 视图层筛选：状态存 boardFilter，renderLifecycle 渲染前按 matchesBoardFilter 过滤各桶（计数随之显可见数）。
-// 来源 / 工作目录选项从真实任务数据动态生成（不写死），关键字 / sessionId 走子串匹配。
+// 来源 / 工作目录用自定义下拉（不用原生 select，选项面板对齐新建任务 .cwd-menu 范式），选项从真实任务数据动态取；
+// 关键字 / sessionId 走子串匹配。
 let boardFilter = { source: '', cwd: '', keyword: '', sessionId: '' };
-let _boardFilterOptSig = '';   // 选项签名：数据变了才重建 chip/option DOM，避免每次刷新清空用户交互
+let boardSources = [], boardCwds = [];   // 真实任务里出现过的来源 / 工作目录全集（下拉选项数据源）
+let srcDD = null, cwdDD = null;           // 两个自定义下拉实例（initBoardFilter 里建）
 
 function cwdOf(t) { return t.cwd || t.cli?.cwd || ''; }
 
@@ -489,34 +491,60 @@ function allLifecycleTasks(lifecycle) {
     .filter(Boolean).flat();
 }
 
-// 依真实数据刷新筛选面板选项（保留当前选择；选项集不变则不重建 DOM，不打断用户交互）
+// 自定义筛选下拉工厂（来源 / 工作目录共用一套；选项面板 = .fp-dd-menu，菜单每次打开按 items() 现取，选项永远最新）
+function makeFilterDropdown({ btnId, menuId, items, getValue, onPick }) {
+  const btn = $(btnId), menu = $(menuId);
+  if (!btn || !menu) return null;
+  const labelEl = btn.querySelector('.fp-dd-label');
+  let outside = null;
+  const close = () => {
+    menu.classList.remove('open'); btn.classList.remove('open');
+    if (outside) { document.removeEventListener('mousedown', outside, true); outside = null; }
+  };
+  const render = () => {
+    const cur = getValue();
+    const list = items();
+    menu.innerHTML = list.length
+      ? list.map((it) => `<div class="fp-dd-item${it.value === cur ? ' active' : ''}" role="option" data-val="${escapeAttr(it.value)}"><span class="fp-dd-path" title="${escapeAttr(it.title || it.label)}">${escapeHtml(it.label)}</span><span class="fp-dd-check">✓</span></div>`).join('')
+      : `<div class="cwd-empty">暂无可选项</div>`;
+  };
+  const open = () => {
+    render(); menu.classList.add('open'); btn.classList.add('open');
+    outside = (e) => { if (!menu.contains(e.target) && !btn.contains(e.target)) close(); };
+    setTimeout(() => document.addEventListener('mousedown', outside, true), 0);
+  };
+  btn.addEventListener('click', () => (menu.classList.contains('open') ? close() : open()));
+  menu.addEventListener('click', (e) => {
+    const it = e.target.closest('.fp-dd-item'); if (!it) return;
+    onPick(it.dataset.val); close();
+  });
+  const syncLabel = () => {
+    const cur = getValue();
+    const found = items().find((i) => i.value === cur);
+    labelEl.textContent = found ? found.label : '全部';
+    labelEl.title = found ? (found.title || found.label) : '';
+    labelEl.classList.toggle('dim', !cur);
+  };
+  return { syncLabel, close };
+}
+
+const sourceDropItems = () => [{ value: '', label: '全部' }, ...boardSources.map((s) => ({ value: s, label: sourceLabel(s) }))];
+const cwdDropItems = () => [{ value: '', label: '全部' }, ...boardCwds.map((c) => ({ value: c, label: c.length > 44 ? '…' + c.slice(-42) : c, title: c }))];
+
+// 依真实数据刷新筛选选项数据源（选中项若已不存在则回落全部）；菜单是打开时现取，不必重建 DOM
 function updateBoardFilterOptions(lifecycle) {
   const all = allLifecycleTasks(lifecycle);
-  const sources = [...new Set(all.map((t) => t.source).filter(Boolean))].sort();
-  const cwds = [...new Set(all.map(cwdOf).filter(Boolean))].sort();
-  const sig = JSON.stringify([sources, cwds]);
-  if (sig !== _boardFilterOptSig) {
-    _boardFilterOptSig = sig;
-    const chips = $('fpSourceChips');
-    if (chips) chips.innerHTML = ['', ...sources].map((s) =>
-      `<button class="fp-chip" data-src="${escapeAttr(s)}">${s ? escapeHtml(sourceLabel(s)) : '全部'}</button>`).join('');
-    const sel = $('fpCwd');
-    if (sel) sel.innerHTML = `<option value="">全部</option>` + cwds.map((c) => {
-      const short = c.length > 44 ? '…' + c.slice(-42) : c;
-      return `<option value="${escapeAttr(c)}">${escapeHtml(short)}</option>`;
-    }).join('');
-  }
-  // 选中项因数据变化不复存在 → 回落全部
-  if (boardFilter.source && !sources.includes(boardFilter.source)) boardFilter.source = '';
-  if (boardFilter.cwd && !cwds.includes(boardFilter.cwd)) boardFilter.cwd = '';
+  boardSources = [...new Set(all.map((t) => t.source).filter(Boolean))].sort();
+  boardCwds = [...new Set(all.map(cwdOf).filter(Boolean))].sort();
+  if (boardFilter.source && !boardSources.includes(boardFilter.source)) boardFilter.source = '';
+  if (boardFilter.cwd && !boardCwds.includes(boardFilter.cwd)) boardFilter.cwd = '';
   syncBoardFilterUi();
 }
 
-// 把 boardFilter 反映到面板 UI（chip 高亮 / select 值 / 输入框 / 徽章）
+// 把 boardFilter 反映到面板 UI（下拉标签 / 输入框 / 激活数徽章）
 function syncBoardFilterUi() {
-  document.querySelectorAll('#fpSourceChips .fp-chip').forEach((c) =>
-    c.classList.toggle('active', (c.dataset.src || '') === boardFilter.source));
-  const sel = $('fpCwd'); if (sel && sel.value !== boardFilter.cwd) sel.value = boardFilter.cwd;
+  srcDD?.syncLabel();
+  cwdDD?.syncLabel();
   const kw = $('fpKeyword'); if (kw && kw.value !== boardFilter.keyword) kw.value = boardFilter.keyword;
   const sid = $('fpSessionId'); if (sid && sid.value !== boardFilter.sessionId) sid.value = boardFilter.sessionId;
   const n = ['source', 'cwd', 'keyword', 'sessionId'].filter((k) => boardFilter[k]).length;
@@ -561,7 +589,7 @@ function renderLifecycle(lifecycle) {
   }
 }
 
-// ---- 筛选面板交互（按钮开合 / chip / select / 输入 / 清除 / 点外关闭）----
+// ---- 筛选面板交互（按钮开合 / 来源·工作目录自定义下拉 / 输入 / 清除 / 点外关闭）----
 (function initBoardFilter() {
   const btn = $('boardFilterBtn');
   const panel = $('boardFilterPanel');
@@ -569,6 +597,7 @@ function renderLifecycle(lifecycle) {
   let outsideCloser = null;
   const close = () => {
     panel.classList.remove('open'); btn.classList.remove('on');
+    srcDD?.close(); cwdDD?.close();   // 收面板时一并收内部下拉
     if (outsideCloser) { document.removeEventListener('mousedown', outsideCloser, true); outsideCloser = null; }
   };
   const open = () => {
@@ -577,12 +606,15 @@ function renderLifecycle(lifecycle) {
     setTimeout(() => document.addEventListener('mousedown', outsideCloser, true), 0);
   };
   btn.addEventListener('click', () => (panel.classList.contains('open') ? close() : open()));
-  $('fpSourceChips')?.addEventListener('click', (e) => {
-    const chip = e.target.closest('.fp-chip'); if (!chip) return;
-    boardFilter.source = chip.dataset.src || '';
-    applyBoardFilter();
+  // 来源 / 工作目录：自定义下拉（选项面板同款），选项按真实数据现取
+  srcDD = makeFilterDropdown({
+    btnId: 'fpSourceBtn', menuId: 'fpSourceMenu', items: sourceDropItems,
+    getValue: () => boardFilter.source, onPick: (v) => { boardFilter.source = v; applyBoardFilter(); },
   });
-  $('fpCwd')?.addEventListener('change', (e) => { boardFilter.cwd = e.target.value; applyBoardFilter(); });
+  cwdDD = makeFilterDropdown({
+    btnId: 'fpCwdBtn', menuId: 'fpCwdMenu', items: cwdDropItems,
+    getValue: () => boardFilter.cwd, onPick: (v) => { boardFilter.cwd = v; applyBoardFilter(); },
+  });
   $('fpKeyword')?.addEventListener('input', (e) => { boardFilter.keyword = e.target.value.trim(); applyBoardFilter(); });
   $('fpSessionId')?.addEventListener('input', (e) => { boardFilter.sessionId = e.target.value.trim(); applyBoardFilter(); });
   $('fpClear')?.addEventListener('click', () => {

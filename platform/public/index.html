@@ -340,11 +340,28 @@ select.field-input{background:var(--card)}
 .filter-panel.open{display:flex}
 .fp-group{display:flex;flex-direction:column;gap:6px}
 .fp-label{font-size:11px;color:var(--mut);font-weight:600}
-.fp-chips{display:flex;flex-wrap:wrap;gap:6px}
-.fp-chip{padding:4px 10px;font-size:11.5px;border:1px solid var(--input);border-radius:999px;background:var(--card);color:var(--ink2);
-  cursor:pointer;line-height:1.5;transition:background .12s,border-color .12s,color .12s}
-.fp-chip:hover{background:var(--accent);border-color:var(--hair2);color:var(--accent-foreground)}
-.fp-chip.active{background:var(--primary);color:var(--primary-foreground);border-color:transparent;font-weight:600}
+/* 来源 / 工作目录：自定义下拉（不用原生 select；选项面板对齐新建任务 .cwd-menu 范式）*/
+.fp-dd{position:relative}
+.fp-dd-btn{display:flex;align-items:center;gap:8px;width:100%;font-family:var(--sans);font-size:12px;padding:7px 10px;
+  border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);cursor:pointer;outline:none;
+  transition:border-color .15s,background .15s}
+.fp-dd-btn:hover{background:var(--raise);border-color:var(--hair2)}
+.fp-dd-btn.open{border-color:var(--ring);box-shadow:var(--focus-ring)}
+.fp-dd-label{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fp-dd-label.dim{color:var(--dim)}
+.fp-dd-caret{flex:none;color:var(--mut);font-size:9px;transition:transform .15s}
+.fp-dd-btn.open .fp-dd-caret{transform:rotate(180deg)}
+.fp-dd-menu{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--popover);box-shadow:var(--ring1),var(--shadow);
+  border-radius:var(--r-lg);padding:5px;z-index:1200;max-height:230px;overflow-y:auto;display:none;animation:rise .12s}
+.fp-dd-menu.open{display:block}
+.fp-dd-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:var(--r-md);cursor:pointer;
+  font-family:var(--mono);font-size:11.5px;color:var(--ink2)}
+.fp-dd-item .fp-dd-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fp-dd-item .fp-dd-src{margin-left:auto;font-family:var(--sans);font-size:9px;font-weight:600;color:var(--mut);flex:none;
+  background:var(--muted);padding:1px 6px;border-radius:999px}
+.fp-dd-item .fp-dd-check{margin-left:auto;color:var(--brand);font-size:12px;font-weight:700;opacity:0;flex:none}
+.fp-dd-item.active .fp-dd-check{opacity:1}
+.fp-dd-item:hover,.fp-dd-item.active{background:var(--accent);color:var(--accent-foreground)}
 .filter-panel .field-input{padding:7px 10px;font-size:12px}
 .fp-foot{display:flex;justify-content:flex-end;border-top:1px solid var(--hair);padding-top:10px}
 .fp-foot .btn{font-size:11.5px;padding:5px 12px}
@@ -718,11 +735,17 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <div class="filter-panel" id="boardFilterPanel">
                 <div class="fp-group">
                   <div class="fp-label">来源</div>
-                  <div class="fp-chips" id="fpSourceChips"></div>
+                  <div class="fp-dd" id="fpSourceDD">
+                    <button type="button" class="fp-dd-btn" id="fpSourceBtn"><span class="fp-dd-label dim">全部</span><span class="fp-dd-caret">▾</span></button>
+                    <div class="fp-dd-menu" id="fpSourceMenu" role="listbox"></div>
+                  </div>
                 </div>
                 <div class="fp-group">
                   <div class="fp-label">工作目录</div>
-                  <select class="field-input" id="fpCwd"><option value="">全部</option></select>
+                  <div class="fp-dd" id="fpCwdDD">
+                    <button type="button" class="fp-dd-btn" id="fpCwdBtn"><span class="fp-dd-label dim">全部</span><span class="fp-dd-caret">▾</span></button>
+                    <div class="fp-dd-menu" id="fpCwdMenu" role="listbox"></div>
+                  </div>
                 </div>
                 <div class="fp-group">
                   <div class="fp-label">关键字</div>
