@@ -18,7 +18,7 @@ fs.mkdirSync(path.join(CC, 'proj1'), { recursive: true });
 
 const imp = (p) => import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../../platform/lib', p)).href);
 const { moveTaskToPlan, completeTask, uncompleteTask, readTaskEdit, replyToTask } = await imp('task-actions.js');
-const { archiveTask, unarchiveTask } = await imp('logs.js');
+const { archiveTask, unarchiveTask, readWorkerLog } = await imp('logs.js');
 const { upsertWatchlist, readWatchlist } = await imp('cli-watchlist.js');
 
 let pass = 0, fail = 0;
@@ -112,6 +112,13 @@ console.log('\n[6] 物化后 回复 走 package-first（Mode B --resume），不
   // 有包 + processing：走包路径的「处理中」guard（若仍按 cli 前缀分派到 replyCliSession，错误不会是「处理中」）
   const r = replyToTask({ taskKey, message: '继续' });
   assert(!r.ok && /处理中/.test(r.error || ''), '有包→包路径 processing guard（证明未走 replyCliSession）', JSON.stringify(r));
+}
+
+console.log('\n[7] 物化后 worker-log 走 package-first（按 meta.sessionId 读 jsonl），不再路由到 readCliWorkerLog（需 watchlist）');
+{
+  // cli:aabbccdd 已在 [1] 物化 + 摘 watchlist；若仍按前缀路由到 readCliWorkerLog 会「not in watchlist」
+  const r = readWorkerLog('cli:aabbccdd');
+  assert(r.ok && Array.isArray(r.rounds) && r.rounds.length >= 1, 'readWorkerLog 走包路径读到历史（未路由到 watchlist 侧）', JSON.stringify({ ok: r.ok, rounds: r.rounds?.length, err: r.error }));
 }
 
 console.log(`\n==== ${fail === 0 ? '✅ ALL PASS' : '❌ FAIL'} : ${pass} passed, ${fail} failed ====`);

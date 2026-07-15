@@ -385,7 +385,8 @@ function readCliWorkerLog(taskKey) {
 
 // worker-log 端点：从 CC 官方 jsonl 拼 sessionHistory[] 多轮内容（阶段 3 起，替代旧 watch-worker-*.log）
 export function readWorkerLog(taskKey, maxSessions = 20) {
-  if (typeof taskKey === 'string' && taskKey.startsWith('cli:')) return readCliWorkerLog(taskKey);
+  // 未物化的 CLI 会话（无任务包）→ 直接从 CC jsonl 拼历史；物化后有包（meta.sessionId 指向同一 jsonl）→ 走下面统一路径
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey)) return readCliWorkerLog(taskKey);
   const safeKey = safeKeyOf(taskKey);
   if (!safeKey) return { ok: false, error: 'invalid taskKey', taskKey };
   const taskDir = path.join(P.runnerRoot, safeKey);

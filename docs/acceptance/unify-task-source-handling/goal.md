@@ -12,8 +12,8 @@
 |---|---|---|---|
 | 0 | `SCRUMWS_CC_PROJECTS` 覆盖（沙箱验证隔离） | ✅ | collect-cli.js / cli-actions.js |
 | 1 | 终态动作统一：materialize + toPlan/complete/uncomplete/archive/unarchive/rename/edit 按包统一；CLI 退回计划可用 | ✅ | scripts/verify-cli-unify.mjs；replan-resume 回归 21/21；collector smoke 单卡 |
-| 2 | reply 统一：物化 CLI 走 Mode B `--resume`；reply/cancel/archived-remove UI 门控改「按 t.cli（被旁观）」不按 source | ✅ | verify-cli-unify 18/18（含 reply package-first）；collector smoke 物化卡无 t.cli |
-| 3 | rewind / worker-log 统一按包 | ⏳ | |
+| 2 | reply 统一：物化 CLI 走 Mode B `--resume`；reply/cancel/archived-remove UI 门控改「按 t.cli（被旁观）」不按 source | ✅ | verify-cli-unify（含 reply package-first）；collector smoke 物化卡无 t.cli |
+| 3 | worker-log 按包统一；rewind 门控改「按 t.cli」（观察侧操作，去掉物化卡上会报错的按钮） | ✅ | verify-cli-unify 19/19（含 [7] worker-log package-first）；replan 回归 21/21 |
 | 4 | 清扫 deleteTask guard + collect.js platformSids(305) 复核（物化 CLI 有 sessionId 却被排除出平台用量子集） | ⏳ | |
 
 ## sub goal 进展
@@ -46,5 +46,12 @@
 - **验证**（本地实跑全绿）：`verify-cli-unify.mjs` **18/18**（新增 [6] 物化后回复走包路径 processing guard，证明未落 replyCliSession）；`replan-resume` 回归 **21/21**；collector 冒烟：物化卡 source=cli 但**无 t.cli** → 前端 `isObservedCli=false` → 走托管统一路径（可回复/可中断）。
 - **边界**：未物化的「被旁观 / 收养」CLI 会话行为不变（仍走观察侧续接 / session/send）。rewind、worker-log 源特判留 round-3。
 
-### round-3+（sub goal 3/4）— ⏳ 待做
+### round-3（sub goal 3）— ✅
+
+- **worker-log**（`logs.js readWorkerLog`）：改 package-first——未物化 CLI（无包）走 `readCliWorkerLog`（watchlist 定位 sid）；有包（含物化 CLI）走统一路径（按 `meta.sessionId` → `locateJsonlBySid` 读同一 jsonl）。修的是：`readCliWorkerLog` 靠 watchlist 定位 sid，物化后 watchlist 已摘 → 会「not in watchlist」；package 路径按 meta.sessionId 读，正确。
+- **rewind**（`app.js canRewind`）：`startsWith('cli:')` → `!!findTaskInState(taskKey)?.cli`。理由：rewind = jsonl 截断 + 收养重跑，是**观察侧会话**的操作；`rewindCliSession` 也靠 watchlist 定位 sid，物化任务点它必「not in watchlist」——故按 `t.cli` 门控，物化/托管任务不再显示这个会报错的按钮（托管任务改历史应走托管重跑，另属特性，非本次范围）。
+- **验证**：`verify-cli-unify.mjs` **19/19**（新增 [7]：物化后 `readWorkerLog` 走包路径读到历史，证明未落 watchlist 侧）；`replan-resume` 回归 **21/21**。
+- **边界**：观察侧 CLI 的 rewind / worker-log 行为不变。托管任务的「改历史重跑」是潜在新特性，不在收敛范围。
+
+### round-4（sub goal 4）— ⏳ 待做
 </content>

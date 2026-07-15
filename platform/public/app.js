@@ -2000,8 +2000,10 @@ function renderUserTurn(m) {
   const bubble = text.length > 800
     ? `<details><summary style="cursor:pointer;list-style:none;white-space:pre-wrap;word-break:break-word;line-height:1.7"><span style="color:var(--amber);font-size:10.5px;font-family:var(--mono);margin-right:6px;background:var(--amberS);padding:1px 6px;border-radius:4px">▸ prompt 模板 · ${text.length}c</span></summary><div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--hair);white-space:pre-wrap;word-break:break-word">${escaped}</div></details>`
     : escaped;
-  // fork-rewind 按钮：仅 CLI 会话 + 消息有 uuid 时给（hover 气泡出现在下方；分身任务不给）
-  const canRewind = modalPollTaskKey?.startsWith('cli:') && m.uuid;
+  // fork-rewind 按钮：仅「被旁观的 CLI 会话」(t.cli) + 消息有 uuid 时给。rewind = jsonl 截断 + 收养重跑，是
+  // 观察侧会话的操作；物化后的托管任务（无 t.cli）改历史应走托管重跑（另属特性），且其 sid 已不在 watchlist，
+  // 走观察侧 rewindCliSession 会「not in watchlist」——故按 t.cli 门控（不按 source 前缀），避免给出会报错的按钮。
+  const canRewind = !!findTaskInState(modalPollTaskKey)?.cli && m.uuid;
   const rewindBtn = canRewind
     ? `<div class="msg-rewind"><button class="btn" style="font-size:10px;padding:2px 9px;color:var(--dim)" onclick="rewindCliMessage('${escapeAttr(m.uuid)}')" title="改写这条消息，fork 新会话从这里重新执行（原会话不动）">⑂ 改写重跑</button></div>`
     : '';
