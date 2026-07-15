@@ -17,7 +17,7 @@ fs.mkdirSync(runnerRoot, { recursive: true });
 fs.mkdirSync(path.join(CC, 'proj1'), { recursive: true });
 
 const imp = (p) => import(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../../platform/lib', p)).href);
-const { moveTaskToPlan, completeTask, uncompleteTask, readTaskEdit } = await imp('task-actions.js');
+const { moveTaskToPlan, completeTask, uncompleteTask, readTaskEdit, replyToTask } = await imp('task-actions.js');
 const { archiveTask, unarchiveTask } = await imp('logs.js');
 const { upsertWatchlist, readWatchlist } = await imp('cli-watchlist.js');
 
@@ -99,6 +99,19 @@ console.log('\n[5] 未物化的 CLI 会话 完成/取消完成 仍回落 watchli
   assert(rc.ok && !!readWatchlist().sessions[sid]?.doneAt, '完成 → watchlist.doneAt 置位（无包回落）', JSON.stringify(rc));
   const ru = uncompleteTask({ taskKey });
   assert(ru.ok && !readWatchlist().sessions[sid]?.doneAt, '取消完成 → watchlist.doneAt 清空', JSON.stringify(ru));
+}
+
+console.log('\n[6] 物化后 回复 走 package-first（Mode B --resume），不再路由到观察侧 replyCliSession');
+{
+  const sid = 'ddeeff00-1122-4333-8444-555566667777';
+  const taskKey = 'cli:ddeeff00';
+  mkCliSession(sid, SANDBOX);
+  moveTaskToPlan({ taskKey });
+  const sf = path.join(pkgDir(taskKey), 'state.json');
+  const s = readJson(sf); s.state = 'processing'; fs.writeFileSync(sf, JSON.stringify(s));
+  // 有包 + processing：走包路径的「处理中」guard（若仍按 cli 前缀分派到 replyCliSession，错误不会是「处理中」）
+  const r = replyToTask({ taskKey, message: '继续' });
+  assert(!r.ok && /处理中/.test(r.error || ''), '有包→包路径 processing guard（证明未走 replyCliSession）', JSON.stringify(r));
 }
 
 console.log(`\n==== ${fail === 0 ? '✅ ALL PASS' : '❌ FAIL'} : ${pass} passed, ${fail} failed ====`);

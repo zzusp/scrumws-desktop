@@ -270,15 +270,16 @@ export function moveTaskToPlan({ taskKey }) {
   return { ok: true, taskKey, state: 'plan' };
 }
 
-// 回复任务：CLI 会话走 cli-reply-runner（观察侧，另一功能）；其余走 Mode B（复用 live 会话 / --resume 重挂）。
-// effort：per-reply reasoning 档位覆盖（仅 --resume 重挂新会话时生效，live 会话 spawn 时已定）。
+// 回复任务：package-first——有任务包（含物化 CLI）走 Mode B（复用 live 会话 / --resume 重挂）；未物化的 CLI 会话
+// （无包）才走观察侧 cli-reply-runner。effort：per-reply reasoning 档位覆盖（仅 --resume 重挂新会话时生效）。
 export function replyToTask({ taskKey, message, model, effort }) {
-  if (String(taskKey || '').startsWith('cli:')) return replyCliSession({ taskKey, message, model });
-  const msg = String(message || '').trim();
-  if (!msg) return { ok: false, error: 'message required' };
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
+  // 未物化的 CLI 会话（无任务包）→ 观察侧 replyCliSession；有包一律走下面统一的 Mode B 路径
+  if (String(taskKey).startsWith('cli:') && !fs.existsSync(taskDir)) return replyCliSession({ taskKey, message, model });
+  const msg = String(message || '').trim();
+  if (!msg) return { ok: false, error: 'message required' };
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found（归档任务请先取消归档再回复）' };
   let state = null;
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }

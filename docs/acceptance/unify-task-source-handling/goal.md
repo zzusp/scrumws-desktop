@@ -11,10 +11,10 @@
 | # | sub goal | 状态 | 证据 |
 |---|---|---|---|
 | 0 | `SCRUMWS_CC_PROJECTS` 覆盖（沙箱验证隔离） | ✅ | collect-cli.js / cli-actions.js |
-| 1 | 终态动作统一：materialize + toPlan/complete/uncomplete/archive/unarchive/rename/edit 按包统一；CLI 退回计划可用 | ✅ | scripts/verify-cli-unify.mjs 17/17；replan-resume 回归 21/21；collector smoke 单卡 |
-| 2 | reply 统一：物化 CLI 走 Mode B `--resume`；放开 reply/cancel UI 门控 | ⏳ | |
-| 3 | rewind / worker-log / archived-remove 统一按包 | ⏳ | |
-| 4 | 清扫剩余 UI isCli 门控 + deleteTask guard + platformSids 复核 | ⏳ | |
+| 1 | 终态动作统一：materialize + toPlan/complete/uncomplete/archive/unarchive/rename/edit 按包统一；CLI 退回计划可用 | ✅ | scripts/verify-cli-unify.mjs；replan-resume 回归 21/21；collector smoke 单卡 |
+| 2 | reply 统一：物化 CLI 走 Mode B `--resume`；reply/cancel/archived-remove UI 门控改「按 t.cli（被旁观）」不按 source | ✅ | verify-cli-unify 18/18（含 reply package-first）；collector smoke 物化卡无 t.cli |
+| 3 | rewind / worker-log 统一按包 | ⏳ | |
+| 4 | 清扫 deleteTask guard + collect.js platformSids(305) 复核（物化 CLI 有 sessionId 却被排除出平台用量子集） | ⏳ | |
 
 ## sub goal 进展
 
@@ -35,5 +35,16 @@
   - package-first 判据统一为「有无任务包」，保证未物化 CLI 行为不变、非 CLI 不受影响。
   - round-1 未触及 reply/rewind/cancel/worker-log 的源特判——物化 CLI 在这些路径**是限制而非 broken**（reply/cancel UI 对 cli 隐藏、rewind/worker-log jsonl 仍在），留 sub goal 2/3。
 
-### round-2+（sub goal 2/3/4）— ⏳ 待做
+### round-2（sub goal 2）— ✅
+
+- **关键洞见**：物化后的 CLI 任务 `source` 仍是 `'cli'`，无法据此区分「被旁观 CLI」与「托管任务」。真正的区分是
+  **`t.cli` 对象**——只有 `collect-cli.js`（watchlist 出卡）才带；`collect.js`（runner-state 包出卡）不带。故前端行为门控
+  一律改判 `isObservedCli = !!t.cli`（不再按 source）。已冒烟验证：物化卡 `t.cli` 缺失。
+- **改动**：
+  - `task-actions.js replyToTask`：改 package-first——有包（含物化 CLI）走 Mode B `--resume`；未物化 CLI（无包）才走 `replyCliSession`。
+  - `app.js`：回复弹窗（`canReply` / 观察态三态分支）、卡片 + 详情的「中断」「从看板移除」门控，全部 `isCli`→`isObservedCli(!!t.cli)`；`mbSend` 的 `useTaskReply` 由 `!tk.startsWith('cli:')` 改为 `!findTaskInState(tk)?.cli`（物化 CLI 走 `/api/task/reply`，收养未物化 CLI 仍走 `/api/session/send`）。
+- **验证**（本地实跑全绿）：`verify-cli-unify.mjs` **18/18**（新增 [6] 物化后回复走包路径 processing guard，证明未落 replyCliSession）；`replan-resume` 回归 **21/21**；collector 冒烟：物化卡 source=cli 但**无 t.cli** → 前端 `isObservedCli=false` → 走托管统一路径（可回复/可中断）。
+- **边界**：未物化的「被旁观 / 收养」CLI 会话行为不变（仍走观察侧续接 / session/send）。rewind、worker-log 源特判留 round-3。
+
+### round-3+（sub goal 3/4）— ⏳ 待做
 </content>

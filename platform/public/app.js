@@ -423,7 +423,9 @@ function taskCardHtml(t, section) {
 
 // 卡片操作按钮（收进「···」浮层菜单）：edit/desc + 按 section 的操作。菜单在卡片外浮层，按钮不需 stopPropagation。
 function cardActionButtons(t, section) {
-  const isCli = t.source === 'cli';
+  // 被旁观的 CLI 会话（watchlist 出卡，带 t.cli）：processing 不给「中断」（不干预终端进程）、归档区给「从看板移除」。
+  // 物化后的 CLI 任务无 t.cli，与其它来源一致（可中断 Mode B 会话、归档区只取消归档）。按 t.cli 判、不按 source（任务来源不变量）。
+  const isObservedCli = !!t.cli;
   const isPlan = section === 'plan';
   const _k = escapeAttr(t.taskKey);
   const descBtn = `<button class="btn" onclick="editTaskDesc('${_k}')" title="自己看的备注，不发给 claude">✎ 描述</button>`;
@@ -444,7 +446,7 @@ function cardActionButtons(t, section) {
     const tailBtn = t.meta?.sessionId ? archiveBtn : removeBtn;
     actionBtn = `<button class="btn" style="color:var(--jade)" onclick="approveTaskAction('${_k}')">▶ 排队</button>${tailBtn}`;
   } else if (section === 'processing') {
-    actionBtn = isCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
+    actionBtn = isObservedCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
   } else if (section === 'queued') {
     actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
   } else if (section === 'awaiting-human') {
@@ -452,7 +454,7 @@ function cardActionButtons(t, section) {
   } else if (section === 'done') {
     actionBtn = uncompleteBtn + toPlanBtn + archiveBtn;
   } else if (section === 'archived') {
-    const rmBtn = isCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">✕ 移除</button>` : '';
+    const rmBtn = isObservedCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">✕ 移除</button>` : '';
     actionBtn = unarchiveBtn + rmBtn;
   }
   return lead + actionBtn;
@@ -1059,10 +1061,12 @@ function updateReplyBoxAvailability(taskKey) {
   lastReplyFp = replyBoxFp(t);   // 每次装配都刷新基线，常驻轮询据此判定后续是否需要重装
   const hasSid = !!(t?.meta?.sessionId);
   const processing = t?.state === 'processing';
-  const isCli = t?.source === 'cli';
+  // 被旁观的 CLI 会话（watchlist 出卡，带 t.cli 详情）走「收养续接」分支；物化后的 CLI 任务无 t.cli，与其它来源
+  // 一样走托管任务的统一回复路径（sendReply → --resume）。按「有无 t.cli」而非按 source 判（任务来源不变量）。
+  const isObservedCli = !!t?.cli;
   // queued 场景 = 新建入队 / 中断后回排队；由用户从看板拉起（重新发起）；lease 存活 = worker 在起，不给重发
   const canRestart = !hasSid && ['awaiting-human', 'queued'].includes(t?.state) && !t?.lease?.alive && !t?.isArchive;
-  const canReply = hasSid && !processing && !isCli;
+  const canReply = hasSid && !processing && !isObservedCli;
 
   box.style.display = 'block';
   toast.style.display = 'none';
@@ -1102,8 +1106,8 @@ function updateReplyBoxAvailability(taskKey) {
     return;
   }
 
-  // CLI 会话三态：终端占用 → 只读；正在算 → 等；空闲无进程 → 可从看板回复（headless --resume）
-  if (isCli) {
+  // 被旁观的 CLI 会话三态：终端占用 → 只读；正在算 → 等；空闲无进程 → 收养续接成 live（--resume）
+  if (isObservedCli) {
     stateTag.className = 'tag';
     stateTag.style.background = 'var(--brandS)';
     stateTag.style.color = 'var(--brand)';
@@ -1498,7 +1502,8 @@ function renderTaskSide(taskKey) {
   const rounds = (r?.rounds || []).filter((x) => !x.error);
   const meta = t.meta || {};
   const lastOk = rounds[rounds.length - 1] || null;
-  const isCli = t.source === 'cli';
+  // 被旁观的 CLI 会话（带 t.cli）：processing 不给「中断」、归档区给「从看板移除」。物化后无 t.cli，与其它来源一致。
+  const isObservedCli = !!t.cli;
   // 模型/cwd/git/工作时长/最近活动：CLI 与分身统一从详情 round 取（readWorkerLog 对两类同构产出）——不按来源分叉
   const model = lastOk?.ccSummary?.model || lastOk?.systemInit?.model || t.meta?.model || '—';
   const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
@@ -1517,12 +1522,12 @@ function renderTaskSide(taskKey) {
     ? `<div style="margin-top:10px;font-size:12px"><a href="${escapeAttr(t.business.commentUrl)}" target="_blank" style="color:var(--cyan)">↗ 已发 issue 评论</a></div>`
     : '';
   // 快捷操作（与看板卡片同一套全局动作，按状态统一）：完成/取消完成/归档/取消归档 对所有来源一致；
-  // 仅执行差异按 isCli 分支——CLI processing 不干预运行中会话、CLI 归档区额外「从看板移除」。
+  // 仅执行差异按 t.cli（被旁观 CLI）分支——其 processing 不干预终端进程、归档区额外「从看板移除」。
   const btns = [];
   const _bk = escapeAttr(t.taskKey);
   if (t.isArchive) {
     btns.push(`<button class="btn" onclick="unarchiveTaskAction('${_bk}')">↺ 取消归档</button>`);
-    if (isCli) btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
+    if (isObservedCli) btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
   } else if (t.state === 'plan') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${_bk}')">▶ 确认排队</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
@@ -1531,7 +1536,7 @@ function renderTaskSide(taskKey) {
     // 与「打断」同源于 mb.state，result 一到即随 mbSyncLiveHead→renderTaskSide 一起隐藏，不必等 5s 轮询。
     // 非 live 任务（无 mb / 不匹配）→ liveRunning 恒真，按 t.state 原逻辑显示，不受影响。
     const liveRunning = !mb || mb.id !== t.mbSessionId || mb.state === 'running' || mb.state === 'starting';
-    if (!isCli && liveRunning) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
+    if (!isObservedCli && liveRunning) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
   } else if (t.state === 'awaiting-human') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${_bk}')">✓ 完成</button>`);
     btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
@@ -3139,12 +3144,12 @@ async function mbSend() {
   mb.transcript.push({ type: 'user', message: { role: 'user', content: msg } });   // 乐观回显
   mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); mb.liveUsage = null;   // 从发送即开始计时（CC 风格）
   mb.state = 'running'; mbRenderBody(); mbSyncLiveHead();
-  // 绑定「文件任务」→ /api/task/reply（内部 sendUserMessage + 置任务 state=processing + lease）；
-  // CLI 收养会话（taskKey=cli:*，无 runner-state）与未绑定会话 → 直接发到 live 会话 stdin（/api/session/send）。
-  // 关键：cli:* 不能走 /api/task/reply——那会进 replyToTask 的 cli 分支→观察侧的 replyCliSession（已废弃 ps1），
-  // 既撞不到活的 runner、guard 又会把「本会话自己的 claude」误判成终端占用而拒发。mb 本身就是这个 live 会话。
+  // 绑定「文件任务」（有任务包）→ /api/task/reply（内部 sendUserMessage + 置任务 state=processing + lease）；
+  // 被旁观 / 收养但未物化的 CLI 会话（board 卡带 t.cli，无 runner-state 包）与未绑定会话 → 直接发到 live 会话
+  // stdin（/api/session/send）。关键：未物化 cli:* 不能走 /api/task/reply——那会进 replyToTask 的观察侧 replyCliSession
+  //（已废弃 ps1），既撞不到活的 runner、guard 又会误判终端占用而拒发。物化后的 cli 任务有包、无 t.cli → 走 task/reply。
   const tk = mb.info?.taskKey;
-  const useTaskReply = tk && !tk.startsWith('cli:');
+  const useTaskReply = tk && !findTaskInState(tk)?.cli;
   const r = useTaskReply
     ? await api(`/api/task/reply?taskKey=${encodeURIComponent(tk)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }))
     : await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }));
