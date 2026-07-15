@@ -9,6 +9,7 @@ import { fmt, parse, ago } from './timeutil.js';
 import { listWatchlist, upsertWatchlist, setDoneWatchlist } from './cli-watchlist.js';
 import { P } from './paths.js';
 import { listSessions } from './session-manager.js';
+import { detectWorktreeBase } from './git.js';
 
 // CC 会话 jsonl 根：默认 ~/.claude/projects；SCRUMWS_CC_PROJECTS 可覆盖（沙箱验证隔离用，对齐 SCRUMWS_* 约定）
 const CC_PROJECTS = process.env.SCRUMWS_CC_PROJECTS || path.join(os.homedir(), '.claude', 'projects');
@@ -251,6 +252,8 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
         source: 'cli',
         kind: null,
         state: 'awaiting-human',
+        cwd: null,
+        worktreeDir: null,
         backgroundAgentCount: 0,
         outcome: 'jsonl-missing',
         outcomeDetail: { failureReason: 'jsonl 文件已消失（可能被清理）' },
@@ -322,6 +325,11 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   // cwd/git/version：att（CC 注册表活进程，最新值）> 事件里首条带该字段的真实行（末尾侧优先，更新）。
   // 不再直接用 first/last —— 它们可能恰是不带 cwd/git 的元事件（queue-operation/last-prompt）。
   const cwd = att?.cwd || lastEnv?.cwd || firstEnv?.cwd || null;
+  // 工作目录不变量：卡片展示的工作目录取 base 仓库根；会话跑在 worktree 里时 worktree 路径另记 worktreeDir。
+  // cli.cwd 保留会话实际运行目录（resume 须回原目录，见 cli-actions rewind/reply）。
+  const wtc = cwd ? detectWorktreeBase(cwd) : { isWorktree: false, baseCwd: null };
+  const baseCwd = wtc.baseCwd;
+  const worktreeDir = wtc.isWorktree ? cwd : null;
   const gitBranch = lastEnv?.gitBranch || firstEnv?.gitBranch || null;
   const version = lastEnv?.version || firstEnv?.version || null;
   const mode = lastMode?.mode || 'normal';
@@ -376,6 +384,9 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
     source: 'cli',
     kind: 'interactive',
     state,
+    // 工作目录/worktree 目录（与 runner 任务同字段）：cwd=base 仓库根供卡片展示，worktreeDir=实际 worktree 运行目录
+    cwd: baseCwd,
+    worktreeDir,
     // 统一后台维度（runner/cli 同字段）：>0 = 该会话仍有后台 agent 在跑，卡片/详情据此渲染
     backgroundAgentCount,
     outcome: state === 'done' ? 'success' : null,

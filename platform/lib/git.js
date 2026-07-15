@@ -42,6 +42,15 @@ export function detectGit(dir) {
   };
 }
 
+// 若 dir 是 worktree 运行目录（约定布局 <base>/.claude/worktrees/<name>[/...]），拆出 base 仓库根；否则原样返回。
+// 纯路径判、零 git 调用：collect 每次刷新都会调（要快），且 worktree 目录已删也能判（迁移历史数据用）。
+// 布局与 ensureWorktree / 官方 `claude --worktree` 一致，故路径约定可靠；调用方保留原 dir 作为 worktree 目录。
+export function detectWorktreeBase(dir) {
+  const d = String(dir || '').trim();
+  const m = d.match(/^(.*?)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+/);
+  return m ? { isWorktree: true, baseCwd: m[1] } : { isWorktree: false, baseCwd: d };
+}
+
 function branchExists(repoDir, branch) {
   return git(repoDir, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).ok;
 }
