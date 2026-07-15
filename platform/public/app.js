@@ -2041,6 +2041,17 @@ function resetNewTaskExtras() {
   window.__syncDtPicker?.();                    // 同步日历选择器显示为「留空」
   $('newTaskWorktree').checked = true;         // req5：支持 worktree 时默认开启
   $('newTaskDynamicWorkflow').checked = false; // req6：默认关闭
+  setDirWorktreeLocked(false);                 // 新建：工作目录 / worktree 可编辑
+}
+
+// 退回来的、有会话记录的 plan 任务：锁定 工作目录 / worktree / 基分支（改了会让确认执行的 --resume 找不到原会话）。
+// 前端禁用输入 + 显示锁定说明（后端 editTask 也会保原值兜底）。
+function setDirWorktreeLocked(locked) {
+  for (const id of ['newTaskCwd', 'newTaskCwdCaret', 'newTaskCwdBrowse', 'newTaskWorktree', 'newTaskBaseBranch', 'newTaskBranchCaret']) {
+    const el = $(id); if (el) el.disabled = !!locked;
+  }
+  const hint = $('newTaskDirLockHint');
+  if (hint) hint.style.display = locked ? 'block' : 'none';
 }
 
 // plan 任务「编辑」：复用新建弹窗，先拉 /api/task/detail 回填，提交走 /api/task/edit（仅 plan 可编辑）
@@ -2067,6 +2078,8 @@ async function openEditTask(taskKey) {
   $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
   // req5：git 探测后回填 worktree 勾选 + 签出分支（默认开启沿用旧值；旧 plan 无该字段则默认开）
   refreshWorktreeUi(r.cwd || '', { worktree: r.worktree !== false, baseBranch: r.baseBranch || '' });
+  // 退回来的、有会话记录的任务：锁定 工作目录 / worktree（续对话须保持原运行目录）
+  setDirWorktreeLocked(!!r.resumeLocked);
   $('newTaskErr').style.display = 'none';
   $('newTaskWarn').style.display = 'none';
   setTimeout(() => $('newTaskPrompt').focus(), 100);

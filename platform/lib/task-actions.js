@@ -364,9 +364,10 @@ export function readTaskEdit(taskKey) {
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
-  let state = null; let task = {};
+  let state = null; let task = {}; let meta = null;
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
   try { task = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')); } catch { }
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
   if (state?.state !== 'plan') return { ok: false, error: `只有 plan 态任务可编辑（当前 ${state?.state || '未知'}）` };
   return {
     ok: true,
@@ -383,6 +384,8 @@ export function readTaskEdit(taskKey) {
     worktree: !!task.worktree,
     baseBranch: task.baseBranch || '',
     dynamicWorkflow: task.dynamicWorkflow == null ? null : !!task.dynamicWorkflow,
+    // 有会话记录（从 待人工/完成 退回来的）→ 工作目录 / worktree 锁定：改了会让确认执行的 --resume 找不到原会话
+    resumeLocked: !!meta?.sessionId,
   };
 }
 
@@ -411,14 +414,21 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
   if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
   if (eff && !ALLOWED_EFFORTS.has(eff)) return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
   if (schedRaw && !parse(schedRaw)) return { ok: false, error: `定时时间无法解析：${schedRaw}` };
-  // cwd 可选：给了就必须存在且是目录（对齐 createTask，避免改出跑不起来的任务）
+  // 有会话记录（从 待人工/完成 退回来的）→ 锁定 cwd/worktree/baseBranch：这些决定 --resume 去哪个项目目录找原
+  // 会话 jsonl，改了续接就失效。锁定时沿用 task.json 原值、不校验也不改（前端也已禁用这些字段兜底）。
+  let meta = null;
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
+  const locked = !!meta?.sessionId;
+  // cwd 可选：给了就必须存在且是目录（对齐 createTask，避免改出跑不起来的任务）；锁定时跳过校验（沿用原值）
   let cwdFinal = null;
-  const cwdRaw = String(cwd || '').trim();
-  if (cwdRaw) {
-    let st = null;
-    try { st = fs.statSync(cwdRaw); } catch { return { ok: false, error: `工作目录不存在：${cwdRaw}` }; }
-    if (!st.isDirectory()) return { ok: false, error: `工作目录不是文件夹：${cwdRaw}` };
-    cwdFinal = path.resolve(cwdRaw);
+  if (!locked) {
+    const cwdRaw = String(cwd || '').trim();
+    if (cwdRaw) {
+      let st = null;
+      try { st = fs.statSync(cwdRaw); } catch { return { ok: false, error: `工作目录不存在：${cwdRaw}` }; }
+      if (!st.isDirectory()) return { ok: false, error: `工作目录不是文件夹：${cwdRaw}` };
+      cwdFinal = path.resolve(cwdRaw);
+    }
   }
 
   const taskFile = path.join(taskDir, 'task.json');
@@ -429,11 +439,14 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
   task.prompt = p;
   task.model = m;
   if (desc) task.description = desc; else delete task.description;
-  if (cwdFinal) task.cwd = cwdFinal; else delete task.cwd;
   if (eff) task.effort = eff; else delete task.effort;
   if (schedRaw) task.scheduledAt = schedRaw; else delete task.scheduledAt;
-  if (cwdFinal && worktree) { task.worktree = true; if (baseBr) task.baseBranch = baseBr; else delete task.baseBranch; }
-  else { delete task.worktree; delete task.baseBranch; }
+  // 锁定时不动 task.cwd/worktree/baseBranch（保原值）；否则按提交值改写
+  if (!locked) {
+    if (cwdFinal) task.cwd = cwdFinal; else delete task.cwd;
+    if (cwdFinal && worktree) { task.worktree = true; if (baseBr) task.baseBranch = baseBr; else delete task.baseBranch; }
+    else { delete task.worktree; delete task.baseBranch; }
+  }
   if (dynFlow != null) task.dynamicWorkflow = dynFlow; else delete task.dynamicWorkflow;
   task.taskKey = task.taskKey || taskKey;
   try { fs.writeFileSync(taskFile, JSON.stringify(task, null, 2), 'utf8'); }
