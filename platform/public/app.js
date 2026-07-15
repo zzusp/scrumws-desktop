@@ -161,14 +161,6 @@ function renderRuntime(rt) {
   const grid = $('usageGrid');
   if (!card || !grid) return;
   if (!rt) { card.innerHTML = '<div style="color:var(--dim);font-size:12.5px">运行时数据不可用</div>'; grid.innerHTML = ''; return; }
-  // 大数压缩：token 计数动辄百万，stat tile 用 K/M/B 更易读
-  const compact = (n) => {
-    n = Number(n) || 0;
-    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-    return String(n);
-  };
   // ---- 运行时卡片 ----
   const online = rt.online;
   const statusCls = online == null ? 'detecting' : online ? 'on' : 'off';
@@ -196,19 +188,121 @@ function renderRuntime(rt) {
         <div class="rt-sess-sub">板内 ${s.board ?? 0} · 终端 ${s.cli ?? 0}</div>
       </div>
     </div>`;
-  // ---- 用量 stat tiles ----
-  const u = rt.usage || {};
-  const tiles = [
-    { label: '总成本', val: '$' + (u.totalCostUsd || 0).toFixed(4), color: 'var(--brand)' },
-    { label: '输入 tokens', val: compact(u.inputTokens || 0), color: 'var(--info)' },
-    { label: '输出 tokens', val: compact(u.outputTokens || 0), color: 'var(--success)' },
-    { label: '缓存读命中', val: compact(u.cacheReadTokens || 0), color: 'var(--warning)' },
-  ];
-  const sub = `覆盖 ${u.tasksWithUsage || 0} 个已执行任务 · 累计 ${u.rounds || 0} 轮 · ${u.numTurns || 0} turns`
-    + (u.cliCount ? ` · ${u.cliCount} 个 CLI 会话无 token 计量` : '');
-  grid.innerHTML =
-    `<div class="stat-grid">${tiles.map((t) => `<div class="stat-tile"><div class="stat-val">${t.val}</div><div class="stat-label">${escapeHtml(t.label)}</div><div class="stat-accent" style="background:${t.color}"></div></div>`).join('')}</div>`
-    + `<div class="stat-sub">${escapeHtml(sub)}</div>`;
+  // ---- 用量汇总：CC 全局每日 token 表格（7/15/30 天切换）----
+  dailyUsageData = Array.isArray(rt.dailyUsage) ? rt.dailyUsage : null;
+  renderUsageTable();
+  // ---- 账号级用量卡（左 5h/7d 均分 · 右 Chart.js 柱状图：7 天全局 vs scrumws）----
+  const ccGrid = $('ccUsageGrid');
+  if (ccGrid) {
+    ccGrid.innerHTML = ccAccountUsageHtml(rt.claudeUsage, rt.usagePoll);
+    renderDailyChart(rt.dailyUsage);
+  }
+}
+
+// 运行时面板：账号级 5h/7d 用量（复用详情页 ccUsageBarHtml 的横条）+ 定时拉取的上次刷新时间。
+// 数据来自 /api/state 的 runtime.claudeUsage（账号用量）+ runtime.usagePoll（定时器实况），不再单独轮询。
+function ccAccountUsageHtml(cu, pollInfo) {
+  const poll = pollInfo || {};
+  const intervalMin = poll.intervalSec ? Math.round(poll.intervalSec / 60) : 5;
+  const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  const lastTxt = poll.lastRunAt ? hhmm(poll.lastRunAt) : '—';
+  const foot = `<div class="cc-usage-note" style="margin-top:10px">上次刷新 ${lastTxt} · 每 ${intervalMin} 分钟自动刷新${poll.lastOk === false ? ' · <span style="color:var(--coral)">上次拉取失败</span>' : ''}</div>`;
+  let body;
+  if (!cu || cu.error === 'pending') body = '<div class="cc-usage-note">用量加载中…（定时器首拉）</div>';
+  else if (!cu.ok) body = `<div class="cc-usage-note">用量不可用（${escapeHtml(cu.error || 'unknown')}）</div>`;
+  else if (!cu.subscription) body = `<div class="cc-usage-note">当前套餐（${escapeHtml(cu.plan || '—')}）无 5h/7d 滚动窗用量</div>`;
+  else if (cu.error) {
+    const msg = cu.error === 'token-expired' ? 'OAuth 凭据已过期，重新登录 Claude Code 后恢复' : `用量读取失败（${escapeHtml(cu.error)}）`;
+    body = `<div class="cc-usage-note">${msg}</div>`;
+  } else {
+    const bars = ccUsageBarHtml('5 小时', cu.fiveHour) + ccUsageBarHtml('7 天', cu.sevenDay);
+    body = bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
+  }
+  const plan = cu?.plan ? `<span class="tag ${cu?.subscription ? 'tag-jade' : 'tag-mut'}" style="text-transform:uppercase">${escapeHtml(cu.plan)}</span>` : '';
+  const left = `<div class="cc-usage" style="flex:1 1 0;min-width:240px">${plan ? `<div style="margin-bottom:12px">${plan}</div>` : ''}${body}${foot}</div>`;
+  const right = `<div class="du-wrap"><div class="du-title">7 天用量（总 token） · 全局 vs scrumws</div><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
+  return `<div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">${left}${right}</div>`;
+}
+
+// ---- 用量汇总表格（CC 全局每日 token，7/15/30 切换）+ 账号卡柱状图（Chart.js）----
+let dailyUsageData = null;    // 最近一次近 30 天每日用量（tab 切换复用同一份，不重新请求）
+let usageTableDays = 7;       // 表格维度：7 / 15 / 30
+let duChartInstance = null;   // Chart.js 实例（重渲染前 destroy 防泄漏）
+
+// 用量汇总表格：CC 全局每天 input/output/cache/total（token），末行合计 + 7/15/30 天 tab
+function renderUsageTable() {
+  const grid = $('usageGrid');
+  if (!grid) return;
+  const tabs = [7, 15, 30].map((n) => `<button class="du-tab${usageTableDays === n ? ' on' : ''}" data-days="${n}">最近 ${n} 天</button>`).join('');
+  if (!dailyUsageData) {
+    grid.innerHTML = `<div class="du-tabs">${tabs}</div><div style="color:var(--dim);font-size:12.5px;padding:16px 0">用量加载中…（首次扫描本地会话，30 天约需几秒）</div>`;
+    bindUsageTabs();
+    return;
+  }
+  const rows = dailyUsageData.slice(-usageTableDays);
+  const sum = rows.reduce((a, d) => ({ input: a.input + d.input, output: a.output + d.output, cache: a.cache + d.cache, total: a.total + d.total }), { input: 0, output: 0, cache: 0, total: 0 });
+  const wd = ['日', '一', '二', '三', '四', '五', '六'];
+  const body = rows.slice().reverse().map((d) => {   // 新→旧展示
+    const wday = '周' + wd[new Date(d.date + 'T00:00:00').getDay()];
+    return `<tr${d.total === 0 ? ' class="du-tr-empty"' : ''}>`
+      + `<td class="du-td-date">${d.date.slice(5)} <span style="color:var(--dim)">${wday}</span></td>`
+      + `<td>${compactTokens(d.input)}</td><td>${compactTokens(d.output)}</td><td>${compactTokens(d.cache)}</td>`
+      + `<td class="du-td-total">${compactTokens(d.total)}</td></tr>`;
+  }).join('');
+  grid.innerHTML = `<div class="du-tabs">${tabs}</div>`
+    + `<div class="du-table-wrap"><table class="du-table">`
+    + `<thead><tr><th>日期</th><th>输入</th><th>输出</th><th>缓存</th><th>总计</th></tr></thead>`
+    + `<tbody>${body}</tbody>`
+    + `<tfoot><tr><td>合计 · ${rows.length} 天</td><td>${compactTokens(sum.input)}</td><td>${compactTokens(sum.output)}</td><td>${compactTokens(sum.cache)}</td><td class="du-td-total">${compactTokens(sum.total)}</td></tr></tfoot>`
+    + `</table></div>`;
+  bindUsageTabs();
+}
+function bindUsageTabs() {
+  document.querySelectorAll('#usageGrid .du-tab').forEach((b) => {
+    b.addEventListener('click', () => { usageTableDays = Number(b.dataset.days); renderUsageTable(); });
+  });
+}
+
+// 账号卡右侧柱状图（Chart.js）：近 7 天，全局浅色柱 + scrumws 深色子集覆盖（两 dataset grouped:false 重叠）。
+function renderDailyChart(daily) {
+  const canvas = document.getElementById('duChart');
+  if (!canvas) return;
+  const days = Array.isArray(daily) ? daily.slice(-7) : null;
+  if (!days || !days.length || !window.Chart) {
+    if (duChartInstance) { duChartInstance.destroy(); duChartInstance = null; }
+    return;   // 无数据/库未就绪：留空 canvas，下次 /api/state 有数据再画
+  }
+  const css = getComputedStyle(document.documentElement);
+  const info = css.getPropertyValue('--info').trim() || '#3b82f6';
+  const brand = css.getPropertyValue('--brand').trim() || '#2563eb';
+  const ink = css.getPropertyValue('--dim').trim() || '#8a8a8a';
+  const wd = ['日', '一', '二', '三', '四', '五', '六'];
+  const labels = days.map((d) => '周' + wd[new Date(d.date + 'T00:00:00').getDay()]);
+  if (duChartInstance) duChartInstance.destroy();
+  duChartInstance = new window.Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        // 子集覆盖：全局(浅)先画，scrumws(深)后画叠在其上；不用 order（避免图例被 order 重排），靠 dataset 顺序自然覆盖。
+        // hoverBackgroundColor 必须显式给：否则 Chart.js 用内部 color helper 从 backgroundColor 派生 hover 色，
+        // 但它解析不了 CSS color-mix() 字符串（canvas 能渲染、解析器不能）→ fallback 成黑色。
+        { label: '全局', data: days.map((d) => d.total), backgroundColor: `color-mix(in oklab, ${info} 32%, transparent)`, hoverBackgroundColor: `color-mix(in oklab, ${info} 48%, transparent)`, borderRadius: 4, grouped: false },
+        { label: 'scrumws', data: days.map((d) => d.platform), backgroundColor: brand, hoverBackgroundColor: `color-mix(in oklab, ${brand} 86%, black)`, borderRadius: 4, grouped: false },
+      ],
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top', align: 'end', labels: { boxWidth: 10, boxHeight: 10, padding: 12, font: { size: 11 }, color: ink } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${compactTokens(c.parsed.y)} token` } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: ink, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { color: ink, font: { size: 10 }, maxTicksLimit: 5, callback: (v) => compactTokens(v) }, grid: { color: `color-mix(in oklab, ${ink} 16%, transparent)` } },
+      },
+    },
+  });
 }
 
 // ---- 面板 ② 任务生命周期 ----
@@ -1263,44 +1357,30 @@ function fmtResetIn(resetsAt) {
   return `${m}m 后刷新`;
 }
 
-// 单个滚动窗横向进度条（5h / 7d）：百分比 + 距刷新剩余；≥80% 红、≥50% 琥珀、否则绿。
-// 配色参考 claude-center 用量条：百分比文字用可读色档（coral/amber/jade），填充用底色半透明——
-// 柔和不刺眼，避免压暗的 --amber 文字色直接做满值填充呈脏棕。
+// 单个滚动窗横向进度条（5h / 7d），三段式（参考 CC CLI plan usage limits）：
+// 左 = label + 距刷新剩余（淡灰小字）· 中 = 进度条 · 右 = 「N% used」（淡灰小字）。
+// 填充按用量分档：≥80% 红、≥50% 琥珀、否则绿（柔和半透明底色，不刺眼）。
 function ccUsageBarHtml(label, win) {
   if (!win || win.utilization == null) return '';
   const pct = Math.max(0, Math.min(100, Number(win.utilization)));
-  const textColor = pct >= 80 ? 'var(--coral)' : pct >= 50 ? 'var(--amber)' : 'var(--jade)';
   const fillBase = pct >= 80 ? 'var(--destructive)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
   const fill = `color-mix(in oklab, ${fillBase} 62%, transparent)`;
   const reset = win.resetsAt ? fmtResetIn(win.resetsAt) : '';
   return `
     <div class="cc-bar">
-      <div class="cc-bar-head">
-        <span class="cc-bar-label">${escapeHtml(label)}</span>
-        <span class="cc-bar-pct" style="color:${textColor}">${pct.toFixed(0)}%</span>
+      <div class="cc-bar-left">
+        <div class="cc-bar-label">${escapeHtml(label)}</div>
+        ${reset ? `<div class="cc-bar-reset">${escapeHtml(reset)}</div>` : ''}
       </div>
       <div class="cc-bar-track"><div class="cc-bar-fill" style="width:${pct}%;background:${fill}"></div></div>
-      ${reset ? `<div class="cc-bar-reset">${escapeHtml(reset)}</div>` : ''}
+      <div class="cc-bar-pct">${pct.toFixed(0)}% used</div>
     </div>`;
 }
 
-// Claude Code 卡片：sessionId / 模型 / token 用量 + Pro/Max 的 5h/7d 滚动窗
+// Claude Code 卡片：sessionId / 模型 + Pro/Max 的 5h/7d 滚动窗（token 明细行已按需求移除）
 function claudeCodeCardHtml(t, model) {
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const sessionId = t.meta?.sessionId || null;
-  const u = t.meta?.usage || null;   // CC result.usage 末轮快照
-  let tokenHtml;
-  if (u) {
-    const inTok = Number(u.input_tokens) || 0;
-    const outTok = Number(u.output_tokens) || 0;
-    const cacheTok = (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
-    const title = `输入 ${inTok.toLocaleString('en-US')} · 输出 ${outTok.toLocaleString('en-US')} · 缓存 ${cacheTok.toLocaleString('en-US')}`;
-    tokenHtml = `<span title="${escapeAttr(title)}">↑${compactTokens(inTok)} ↓${compactTokens(outTok)} <span style="color:var(--dim)">缓存 ${compactTokens(cacheTok)}</span></span>`;
-  } else if (t.source === 'cli') {
-    tokenHtml = '<span style="color:var(--dim)">CLI 会话不计量</span>';   // CLI 会话 v1 不计 token
-  } else {
-    tokenHtml = '<span style="color:var(--dim)">—</span>';               // 分身任务：快照尚未落盘（多为处理中）
-  }
   // 用量区：套餐 Pro/Max 才有 5h/7d 滚动窗；数据未到 / 非订阅 / 拉取失败各自提示
   const cu = claudeUsage;
   let usageHtml = '';
@@ -1325,7 +1405,6 @@ function claudeCodeCardHtml(t, model) {
       <h3>Claude Code ${planTag ? `<span style="margin-left:auto">${planTag}</span>` : ''}</h3>
       ${kv('session', sessionId ? escapeHtml(sessionId) : '<span style="color:var(--dim)">—</span>')}
       ${kv('模型', escapeHtml(model))}
-      ${kv('token', tokenHtml)}
       ${usageHtml ? `<div class="cc-usage">${usageHtml}</div>` : ''}
     </div>`;
 }
@@ -1937,6 +2016,7 @@ async function refreshState() {
     renderLifecycle(stateData.lifecycle);
     syncProxyInput();
     syncMaxRunnersInput();
+    syncUsagePollInput();
   } catch (e) { console.error('state error:', e); }
 }
 
@@ -2004,6 +2084,36 @@ function syncMaxRunnersInput() {
       if (r.ok) {
         delete inp.dataset.dirty;
         if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = max === 0 ? '已保存 · 不限并发' : `已保存 · 最多 ${max} 个同时执行`; }
+        refreshState();
+      } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
+    } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
+    finally { btn.disabled = false; }
+  });
+}
+
+// 设置页账号用量刷新间隔：从 state 回填（编辑中不覆盖），保存走 /api/usage-poll/interval（分钟→秒）
+function syncUsagePollInput() {
+  const inp = $('usagePollMinInput');
+  if (!inp || inp === document.activeElement || inp.dataset.dirty === '1') return;
+  const sec = stateData?.runnerConfig?.usagePollSec ?? 300;
+  inp.value = String(Math.round(sec / 60));
+}
+{
+  const inp = $('usagePollMinInput');
+  const btn = $('usagePollSaveBtn');
+  const hint = $('usagePollSaveHint');
+  if (inp) inp.addEventListener('input', () => { inp.dataset.dirty = '1'; if (hint) hint.textContent = ''; });
+  if (btn) btn.addEventListener('click', async () => {
+    let min = Math.round(Number(inp.value));
+    if (!Number.isFinite(min)) min = 5;
+    min = Math.min(Math.max(min, 1), 60);
+    inp.value = String(min);
+    btn.disabled = true; if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '保存中…'; }
+    try {
+      const r = await api('/api/usage-poll/interval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intervalSec: min * 60 }) });
+      if (r.ok) {
+        delete inp.dataset.dirty;
+        if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = `已保存 · 每 ${min} 分钟拉取一次`; }
         refreshState();
       } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
     } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }

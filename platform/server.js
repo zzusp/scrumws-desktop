@@ -10,7 +10,7 @@ import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
-import { getClaudeUsage, invalidateClaudeUsage, getModelContextLimit } from './lib/claude-usage.js';
+import { getClaudeUsage, invalidateClaudeUsage, getModelContextLimit, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
 
@@ -305,6 +305,22 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    // 账号用量定时拉取间隔（设置页）：唯一打 api.anthropic.com/usage 的节拍。
+    // body {intervalSec}；夹到 [60, 3600] 秒（默认 300=5min），存 runner-config.json 后热更定时器。
+    if (req.method === 'POST' && pathname === '/api/usage-poll/interval') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const sec = Math.round(Number(payload?.intervalSec));
+        if (!Number.isFinite(sec) || sec < 60 || sec > 3600) return sendJson(res, 400, { ok: false, error: '间隔需为 60–3600 秒' });
+        writeConfig({ usagePollSec: sec });
+        reloadUsageTimer();
+        sendJson(res, 200, { ok: true, intervalSec: sec });
+      });
+      return;
+    }
     // processing 并发上限（设置页）：同时运行的分身任务上限。body {max}；夹到 [0, 50]，0=不限。
     // 存 runner-config.json 后立即排空一次（上调即放行等待的 queued）。
     if (req.method === 'POST' && pathname === '/api/config/max-runners') {
@@ -570,7 +586,9 @@ export function start() {
     server.listen(PORT, HOST, () => {
       console.log(`claude 活儿总览（分身 + 本机 CLI）→ http://${HOST}:${PORT}`);
       // 调度器在端口拿到后再启动：撞端口的第二实例不会碰 scheduler.lock
-      scheduler.start();
+      const mode = scheduler.start();
+      // usage 定时拉取只在主（持锁）实例启：副实例「只看不调度」，不重复打 api.anthropic.com
+      if (mode === 'running') startUsageTimer();
       resolve({ host: HOST, port: PORT, server });
     });
   });

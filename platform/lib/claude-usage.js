@@ -18,10 +18,16 @@ const CRED_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const OAUTH_BETA = 'oauth-2025-04-20';
 const CURL = process.platform === 'win32' ? 'curl.exe' : 'curl';
-const TTL = 60_000;   // 账号级用量变化慢 + 详情页 5s 轮询：60s 内直接回缓存，外部端点至多 1 次/分钟
 
-let cache = { at: 0, data: null };
-let inflight = null;
+// 定时拉取：后端主动定时器是唯一打 usage 端点的路径（原前端轮询懒触发已废），打点频率严格 = 间隔。
+const DEFAULT_POLL_SEC = 300;                 // 默认 5min
+const MIN_POLL_SEC = 60, MAX_POLL_SEC = 3600; // 夹 [1min, 1h]
+const usagePollSec = () => Math.min(MAX_POLL_SEC, Math.max(MIN_POLL_SEC, Number(readConfig().usagePollSec) || DEFAULT_POLL_SEC));
+
+let cache = { at: 0, data: null };   // 定时器写入的最近一次结果；getClaudeUsage / usageSnapshot 只读它，不主动拉
+let inflight = null;                 // tick 去重（定时 tick 与代理变更 kick 撞一起时只打一次）
+let pollTimer = null;
+let poll = { lastRunAt: null, nextRunAt: null, lastOk: null, lastError: null };
 
 // 读 OAuth 凭据（accessToken / 订阅类型 / 过期时刻）；文件缺失或无 token → null
 function readCred() {
@@ -68,25 +74,56 @@ async function fetchUsage() {
   return { ...base, fiveHour: pickWindow(u.five_hour), sevenDay: pickWindow(u.seven_day) };
 }
 
-// TTL 缓存 + 并发去重（对齐 collect.js detectClaudeRuntime 的自查节流思路）。
-// 成功结果缓存 60s；失败时若已有旧数据则沿用（避免网络抖动把进度条闪空），无旧数据才缓存错误态。
-export async function getClaudeUsage() {
-  if (cache.data && Date.now() - cache.at < TTL) return cache.data;
+// 定时 tick：唯一真打 usage 端点的地方。拉取 → 写缓存 → 记录本轮实况。inflight 去重（定时 tick 与
+// 代理变更 kick 撞一起只打一次）。失败时若已有旧数据则沿用（网络抖动不把进度条闪空），无旧数据才存错误态。
+function tickUsage() {
   if (inflight) return inflight;
   inflight = fetchUsage().then((data) => {
     inflight = null;
     if (!data.error) cache = { at: Date.now(), data };
     else if (!cache.data) cache = { at: Date.now(), data };
+    poll.lastRunAt = Date.now();
+    poll.lastOk = !data.error;
+    poll.lastError = data.error || null;
+    poll.nextRunAt = pollTimer ? Date.now() + usagePollSec() * 1000 : null;
     return cache.data;
-  }).catch(() => {
+  }).catch((e) => {
     inflight = null;
-    return cache.data || { ok: false, error: 'fetch-failed' };
+    poll.lastRunAt = Date.now();
+    poll.lastOk = false;
+    poll.lastError = String(e?.message || e);
+    return cache.data;
   });
   return inflight;
 }
 
-// 代理配置变更后清缓存，令下次拉取立即用新代理（否则最长 60s 沿用旧结果）
-export function invalidateClaudeUsage() { cache = { at: 0, data: null }; }
+// /api/claude-usage（详情页卡片）+ collectState 用：纯读定时器最近一次结果，绝不主动打端点
+// → 打点频率严格等于定时器间隔。定时器尚未首拉完 → pending。
+export async function getClaudeUsage() {
+  return cache.data || { ok: false, error: 'pending' };
+}
+
+// collectState 用：账号级用量 + 定时器实况（供运行时面板展示 5h/7d + 刷新时间）
+export function usageSnapshot() {
+  return { data: cache.data, poll: { intervalSec: usagePollSec(), ...poll } };
+}
+
+// 启动定时器：立即拉一次（避免启动后长时间空窗）+ 每 intervalSec 拉一次。重复调用先清旧定时器。
+export function startUsageTimer() {
+  if (pollTimer) clearInterval(pollTimer);
+  const sec = usagePollSec();
+  poll.nextRunAt = Date.now() + sec * 1000;
+  tickUsage();
+  pollTimer = setInterval(tickUsage, sec * 1000);
+  pollTimer.unref?.();
+  return sec;
+}
+
+// 间隔变更后热更：定时器在跑才按新间隔重建（并立即用新节奏拉一次）
+export function reloadUsageTimer() { if (pollTimer) startUsageTimer(); }
+
+// 代理配置变更后：清缓存 + 若定时器在跑则立即用新代理重拉（否则最长一个间隔才生效）
+export function invalidateClaudeUsage() { cache = { at: 0, data: null }; if (pollTimer) tickUsage(); }
 
 // ---- 模型上下文窗口（Models API：GET /v1/models/{id} → max_input_tokens）----
 // 详情页上下文用量环形的「上限」取真实值，不按 model 名硬编码/猜测：直接问 Anthropic 该 model 报告的

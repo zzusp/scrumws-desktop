@@ -11,6 +11,8 @@ import { leaseAlive } from './lease.js';
 import { collectCliSessions, readAttachedSessions, backgroundAgentCountBySid } from './collect-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { listSessions } from './session-manager.js';
+import { usageSnapshot } from './claude-usage.js';
+import { getDailyUsage } from './daily-usage.js';
 
 // ---------- 通用小工具 ----------
 function pidAlive(pid) {
@@ -296,6 +298,12 @@ function buildRuntime(buckets) {
   for (const sid of attached.keys()) if (!boardSids.has(sid)) attachedCli++;
 
   detectClaudeRuntime();   // TTL 到点则后台重探（读缓存，不阻塞）
+  const snap = usageSnapshot();   // 账号级 5h/7d 用量 + 定时拉取实况（纯读定时器缓存，不打端点）
+  // scrumws 平台任务的 sessionId 集合（分身任务 meta.sessionId，不含 cli watchlist）→ 日用量柱状图「平台子集」过滤
+  const platformSids = new Set();
+  for (const b of Object.values(buckets)) for (const t of b) {
+    if (t.source !== 'cli' && t.meta?.sessionId) platformSids.add(t.meta.sessionId);
+  }
   return {
     tool: 'Claude Code',
     host: os.hostname(),
@@ -310,6 +318,9 @@ function buildRuntime(buckets) {
       processing: buckets.processing.length,
     },
     usage: computeRuntimeUsage(buckets),
+    claudeUsage: snap.data,     // 账号级 5h/7d 滚动窗（Pro/Max）：{ ok, plan, subscription, fiveHour, sevenDay, error? } | null
+    usagePoll: snap.poll,       // 定时拉取实况：{ intervalSec, lastRunAt, nextRunAt, lastOk, lastError }
+    dailyUsage: getDailyUsage(platformSids),   // 近 30 天每天用量（token）：[{ date, input, output, cache, total, platform }] | null（首次扫描中）。柱状图取后 7 天(total+platform)，表格按 tab 取后 7/15/30 天
   };
 }
 
@@ -372,6 +383,7 @@ export async function collectState() {
     runnerConfig: {
       maxConcurrentRunners: cfg.maxConcurrentRunners ?? 5,
       proxyUrl: cfg.proxyUrl || '',                   // 平台出网代理（打 Anthropic usage 端点用）；空=回退系统 HTTP(S)_PROXY
+      usagePollSec: cfg.usagePollSec ?? 300,          // 账号用量定时拉取间隔（秒，默认 5min）
     },
   };
 }
