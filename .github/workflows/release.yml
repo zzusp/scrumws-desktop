@@ -1,0 +1,126 @@
+# 桌面端多平台打包 & 发布（electron-builder）
+#
+# 触发: 本地 `npm run release 0.1.1` 会 bump 版本 + 打 tag `v0.1.1` + push，tag 一到即触发本流水线。
+#       也可在 Actions 页手动 workflow_dispatch（填版本号，须与 package.json 一致）。
+#
+# 编排: prepare → {build-win, build-mac} 并行 → publish
+#   - prepare : 校验 tag 版本 == package.json 版本（断开版本漂移）；抽 CHANGELOG 对应段落；建 draft release
+#   - build-* : electron-builder 打包，产物直传 draft release
+#   - publish : draft 转正式
+# draft-first 的意义：任一平台构建失败时，release 停在 draft，不会把半套安装包当正式版放出去。
+#
+# 本项目零运行时依赖（无原生模块），`npm ci` 跨平台直接可用，无需删 lock 重装那套 native-deps 兜底。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不含 v 前缀，如 0.1.1）；必须与 package.json 一致'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # tag 是版本真相：tag 隐含的版本号必须等于 package.json 的 version，不等就 fail，
+      # 避免忘记 bump package.json 把新产物挂到错版本的 release 上。
+      - name: Resolve & validate version
+        id: v
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::触发版本 $VERSION 与 package.json 版本 $PKG_VERSION 不一致——先 bump package.json 或修正 tag"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "发版版本: $VERSION"
+
+      # 从 CHANGELOG.md 抽对应段落作 Release 正文；抽不到会 fail，逼着发版前先写 changelog。
+      - name: Extract changelog section
+        shell: bash
+        run: node scripts/extract-changelog.mjs "${{ steps.v.outputs.version }}" | tee RELEASE_NOTES.md
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="v${{ steps.v.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --draft --title "ScrumWS $TAG" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$TAG" --draft --title "ScrumWS $TAG" --notes-file RELEASE_NOTES.md
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: --win
+          - os: macos-latest
+            args: --mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      # macOS 未签名：关掉签名自动发现，否则 electron-builder 在无证书 runner 上会因找不到
+      # 签名身份报错。产物是未签名 dmg/zip，用户端首次运行需绕 Gatekeeper（见 docs/ops/release.md）。
+      - name: Build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder ${{ matrix.args }} --publish never
+
+      # 只传安装包本体（*.exe / *.dmg / *.zip），不传 blockmap / unpacked / effective-config。
+      - name: Upload installers to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="v${{ needs.prepare.outputs.version }}"
+          mapfile -t FILES < <(find dist -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \))
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::error::dist/ 下没有可上传的安装包"
+            exit 1
+          fi
+          printf '上传: %s\n' "${FILES[@]}"
+          gh release upload "$TAG" "${FILES[@]}" --clobber
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish release (draft → 正式)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release edit "v${{ needs.prepare.outputs.version }}" --draft=false --latest

@@ -17,8 +17,22 @@ docs/        # spec/（盘点+风格指南）、acceptance/（desktop-migration 
 ```powershell
 npm start                 # 桌面 app（默认端口 8799、dataRoot=D:\baibu-agent、调度器关闭）
 npm run start:web         # 无壳 standalone（开发对拍）
-npm run dist              # 打包 Windows 安装包（electron-builder）
+npm run dist:win          # 本地打包 Windows 安装包（electron-builder）
+npm run dist:mac          # 打包 macOS dmg/zip（仅在 macOS 上可用）
 ```
+
+## 发版
+
+多平台安装包（Windows nsis + macOS dmg/zip）走 GitHub Actions 打包发布，本地只 bump 版本 + 打 tag：
+
+```powershell
+# 1. 把本次变更写进 CHANGELOG.md 的 [Unreleased] 段落
+# 2. 一键发版：finalize changelog + bump 版本 + commit + tag + push（push tag 即触发 CI）
+npm run release 0.1.1            # 发版；--dry-run 可先零副作用自检
+```
+
+CI 会校验 tag 版本 == package.json 版本、抽 `CHANGELOG.md` 对应段落作 Release 正文、并行打 Win/Mac、draft→正式发布。
+完整流程与 macOS 未签名包的运行说明见 [`docs/ops/release.md`](docs/ops/release.md)，版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 配置优先级：env（`SCRUMWS_PORT` / `SCRUMWS_DATA_ROOT` / `SCRUMWS_SCHEDULER=1`）> `%APPDATA%\scrumws-desktop\config.json` > 默认值。
 进程内调度器只跑守护 **Runner Checker**（收孤儿任务）；`runtime/scheduler.lock` 跨进程互斥，多实例只有一个真调度。
