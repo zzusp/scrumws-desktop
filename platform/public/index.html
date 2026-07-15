@@ -956,6 +956,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <button type="button" class="btn" id="newTaskCwdBrowse" title="打开系统目录选择（桌面端）；web 模式请手填绝对路径">浏览…</button>
           </div>
         </label>
+        <!-- 退回来的、有会话记录的 plan 任务：锁定 工作目录 / worktree（改了会让确认执行的 --resume 找不到原会话），app.js 按 /api/task/detail 的 resumeLocked 切显隐 + 禁用输入 -->
+        <div id="newTaskDirLockHint" style="display:none;margin:-4px 2px 8px;font-size:11px;color:var(--cyan);line-height:1.5">🔒 该任务已执行过：为「续上之前的对话」（<code style="font-family:var(--mono);font-size:10.5px">--resume</code> 绑定原运行目录），工作目录 / worktree 不可修改</div>
         <!-- req5：工作目录是 git 项目时才显示（app.js 探测 /api/git/detect 后切显隐）——worktree 开关 + 签出基分支 -->
         <div class="field" id="newTaskWorktreeRow" style="display:none;gap:8px">
           <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);cursor:pointer;user-select:none">

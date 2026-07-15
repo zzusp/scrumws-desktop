@@ -339,19 +339,23 @@ function cardActionButtons(t, section) {
   const unarchiveBtn = `<button class="btn" onclick="unarchiveTaskAction('${_k}')" title="取消归档，回落自动判态">↺ 取消归档</button>`;
   const completeBtn = `<button class="btn" style="color:var(--jade)" onclick="completeTaskAction('${_k}')" title="人工确认已完成 → 移入 done">✓ 完成</button>`;
   const uncompleteBtn = `<button class="btn" style="color:var(--mut)" onclick="uncompleteTaskAction('${_k}')" title="取消完成，退回 awaiting-human">↺ 取消完成</button>`;
+  // 退回计划（awaiting-human/done → plan）：改配置/改期后再执行，确认执行会续上之前的对话；CLI 无 plan 态不给
+  const toPlanBtn = isCli ? '' : `<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_k}')" title="退回计划桶：可编辑配置/改期后重新执行，续上之前的对话（--resume）">↩ 退回计划</button>`;
 
   const lead = isPlan ? editBtn : descBtn;
   let actionBtn = '';
   if (section === 'plan') {
-    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="approveTaskAction('${_k}')">▶ 排队</button>${removeBtn}`;
+    // 跑过的（从 待人工/完成 退回来的、有 sessionId）不给「移除」——会毁掉可 --resume 的执行记录，改「归档」
+    const tailBtn = t.meta?.sessionId ? archiveBtn : removeBtn;
+    actionBtn = `<button class="btn" style="color:var(--jade)" onclick="approveTaskAction('${_k}')">▶ 排队</button>${tailBtn}`;
   } else if (section === 'processing') {
     actionBtn = isCli ? '' : `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
   } else if (section === 'queued') {
     actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
   } else if (section === 'awaiting-human') {
-    actionBtn = completeBtn + archiveBtn;
+    actionBtn = completeBtn + toPlanBtn + archiveBtn;
   } else if (section === 'done') {
-    actionBtn = uncompleteBtn + archiveBtn;
+    actionBtn = uncompleteBtn + toPlanBtn + archiveBtn;
   } else if (section === 'archived') {
     const rmBtn = isCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">✕ 移除</button>` : '';
     actionBtn = unarchiveBtn + rmBtn;
@@ -641,6 +645,24 @@ async function deleteTaskAction(taskKey) {
   } catch (e) { customAlert({ title: '移除失败', message: escapeHtml(e.message) }); }
 }
 window.deleteTaskAction = deleteTaskAction;
+
+// awaiting-human / done → plan：退回计划桶。关空转会话 + 保留 sessionId，编辑/改期后确认执行会 --resume 续上之前的对话
+async function moveToPlanAction(taskKey) {
+  const ok = await customConfirm({
+    title: '退回计划',
+    message: `将 <code>${escapeHtml(taskKey)}</code> 退回 <code>plan</code> 桶。<br>可编辑配置（模型 / 目录 / effort / 定时…）后再执行；<b>确认执行时会续上之前的对话</b>（<code>--resume</code>）。<br>当前若有空转会话会被关闭。`,
+    confirmText: '退回计划',
+    tone: 'primary',
+  });
+  if (!ok) return;
+  try {
+    const r = await api(`/api/task/to-plan?taskKey=${encodeURIComponent(taskKey)}`, { method: 'POST' });
+    if (!r.ok) { customAlert({ title: '退回计划失败', message: escapeHtml(r.error || '未知错误') }); return; }
+    await refreshState();
+    if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);
+  } catch (e) { customAlert({ title: '退回计划失败', message: escapeHtml(e.message) }); }
+}
+window.moveToPlanAction = moveToPlanAction;
 
 // ---- 任务详情页（单一对话流 + 右侧信息栏）----
 let currentModalData = null;
@@ -1041,7 +1063,10 @@ function updateReplyBoxAvailability(taskKey) {
   if (t?.state === 'plan' && !t?.isArchive) {
     stateTag.className = 'tag tag-cyan';
     stateTag.textContent = '待确认';
-    hint.innerHTML = '任务处于 <b>plan</b>（计划中）· 确认排队后才会执行；可先在概览里补充任务描述';
+    // 退回来的 plan 任务（有 meta.sessionId）：确认排队会 --resume 续上之前的对话；全新草稿则从头执行
+    hint.innerHTML = hasSid
+      ? '任务处于 <b>plan</b>（计划中）· 确认排队后会<b>续上之前的对话</b>（<b>--resume</b>）执行；可先编辑配置 / 改期'
+      : '任务处于 <b>plan</b>（计划中）· 确认排队后才会执行；可先在概览里补充任务描述';
     restartBody.style.display = 'flex';
     restartBtn.onclick = () => approveTaskAction(taskKey);
     restartBtn.disabled = false;
@@ -1429,9 +1454,11 @@ function renderTaskSide(taskKey) {
     if (!isCli && liveRunning) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
   } else if (t.state === 'awaiting-human') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${_bk}')">✓ 完成</button>`);
+    if (!isCli) btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   } else if (t.state === 'done') {
     btns.push(`<button class="btn" onclick="uncompleteTaskAction('${_bk}')">↺ 取消完成</button>`);
+    if (!isCli) btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   }
   const descText = t.description || '';
@@ -2014,6 +2041,17 @@ function resetNewTaskExtras() {
   window.__syncDtPicker?.();                    // 同步日历选择器显示为「留空」
   $('newTaskWorktree').checked = true;         // req5：支持 worktree 时默认开启
   $('newTaskDynamicWorkflow').checked = false; // req6：默认关闭
+  setDirWorktreeLocked(false);                 // 新建：工作目录 / worktree 可编辑
+}
+
+// 退回来的、有会话记录的 plan 任务：锁定 工作目录 / worktree / 基分支（改了会让确认执行的 --resume 找不到原会话）。
+// 前端禁用输入 + 显示锁定说明（后端 editTask 也会保原值兜底）。
+function setDirWorktreeLocked(locked) {
+  for (const id of ['newTaskCwd', 'newTaskCwdCaret', 'newTaskCwdBrowse', 'newTaskWorktree', 'newTaskBaseBranch', 'newTaskBranchCaret']) {
+    const el = $(id); if (el) el.disabled = !!locked;
+  }
+  const hint = $('newTaskDirLockHint');
+  if (hint) hint.style.display = locked ? 'block' : 'none';
 }
 
 // plan 任务「编辑」：复用新建弹窗，先拉 /api/task/detail 回填，提交走 /api/task/edit（仅 plan 可编辑）
@@ -2040,6 +2078,8 @@ async function openEditTask(taskKey) {
   $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
   // req5：git 探测后回填 worktree 勾选 + 签出分支（默认开启沿用旧值；旧 plan 无该字段则默认开）
   refreshWorktreeUi(r.cwd || '', { worktree: r.worktree !== false, baseBranch: r.baseBranch || '' });
+  // 退回来的、有会话记录的任务：锁定 工作目录 / worktree（续对话须保持原运行目录）
+  setDirWorktreeLocked(!!r.resumeLocked);
   $('newTaskErr').style.display = 'none';
   $('newTaskWarn').style.display = 'none';
   setTimeout(() => $('newTaskPrompt').focus(), 100);

@@ -14,6 +14,7 @@ import { readConfig } from './runner-config.js';
 
 // taskKey → 内存会话 id（reply 复用 / 详情接 live SSE / 判活）
 const registry = new Map();
+const boundHandlers = new Map();   // taskKey → bind() 装的 onEvent 引用（parkTaskSession 精准解绑用，不误伤详情 SSE 订阅）
 const lastBeat = new Map();   // taskKey → 上次 heartbeat 落盘的 ms（节流，避免逐 token 写盘）
 const leakRetry = new Map();  // taskKey → 本轮"泄漏空转"已自动重试次数（真人新一轮 markProcessing 时清零）
 const LEAK_RETRY_MAX = 2;     // 上限：仍泄漏则落回 awaiting-human（不比现状差），防死循环
@@ -126,6 +127,7 @@ function bind(taskKey, id) {
         removeLease(taskKey);
         leakRetry.delete(taskKey);
         registry.delete(taskKey);
+        boundHandlers.delete(taskKey);
         s.emitter.off('event', onEvent);
         scheduleDrain();
       } else if (ev.type === 'error') {
@@ -140,6 +142,7 @@ function bind(taskKey, id) {
     } catch { /* 写盘失败不拖垮会话事件流 */ }
   };
   s.emitter.on('event', onEvent);
+  boundHandlers.set(taskKey, onEvent);   // 记引用供 parkTaskSession 精准解绑
 }
 
 // 立即置 processing + 写占位 lease（同步落盘，/api/state 秒级可见；system.init 到达后补真 pid）
@@ -231,18 +234,31 @@ function resolveRunCwd(taskKey, task) {
   return { cwd: r.worktreeDir };
 }
 
-// 起任务执行会话（queued/approve/restart → 起绑定会话，task.prompt 作首条消息）
+// 起任务执行会话（queued/approve/restart → 起绑定会话，task.prompt 作本轮消息）。
+// resume-aware：该任务此前跑过并落了会话（meta.sessionId）→ --resume 续上之前的对话（喂回历史 seed +
+// task.prompt 作续轮消息，与 replyTask resume 分支同构，用于「退回 plan 再执行」续对话）；从未跑过 →
+// 全新起会话。二者仅差 resume/seed，落盘（bind/markProcessing）一致。现有 caller 都无 sessionId、行为不变。
 export function startTask(taskKey) {
-  const task = readJson(path.join(taskDirOf(taskKey), 'task.json'));
+  const dir = taskDirOf(taskKey);
+  const task = readJson(path.join(dir, 'task.json'));
   if (!task) return { ok: false, error: 'task.json 不存在，无法起会话' };
   if (getTaskSessionId(taskKey)) return { ok: false, error: '该任务已有活跃会话在跑' };
   const rc = resolveRunCwd(taskKey, task);
   if (rc.error) return { ok: false, error: rc.error };
-  const r = createSession({ taskKey, cwd: rc.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, prompt: task.prompt, bypass: true });
+  const sid = readJson(path.join(dir, 'meta.json'))?.sessionId || null;
+  let r;
+  if (sid) {
+    const hist = readCcSessionForAdopt(sid);
+    const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
+    seed.push({ type: 'user', message: { content: task.prompt } });
+    r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, resume: sid, prompt: task.prompt, seedTranscript: seed, bypass: true });
+  } else {
+    r = createSession({ taskKey, cwd: rc.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, prompt: task.prompt, bypass: true });
+  }
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);
-  return { ok: true, taskKey, sessionUiId: r.id };
+  return { ok: true, taskKey, sessionUiId: r.id, resumed: sid || undefined };
 }
 
 // 回复任务：live 会话在则复用（多轮）；已死则 --resume 重挂。model/effort 覆盖仅在 --resume 重挂时生效
@@ -291,6 +307,24 @@ export function cancelTaskSession(taskKey) {
   }, 'user');
   removeLease(taskKey);
   return { ok: true, taskKey, killed: id, resolvedAt };
+}
+
+// 停手会话（退回 plan 用）：关掉可能仍活着的 idle Mode B 会话进程 + 删 lease，但**不改 state**（交调用方落 plan）。
+// 关键：先精准解绑本任务的 onEvent（用 boundHandlers 记的引用），否则 closeSession 触发的 'closed' 事件
+// 会把 state 翻回 awaiting-human、盖掉调用方随后落的 plan；不 removeAllListeners 以免误伤详情页 SSE 订阅。
+// 保留 meta.sessionId 不动 → 之后 startTask 据它 --resume 续上之前的对话。
+export function parkTaskSession(taskKey) {
+  const id = registry.get(taskKey);
+  const onEvent = boundHandlers.get(taskKey);
+  registry.delete(taskKey);
+  boundHandlers.delete(taskKey);
+  removeLease(taskKey);
+  leakRetry.delete(taskKey);
+  if (!id) return { ok: true, taskKey, killed: null };   // 无 live 会话（服务重启后 / 从未起）：只清 lease
+  const s = getSession(id);
+  if (s && onEvent) s.emitter.off('event', onEvent);
+  try { closeSession(id); } catch { /* 已退 */ }
+  return { ok: true, taskKey, killed: id };
 }
 
 // 定时提升：扫 plan 态任务，scheduledAt 到点（<=now）即 startTask 起会话执行（本看板 queued 即刻转 processing，

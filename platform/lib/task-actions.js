@@ -4,7 +4,7 @@ import { P } from './paths.js';
 import { parse } from './timeutil.js';
 import { readConfig } from './runner-config.js';
 import { replyCliSession } from './cli-actions.js';
-import { tryStartOrQueue, replyTask, cancelTaskSession } from './task-runner.js';
+import { tryStartOrQueue, replyTask, cancelTaskSession, parkTaskSession } from './task-runner.js';
 
 // 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
 function genSlug() {
@@ -85,6 +85,10 @@ export function deleteTask({ taskKey }) {
   if (state.state !== 'plan') {
     return { ok: false, error: `state=${state.state || '?'} 非 plan，不能移除（用中断/归档）` };
   }
+  // 跑过的任务（有会话记录，如从 待人工/完成 退回 plan 的）不走删除——会毁掉可 --resume 的执行记录；改用归档。
+  let meta = null;
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
+  if (meta?.sessionId) return { ok: false, error: '该任务已执行过（有会话记录），不能移除；如要清走请用归档' };
   try { fs.rmSync(taskDir, { recursive: true, force: true }); }
   catch (e) { return { ok: false, error: `删除任务目录失败: ${e.message}` }; }
   return { ok: true, taskKey, safeKey, removed: taskDir };
@@ -161,6 +165,43 @@ export function uncompleteTask({ taskKey }) {
   try { fs.writeFileSync(stateFile, JSON.stringify(newState, null, 2), 'utf8'); }
   catch (e) { return { ok: false, error: `写 state.json 失败: ${e.message}` }; }
   return { ok: true, taskKey, state: 'awaiting-human' };
+}
+
+// 退回计划（awaiting-human/done → plan）：把终态任务退回 plan 桶，供编辑配置 / 改期后重新执行。
+// 关掉可能仍空转的 Mode B 会话（释放 claude 进程）但**保留 meta.sessionId**——之后确认执行时 startTask 据它
+// --resume 续上之前的对话。CLI 会话无 state.json / 无 plan 态，拒绝。
+export function moveTaskToPlan({ taskKey }) {
+  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
+  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话无 plan 态，不能退回计划' };
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found（归档任务请先取消归档再退回计划）' };
+  const stateFile = path.join(taskDir, 'state.json');
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { }
+  if (!['awaiting-human', 'done'].includes(state.state)) {
+    return { ok: false, error: `只有 待人工/完成 任务可退回计划（当前 ${state.state || '未知'}）` };
+  }
+  // 先关空转会话 + 删 lease（parkTaskSession 精准解绑，'closed' 事件不会翻回 awaiting-human）
+  parkTaskSession(taskKey);
+
+  const p2 = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
+  const history = Array.isArray(state.history) ? state.history : [];
+  history.push({ state: 'plan', at: nowStr, by: 'user' });
+  const newState = {
+    ...state,
+    state: 'plan',
+    outcome: null,
+    resolvedAt: null,
+    enteredAt: nowStr,
+    outcomeDetail: { quotaResetAt: null, failureReason: null, checkerExhausted: false },
+    history,
+  };
+  try { fs.writeFileSync(stateFile, JSON.stringify(newState, null, 2), 'utf8'); }
+  catch (e) { return { ok: false, error: `写 state.json 失败: ${e.message}` }; }
+  return { ok: true, taskKey, state: 'plan' };
 }
 
 // 回复任务：CLI 会话走 cli-reply-runner（观察侧，另一功能）；其余走 Mode B（复用 live 会话 / --resume 重挂）。
@@ -323,9 +364,10 @@ export function readTaskEdit(taskKey) {
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
-  let state = null; let task = {};
+  let state = null; let task = {}; let meta = null;
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
   try { task = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')); } catch { }
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
   if (state?.state !== 'plan') return { ok: false, error: `只有 plan 态任务可编辑（当前 ${state?.state || '未知'}）` };
   return {
     ok: true,
@@ -342,6 +384,8 @@ export function readTaskEdit(taskKey) {
     worktree: !!task.worktree,
     baseBranch: task.baseBranch || '',
     dynamicWorkflow: task.dynamicWorkflow == null ? null : !!task.dynamicWorkflow,
+    // 有会话记录（从 待人工/完成 退回来的）→ 工作目录 / worktree 锁定：改了会让确认执行的 --resume 找不到原会话
+    resumeLocked: !!meta?.sessionId,
   };
 }
 
@@ -370,14 +414,21 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
   if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
   if (eff && !ALLOWED_EFFORTS.has(eff)) return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
   if (schedRaw && !parse(schedRaw)) return { ok: false, error: `定时时间无法解析：${schedRaw}` };
-  // cwd 可选：给了就必须存在且是目录（对齐 createTask，避免改出跑不起来的任务）
+  // 有会话记录（从 待人工/完成 退回来的）→ 锁定 cwd/worktree/baseBranch：这些决定 --resume 去哪个项目目录找原
+  // 会话 jsonl，改了续接就失效。锁定时沿用 task.json 原值、不校验也不改（前端也已禁用这些字段兜底）。
+  let meta = null;
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
+  const locked = !!meta?.sessionId;
+  // cwd 可选：给了就必须存在且是目录（对齐 createTask，避免改出跑不起来的任务）；锁定时跳过校验（沿用原值）
   let cwdFinal = null;
-  const cwdRaw = String(cwd || '').trim();
-  if (cwdRaw) {
-    let st = null;
-    try { st = fs.statSync(cwdRaw); } catch { return { ok: false, error: `工作目录不存在：${cwdRaw}` }; }
-    if (!st.isDirectory()) return { ok: false, error: `工作目录不是文件夹：${cwdRaw}` };
-    cwdFinal = path.resolve(cwdRaw);
+  if (!locked) {
+    const cwdRaw = String(cwd || '').trim();
+    if (cwdRaw) {
+      let st = null;
+      try { st = fs.statSync(cwdRaw); } catch { return { ok: false, error: `工作目录不存在：${cwdRaw}` }; }
+      if (!st.isDirectory()) return { ok: false, error: `工作目录不是文件夹：${cwdRaw}` };
+      cwdFinal = path.resolve(cwdRaw);
+    }
   }
 
   const taskFile = path.join(taskDir, 'task.json');
@@ -388,11 +439,14 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
   task.prompt = p;
   task.model = m;
   if (desc) task.description = desc; else delete task.description;
-  if (cwdFinal) task.cwd = cwdFinal; else delete task.cwd;
   if (eff) task.effort = eff; else delete task.effort;
   if (schedRaw) task.scheduledAt = schedRaw; else delete task.scheduledAt;
-  if (cwdFinal && worktree) { task.worktree = true; if (baseBr) task.baseBranch = baseBr; else delete task.baseBranch; }
-  else { delete task.worktree; delete task.baseBranch; }
+  // 锁定时不动 task.cwd/worktree/baseBranch（保原值）；否则按提交值改写
+  if (!locked) {
+    if (cwdFinal) task.cwd = cwdFinal; else delete task.cwd;
+    if (cwdFinal && worktree) { task.worktree = true; if (baseBr) task.baseBranch = baseBr; else delete task.baseBranch; }
+    else { delete task.worktree; delete task.baseBranch; }
+  }
   if (dynFlow != null) task.dynamicWorkflow = dynFlow; else delete task.dynamicWorkflow;
   task.taskKey = task.taskKey || taskKey;
   try { fs.writeFileSync(taskFile, JSON.stringify(task, null, 2), 'utf8'); }

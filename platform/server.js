@@ -4,7 +4,7 @@ import path from 'node:path';
 import { collectState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
+import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession, rewindCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
@@ -405,6 +405,13 @@ const server = http.createServer(async (req, res) => {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
       const r = taskKey.startsWith('cli:') ? uncompleteCliTask(taskKey) : uncompleteTask({ taskKey });
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    // 退回计划（awaiting-human/done → plan）：关空转会话 + 落 plan，保留 meta.sessionId 供确认执行时 --resume 续对话
+    if (req.method === 'POST' && pathname === '/api/task/to-plan') {
+      const taskKey = searchParams.get('taskKey');
+      if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
+      const r = moveTaskToPlan({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
     // 回复任务（跨 chat/issue/manual）：body = {message, model?}；taskKey 从 query 拿
