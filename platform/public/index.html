@@ -230,6 +230,9 @@ a.crumb-app:hover,a.crumb-mid:hover{color:var(--ink2)}
 .card-status{font-size:11px;color:var(--mut);font-family:var(--mono);margin-top:2px}
 .card-status.warn{color:var(--coral)}
 .card-sub{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 目录行前缀标签（工作目录 / worktree）：有 worktree 时两行各带小徽章区分 */
+.card-dir-tag{display:inline-block;font-family:var(--sans);font-size:9px;font-weight:600;color:var(--mut);background:var(--muted);
+  padding:0 5px;border-radius:999px;margin-right:5px;vertical-align:middle;line-height:1.5}
 /* 状态变更更新点：标题前小圆点 */
 .update-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--brand,#3b82f6);margin-right:6px;vertical-align:middle;flex:none}
 /* 卡片「···」操作按钮 */

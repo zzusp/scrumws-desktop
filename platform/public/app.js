@@ -357,12 +357,21 @@ function sourceTagHtml(t) {
         : '<span class="tag tag-mut">' + escapeHtml(sourceLabel(t.source)) + '</span>';
 }
 
-// 卡片上半部分只保留：任务标题 + 工作目录 + 最后一次活动时间（req2）；其余状态/耗时/描述/意图/失败原因都进详情页。
+// 目录行：路径尾部截断 + 可选前缀标签（工作目录 / worktree）
+function cardDirLine(val, tag) {
+  const short = val.length > 40 ? '…' + val.slice(-38) : val;
+  const tagHtml = tag ? `<span class="card-dir-tag">${tag}</span>` : '';
+  return `<div class="card-sub" title="${escapeAttr(val)}">${tagHtml}${escapeHtml(short)}</div>`;
+}
+
+// 卡片上半部分只保留：任务标题 + 工作目录（含 worktree 目录）+ 最后一次活动时间（req2）；其余状态/耗时/描述/意图/失败原因都进详情页。
 function taskCardHtml(t, section) {
-  // 工作目录跨来源统一取（CLI 在 t.cli.cwd，分身在 t.cwd）
+  // 工作目录跨来源统一取（CLI 在 t.cli.cwd，分身在 t.cwd）；worktree 任务另记实际运行目录 t.worktreeDir。
   const cwdVal = t.cwd || t.cli?.cwd || null;
-  const cwdShort = cwdVal ? (cwdVal.length > 40 ? '…' + cwdVal.slice(-38) : cwdVal) : '—';
-  const cwdLine = `<div class="card-sub" title="${escapeAttr(cwdVal || '')}">${escapeHtml(cwdShort)}</div>`;
+  const wtVal = t.worktreeDir && t.worktreeDir !== cwdVal ? t.worktreeDir : null;
+  // 有 worktree 时两行都打标签区分（工作目录 / worktree）；无则工作目录单行不带标签（沿用旧观感）
+  const cwdLine = cwdVal ? cardDirLine(cwdVal, wtVal ? '工作目录' : '') : `<div class="card-sub">—</div>`;
+  const wtLine = wtVal ? cardDirLine(wtVal, 'worktree') : '';
 
   // 最后一次活动时间（后端统一 lastActivityAgo，与卡片排序同源；缺失优雅降级为 —）
   const actLine = `<div class="card-status" title="${escapeAttr(t.lastActivityAt || '')}">最后活动 ${escapeHtml(t.lastActivityAgo || '—')}</div>`;
@@ -382,6 +391,7 @@ function taskCardHtml(t, section) {
     <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" onclick="${cardClick}">
       <div class="card-title" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
       ${cwdLine}
+      ${wtLine}
       ${actLine}
       <div class="card-foot">
         ${sourceTagHtml(t)}
@@ -466,15 +476,23 @@ window.openCardMenu = openCardMenu;
 // 来源 / 工作目录用自定义下拉（不用原生 select，选项面板对齐新建任务 .cwd-menu 范式），选项从真实任务数据动态取；
 // 关键字 / sessionId 走子串匹配。
 let boardFilter = { source: '', cwd: '', keyword: '', sessionId: '' };
-let boardSources = [], boardCwds = [];   // 真实任务里出现过的来源 / 工作目录全集（下拉选项数据源）
+let boardSources = [], boardCwds = [];   // 真实任务里出现过的来源 / 目录全集（下拉选项数据源）；boardCwds=[{dir,kind}]
 let srcDD = null, cwdDD = null;           // 两个自定义下拉实例（initBoardFilter 里建）
 
 function cwdOf(t) { return t.cwd || t.cli?.cwd || ''; }
+// 任务关联的目录全集：配置工作目录 + worktree 任务的实际运行目录（两者都可作为「工作目录」筛选命中项）
+function dirsOf(t) {
+  const c = cwdOf(t);
+  const dirs = [];
+  if (c) dirs.push(c);
+  if (t.worktreeDir && t.worktreeDir !== c) dirs.push(t.worktreeDir);
+  return dirs;
+}
 
 function matchesBoardFilter(t) {
   const f = boardFilter;
   if (f.source && (t.source || '') !== f.source) return false;
-  if (f.cwd && cwdOf(t) !== f.cwd) return false;
+  if (f.cwd && !dirsOf(t).includes(f.cwd)) return false;
   if (f.keyword) {
     const hay = [t.title, t.taskKey, t.description].filter(Boolean).join(' ').toLowerCase();
     if (!hay.includes(f.keyword.toLowerCase())) return false;
@@ -505,7 +523,10 @@ function makeFilterDropdown({ btnId, menuId, items, getValue, onPick }) {
     const cur = getValue();
     const list = items();
     menu.innerHTML = list.length
-      ? list.map((it) => `<div class="fp-dd-item${it.value === cur ? ' active' : ''}" role="option" data-val="${escapeAttr(it.value)}"><span class="fp-dd-path" title="${escapeAttr(it.title || it.label)}">${escapeHtml(it.label)}</span><span class="fp-dd-check">✓</span></div>`).join('')
+      ? list.map((it) => {
+        const badge = it.badge ? `<span class="fp-dd-src">${escapeHtml(it.badge)}</span>` : '';
+        return `<div class="fp-dd-item${it.value === cur ? ' active' : ''}" role="option" data-val="${escapeAttr(it.value)}"><span class="fp-dd-path" title="${escapeAttr(it.title || it.label)}">${escapeHtml(it.label)}</span>${badge}<span class="fp-dd-check">✓</span></div>`;
+      }).join('')
       : `<div class="cwd-empty">暂无可选项</div>`;
   };
   const open = () => {
@@ -529,15 +550,25 @@ function makeFilterDropdown({ btnId, menuId, items, getValue, onPick }) {
 }
 
 const sourceDropItems = () => [{ value: '', label: '全部' }, ...boardSources.map((s) => ({ value: s, label: sourceLabel(s) }))];
-const cwdDropItems = () => [{ value: '', label: '全部' }, ...boardCwds.map((c) => ({ value: c, label: c.length > 44 ? '…' + c.slice(-42) : c, title: c }))];
+// 工作目录 / worktree 目录都进选项；worktree 目录打「worktree」标签区分，配置工作目录不带标签（沿用旧观感）
+const cwdDropItems = () => [{ value: '', label: '全部' }, ...boardCwds.map(({ dir, kind }) => ({
+  value: dir, label: dir.length > 44 ? '…' + dir.slice(-42) : dir, title: dir, badge: kind === 'worktree' ? 'worktree' : '',
+}))];
 
 // 依真实数据刷新筛选选项数据源（选中项若已不存在则回落全部）；菜单是打开时现取，不必重建 DOM
 function updateBoardFilterOptions(lifecycle) {
   const all = allLifecycleTasks(lifecycle);
   boardSources = [...new Set(all.map((t) => t.source).filter(Boolean))].sort();
-  boardCwds = [...new Set(all.map(cwdOf).filter(Boolean))].sort();
+  // 目录全集：配置工作目录（kind=cwd）+ worktree 实际运行目录（kind=worktree）；同一路径只留一条，worktree 标签优先
+  const dirMap = new Map();
+  for (const t of all) {
+    const c = cwdOf(t);
+    if (c && !dirMap.has(c)) dirMap.set(c, 'cwd');
+    if (t.worktreeDir && t.worktreeDir !== c) dirMap.set(t.worktreeDir, 'worktree');
+  }
+  boardCwds = [...dirMap.entries()].map(([dir, kind]) => ({ dir, kind })).sort((a, b) => a.dir.localeCompare(b.dir));
   if (boardFilter.source && !boardSources.includes(boardFilter.source)) boardFilter.source = '';
-  if (boardFilter.cwd && !boardCwds.includes(boardFilter.cwd)) boardFilter.cwd = '';
+  if (boardFilter.cwd && !boardCwds.some((c) => c.dir === boardFilter.cwd)) boardFilter.cwd = '';
   syncBoardFilterUi();
 }
 

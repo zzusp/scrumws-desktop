@@ -71,3 +71,26 @@ node docs/acceptance/board-filter-iteration/scripts/verify-ui.mjs   # 24/24 PASS
 `scripts/verify-ui.mjs` 更新为下拉断言，真实 Chrome **24/24 PASS**（见 `round-2.md`）——含「无原生 select、
 选项面板同款 `.fp-dd-menu`」「来源下拉展开/选项取真实数据/触发按钮标签更新」「工作目录下拉选项取真实 cwd」。
 截图：`round-1/filter-source-dropdown.png`、`round-1/filter-cwd-dropdown.png`、`round-1/filter-panel.png`。
+
+---
+
+## 迭代 3（round-3）：工作目录筛选纳入 worktree 实际运行目录
+
+### 需求
+worktree 任务真正运行在 worktree 目录（`meta.worktreeDir`，如 `<cwd>\.claude\worktrees\<branch>`），不是配置的
+工作目录。原筛选/卡片只认配置 `cwd`、漏了 worktree 目录 → 记录两个目录：一个工作目录、一个 worktree 目录。
+
+### 改动（纯前端；后端 `t.worktreeDir` 早已由 collect.js 暴露）
+- `app.js`：
+  - 卡片 `taskCardHtml`：新增 `cardDirLine(val, tag)`；worktree 任务同时渲染 工作目录 + worktree 两行，各带
+    `.card-dir-tag` 标签区分；无 worktree 时工作目录单行不带标签（沿用旧观感）。
+  - 筛选：新增 `dirsOf(t)=[cwd, worktreeDir]`；`matchesBoardFilter` 的工作目录命中改为 `dirsOf(t).includes(f.cwd)`
+    （配置目录或 worktree 目录任一命中）。`updateBoardFilterOptions` 目录全集改用 `dirMap`（cwd→kind=cwd、
+    worktreeDir→kind=worktree），`boardCwds=[{dir,kind}]`；`cwdDropItems` 给 worktree 目录打「worktree」标签。
+  - `makeFilterDropdown` render 支持可选 `badge`（`.fp-dd-src`）。
+- `index.html`：新增 `.card-dir-tag` 小徽章样式（`.fp-dd-src` 上一轮已加）。
+
+### 验证
+`scripts/verify-ui.mjs` 真实 Chrome **28/28 PASS**（见 `round-3.md`）——新增：worktree 卡片同显两目录且带标签、
+工作目录下拉含 worktree 目录且带「worktree」标签、**按 worktree 目录可筛出该任务**、按配置目录亦命中。
+截图：`round-1/board-cards.png`（worktree 卡片双目录）、`round-1/filter-cwd-dropdown.png`（含 worktree 选项）。

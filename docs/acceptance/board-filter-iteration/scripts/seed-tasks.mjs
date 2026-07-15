@@ -16,6 +16,7 @@ const minsAgo = (m) => fmt(new Date(Date.now() - m * 60000));
 // [safeKey, task.json, state.json, meta.json, lease.json]
 const CWD_A = 'D:\\project\\scrumws-desktop';
 const CWD_B = 'D:\\work\\another-repo\\packages\\ui';
+const WT_DELTA = CWD_B + '\\.claude\\worktrees\\wt-delta';   // delta 的实际 worktree 运行目录
 const packs = [
   ['manual__alpha', {
     taskKey: 'manual:alpha', source: 'manual', kind: 'interactive', title: '手动任务·登录页重构', cwd: CWD_A,
@@ -34,11 +35,14 @@ const packs = [
        history: [{ state: 'processing', at: minsAgo(118) }, { state: 'awaiting-human', at: minsAgo(90) }] },
     { sessionId: 'bbbb1111-2222-3333-4444-555566667777', rounds: 3, lastRoundAt: minsAgo(90) }, null],
 
+  // worktree 任务：配置工作目录 CWD_B，但实际运行在 worktree 目录 WT_DELTA（meta.worktreeDir）
   ['manual__delta', {
-    taskKey: 'manual:delta', source: 'manual', kind: 'interactive', title: '手动任务·文档补全', cwd: CWD_B, createdAt: minsAgo(300),
+    taskKey: 'manual:delta', source: 'manual', kind: 'interactive', title: '手动任务·文档补全', cwd: CWD_B,
+    worktree: true, baseBranch: 'master', createdAt: minsAgo(300),
   }, { state: 'done', enteredAt: minsAgo(298), resolvedAt: minsAgo(240), outcome: 'success',
        history: [{ state: 'processing', at: minsAgo(298) }, { state: 'done', at: minsAgo(240) }] },
-    { sessionId: 'cccc1111-2222-3333-4444-555566667777', rounds: 4, totalCostUsd: 0.44, lastRoundAt: minsAgo(240) }, null],
+    { sessionId: 'cccc1111-2222-3333-4444-555566667777', rounds: 4, totalCostUsd: 0.44, lastRoundAt: minsAgo(240),
+      worktreeDir: WT_DELTA, worktreeBranch: 'worktree-delta' }, null],
 ];
 
 for (const [safeKey, task, state, meta, lease] of packs) {

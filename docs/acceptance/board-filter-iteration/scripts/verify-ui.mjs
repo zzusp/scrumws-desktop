@@ -9,10 +9,13 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) fail
 const readCards = () => [...document.querySelectorAll('#lifecycleGrid .taskcard')].map((c) => ({
   title: c.querySelector('.card-title')?.textContent.trim() || '',
   cwd: c.querySelector('.card-sub')?.textContent.trim() || '',
+  dirs: [...c.querySelectorAll('.card-sub')].map((d) => (d.title || d.textContent).trim()),
+  dirTags: [...c.querySelectorAll('.card-sub .card-dir-tag')].map((t) => t.textContent.trim()),
   activity: c.querySelector('.card-status')?.textContent.trim() || '',
   source: c.querySelector('.card-foot .tag')?.textContent.trim() || '',
   html: c.innerHTML,
 }));
+const WT_DELTA = 'D:\\work\\another-repo\\packages\\ui\\.claude\\worktrees\\wt-delta';
 
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox'] });
 try {
@@ -37,6 +40,12 @@ try {
   ok(!leaked, 'req2：卡片上半部分已去掉状态/耗时/心跳/描述等其余信息');
   const hasFoot = await page.evaluate(() => !!document.querySelector('.taskcard .card-foot .card-menu-btn'));
   ok(hasFoot, 'req2：底部标签 + 操作按钮保留');
+  // worktree 任务：卡片同时显示 工作目录 + worktree 目录（各带标签区分）
+  const delta = cards.find((c) => c.title.includes('文档补全'));
+  ok(delta && delta.dirs.includes('D:\\work\\another-repo\\packages\\ui') && delta.dirs.includes(WT_DELTA),
+    `worktree 卡片同显两目录（${delta?.dirs.join(' | ')}）`);
+  ok(delta && delta.dirTags.includes('工作目录') && delta.dirTags.includes('worktree'),
+    `worktree 卡片两目录带标签区分（${delta?.dirTags.join('/')}）`);
 
   // ---- req5：manual → Manual ----
   ok(alpha && alpha.source === 'Manual', `req5：manual 来源标签显示 Manual（实际 ${alpha?.source}）`);
@@ -83,13 +92,22 @@ try {
   await page.click('#fpSourceBtn');
   await page.evaluate(() => [...document.querySelectorAll('#fpSourceMenu .fp-dd-item')].find((c) => c.textContent.replace('✓', '').trim() === '全部').click());
   await page.click('#fpCwdBtn');
-  const cwdOpts = await page.evaluate(() => [...document.querySelectorAll('#fpCwdMenu .fp-dd-item')].map((c) => c.querySelector('.fp-dd-path').title));
-  ok(cwdOpts.includes('D:\\project\\scrumws-desktop') && cwdOpts.includes('D:\\work\\another-repo\\packages\\ui') && cwdOpts.length === 3,
-    `req3：工作目录选项取自真实数据（${cwdOpts.length} 项含全部）`);
-  // 选 cwd=另一 repo → chat bravo + manual delta
-  await page.evaluate(() => [...document.querySelectorAll('#fpCwdMenu .fp-dd-item')].find((c) => c.querySelector('.fp-dd-path').title === 'D:\\work\\another-repo\\packages\\ui').click());
+  const cwdItems = await page.evaluate(() => [...document.querySelectorAll('#fpCwdMenu .fp-dd-item')].map((c) => ({
+    dir: c.querySelector('.fp-dd-path')?.title || '', badge: c.querySelector('.fp-dd-src')?.textContent.trim() || '' })));
+  const cwdDirs = cwdItems.map((i) => i.dir);
+  ok(cwdDirs.includes('D:\\project\\scrumws-desktop') && cwdDirs.includes('D:\\work\\another-repo\\packages\\ui') && cwdDirs.includes(WT_DELTA) && cwdItems.length === 4,
+    `req3：工作目录选项含配置目录 + worktree 目录（${cwdItems.length} 项含全部）`);
+  const wtOpt = cwdItems.find((i) => i.dir === WT_DELTA);
+  ok(wtOpt && wtOpt.badge === 'worktree', `worktree 目录选项带「worktree」标签（${wtOpt?.badge}）`);
+  // 选配置工作目录=另一 repo → chat bravo + manual delta（delta 的配置 cwd 也是它）
+  await page.evaluate(() => [...document.querySelectorAll('#fpCwdMenu .fp-dd-item')].find((c) => c.querySelector('.fp-dd-path')?.title === 'D:\\work\\another-repo\\packages\\ui').click());
   shown = await page.evaluate(readCards);
-  ok(shown.length === 2 && shown.every((c) => c.cwd.includes('another-repo')), `req3：按工作目录筛选（${shown.length} 张，标题 ${shown.map((c) => c.title).join(',')}）`);
+  ok(shown.length === 2 && shown.every((c) => c.cwd.includes('another-repo')), `req3：按配置工作目录筛选（${shown.length} 张，标题 ${shown.map((c) => c.title).join(',')}）`);
+  // 关键：按 worktree 目录筛选 → 命中该 worktree 任务（delta）
+  await page.click('#fpCwdBtn');
+  await page.evaluate((wt) => [...document.querySelectorAll('#fpCwdMenu .fp-dd-item')].find((c) => c.querySelector('.fp-dd-path')?.title === wt).click(), WT_DELTA);
+  shown = await page.evaluate(readCards);
+  ok(shown.length === 1 && shown[0].title.includes('文档补全'), `worktree 目录可作为筛选项命中任务（${shown.map((c) => c.title).join(',')}）`);
 
   // ---- req4：关键字筛选 ----
   // 清工作目录（选「全部」）
