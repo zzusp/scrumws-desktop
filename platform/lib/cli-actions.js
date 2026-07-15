@@ -7,6 +7,7 @@ import { fmt } from './timeutil.js';
 import * as watchlist from './cli-watchlist.js';
 import { locateJsonlBySid, isCliSessionActive } from './collect-cli.js';
 import { collectKnownSessionIds } from './logs.js';
+import { detectWorktreeBase } from './git.js';
 
 // 「已在看板」判据：候选 sid 命中 watchlist（显式加入的 CLI 会话）∪ 全库任务包的 sessionId/sessionHistory
 // （分身 / adopt 到 Mode B 的任务，其会话 sid 不落 watchlist）。按 sessionId 判，避免同一会话被重复添加成两张卡。
@@ -215,7 +216,7 @@ export function sessionCwds({ limit = 60 } = {}) {
   for (const it of items) {
     const head = extractHeadPreview(it.jsonlPath, 8192);   // cwd 在首个 event，读 8KB 足够
     const c = String(head.cwd || '').trim();
-    if (c) seen.add(c);
+    if (c) seen.add(detectWorktreeBase(c).baseCwd);   // 工作目录建议取 base 仓库根，不塞 worktree 子目录
   }
   return [...seen];
 }

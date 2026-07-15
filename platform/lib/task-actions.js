@@ -8,6 +8,7 @@ import { tryStartOrQueue, replyTask, cancelTaskSession, parkTaskSession } from '
 import { readCcSessionForAdopt, completeCliSession, uncompleteCliTask } from './logs.js';
 import { readAttachedSessions } from './collect-cli.js';
 import { readWatchlist, removeWatchlist } from './cli-watchlist.js';
+import { detectWorktreeBase } from './git.js';
 
 // 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
 function genSlug() {
@@ -213,15 +214,24 @@ export function materializeCliTask(taskKey, { state = 'plan' } = {}) {
     fs.mkdirSync(taskDir, { recursive: true });
     const taskJson = { taskKey, source: 'cli', title, prompt, mode: 'single', metaMode: 'overwrite', createdAt: nowStr };
     if (hist.model) taskJson.model = hist.model;
-    if (hist.cwd) taskJson.cwd = hist.cwd;
+    const meta = { sessionId: fullSid };
+    // 工作目录不变量：task.cwd 只存 base 仓库根。会话跑在 worktree 里时，worktree 路径进 meta.worktreeDir，
+    // 并置 task.worktree=true —— 确认执行时 resolveRunCwd 据 meta.worktreeDir --resume 回到同一 worktree（否则会跑错目录）。
+    if (hist.cwd) {
+      const wt = detectWorktreeBase(hist.cwd);
+      taskJson.cwd = wt.baseCwd;
+      if (wt.isWorktree) {
+        taskJson.worktree = true;
+        meta.worktreeDir = hist.cwd;
+      }
+      meta.cwd = hist.cwd;   // 保留会话实际运行 cwd（历史字段）
+    }
     fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
     fs.writeFileSync(path.join(taskDir, 'state.json'), JSON.stringify({
       state, enteredAt: nowStr, outcome: null, resolvedAt: null,
       outcomeDetail: { quotaResetAt: null, failureReason: null, checkerExhausted: false },
       history: [{ state, at: nowStr, by: 'user:materialize-cli' }],
     }, null, 2), 'utf8');
-    const meta = { sessionId: fullSid };
-    if (hist.cwd) meta.cwd = hist.cwd;
     if (hist.gitBranch) meta.gitBranch = hist.gitBranch;
     fs.writeFileSync(path.join(taskDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
   } catch (e) {
