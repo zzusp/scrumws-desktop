@@ -24,6 +24,14 @@ npm run dist              # 打包 Windows 安装包（electron-builder）
 进程内调度器只跑守护 **Runner Checker**（收孤儿任务）；`runtime/scheduler.lock` 跨进程互斥，多实例只有一个真调度。
 任务执行 = **Mode B 交互会话引擎**（`session-manager` 直起 claude stream-json，跨平台）：新建任务进 queued 即自动起会话（详见 `docs/api/task-ingest.md`）。
 
+## 任务来源不变量（改任务处理逻辑前先读）
+
+**`source`（cli / manual / api / …）只是来源元数据，不是行为开关。所有来源的任务共享同一套状态机与处理逻辑——分支按「状态」走，绝不按 source 特判。**
+
+- **为什么**：任务执行的本质是一个可 `--resume` 续接的 claude 会话；哪怕看板手动新建的任务，用户也可能自己开终端 `claude --resume <sid>` 接着跑。来源不改变「它是一个能 plan / 排队 / 处理中 / 待人工 / 完成 / 退回计划 / 编辑 / 归档的任务」——这些能力对所有来源一视同仁。
+- **怎么落地**：改 `lib/task-actions.js`（任务动作）、`public/app.js` 的 `cardActionButtons`（按钮门控）、`lib/collect*.js`（聚合出卡）时，按 `state` 分支，不写 `startsWith('cli:')` / `source === 'cli'` / `isCli` 这类来源判断。`source` 只用于展示（角标 / 图标）与入库归类。
+- **现状偏差（待收敛，非目标态）**：历史代码仍有多处按来源特判——`moveTaskToPlan` / `completeTask` / `uncompleteTask` 拒绝 `cli:`、`replyToTask` 把 cli 路由到另一条 runner、`app.js` 用 `isCli` 抹掉退回计划 / 中断按钮、`collect-cli.js` 从 watchlist 单独出卡等。这些与本不变量冲突，后续应逐步统一到「按状态、不按来源」。
+
 ## Electron 宿主适配（迁移时踩的点，改平台核前先读）
 
 1. **凡 `process.execPath` 的 spawn/execFile 必须带 `ELECTRON_RUN_AS_NODE=1`**（scheduler fork、validateScript --check 已处理）；`run-job.js` 入口会 delete 该变量防扩散到 pwsh/claude 后代
