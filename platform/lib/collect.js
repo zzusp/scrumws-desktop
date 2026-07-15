@@ -270,7 +270,9 @@ function computeRuntimeUsage(buckets) {
     ...buckets.done, ...buckets['awaiting-human'], ...buckets.archived, ...buckets.other,
   ];
   for (const t of all) {
-    if (t.source === 'cli') { agg.cliCount++; continue; }
+    // 被旁观的 CLI 会话（t.cli；meta 无真实 usage/cost）单独计数、不进用量聚合；物化后的 CLI 任务无 t.cli、
+    // 有真实 usage meta，与其它托管任务一并聚合（按 t.cli 判、不按 source——任务来源不变量）
+    if (t.cli) { agg.cliCount++; continue; }
     const m = t.meta;
     if (!m) continue;
     agg.totalCostUsd += m.totalCostUsd || 0;
@@ -299,10 +301,11 @@ function buildRuntime(buckets) {
 
   detectClaudeRuntime();   // TTL 到点则后台重探（读缓存，不阻塞）
   const snap = usageSnapshot();   // 账号级 5h/7d 用量 + 定时拉取实况（纯读定时器缓存，不打端点）
-  // scrumws 平台任务的 sessionId 集合（分身任务 meta.sessionId，不含 cli watchlist）→ 日用量柱状图「平台子集」过滤
+  // scrumws 平台任务的 sessionId 集合（有任务包的托管任务 meta.sessionId，不含被旁观的 cli watchlist 会话）
+  // → 日用量柱状图「平台子集」过滤。按 t.cli 判：物化后的 CLI 任务无 t.cli、算平台任务（任务来源不变量）
   const platformSids = new Set();
   for (const b of Object.values(buckets)) for (const t of b) {
-    if (t.source !== 'cli' && t.meta?.sessionId) platformSids.add(t.meta.sessionId);
+    if (!t.cli && t.meta?.sessionId) platformSids.add(t.meta.sessionId);
   }
   return {
     tool: 'Claude Code',

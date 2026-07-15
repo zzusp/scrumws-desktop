@@ -5,6 +5,9 @@ import { parse } from './timeutil.js';
 import { readConfig } from './runner-config.js';
 import { replyCliSession } from './cli-actions.js';
 import { tryStartOrQueue, replyTask, cancelTaskSession, parkTaskSession } from './task-runner.js';
+import { readCcSessionForAdopt, completeCliSession, uncompleteCliTask } from './logs.js';
+import { readAttachedSessions } from './collect-cli.js';
+import { readWatchlist, removeWatchlist } from './cli-watchlist.js';
 
 // 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
 function genSlug() {
@@ -76,7 +79,8 @@ export function cancelTask({ taskKey }) {
 // 仅限 plan——已排队/运行/收敛的任务有真实执行记录，不走删除（用中断/归档）。
 export function deleteTask({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
-  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话请用「从看板移除」' };
+  // 不按 source 特判：物化后的 CLI 任务有 meta.sessionId，会被下面「已执行过→改归档」guard 挡下；未物化 CLI 无包→
+  // 落到「task not found」。删除只对「plan 且无 sessionId」的纯草稿放行（见下）。
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
@@ -99,10 +103,13 @@ export function deleteTask({ taskKey }) {
 // 仅对 awaiting-human 分身任务；CLI 无可写 state.json / 无 done 态、processing/queued/plan/done 语义不符，一律拒绝。
 export function completeTask({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
-  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话无 done 态，不能人工确认完成' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
-  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
+  // 无任务包：未物化的 CLI 会话 → 走 watchlist doneAt（与 collect-cli 判态一致）；物化后有包，走下面统一路径
+  if (!fs.existsSync(taskDir)) {
+    if (String(taskKey).startsWith('cli:')) return completeCliSession(taskKey);
+    return { ok: false, error: 'task not found' };
+  }
   const stateFile = path.join(taskDir, 'state.json');
   let state = {};
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { }
@@ -138,10 +145,13 @@ export function completeTask({ taskKey }) {
 // CLI 会话走 watchlist.doneAt（server 按来源分派到 uncompleteCliTask），此处只处理分身任务包。
 export function uncompleteTask({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
-  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话取消完成走 watchlist' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
-  if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
+  // 无任务包：未物化的 CLI 会话 → 清 watchlist.doneAt；物化后有包，走下面统一路径
+  if (!fs.existsSync(taskDir)) {
+    if (String(taskKey).startsWith('cli:')) return uncompleteCliTask(taskKey);
+    return { ok: false, error: 'task not found' };
+  }
   const stateFile = path.join(taskDir, 'state.json');
   let state = {};
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { }
@@ -167,14 +177,71 @@ export function uncompleteTask({ taskKey }) {
   return { ok: true, taskKey, state: 'awaiting-human' };
 }
 
+// 把被旁观的 CLI 会话「物化」成一等托管任务包（runner-state/<key>/），使其后续走与其它来源完全一致的状态机
+// （退回计划 / 完成 / 回复 / 编辑…）。source 仍标 'cli'（仅展示元数据，不改行为——见 README「任务来源不变量」）；
+// sessionId 落 meta 供确认执行时 --resume 续上之前的对话；task.cwd 取会话原目录，保 --resume 定位到同一 CC 项目目录。
+// 从 watchlist 摘除该 sid（去重：collect-cli 不再出这张卡，改由 runner-state 包出卡）。终端仍占用该会话时拒绝
+// （对齐 /api/session/adopt 的 guard：两个 claude 抢同一 session 会撞车）。
+export function materializeCliTask(taskKey, { state = 'plan' } = {}) {
+  const shortSid = String(taskKey).slice(4);   // 'cli:xxxxxxxx' → 'xxxxxxxx'
+  const w = readWatchlist();
+  const found = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
+  if (!found) return { ok: false, error: 'cli session not in watchlist' };
+  const [fullSid, entry] = found;
+  const att = readAttachedSessions().get(fullSid);
+  if (att) return { ok: false, error: `session 正被终端进程占用（pid=${att.pid}），请先关闭该终端窗口再操作` };
+  const hist = readCcSessionForAdopt(fullSid);
+  if (!hist.ok) return hist;
+  const textOf = (m) => {
+    if (!m) return '';
+    const c = m.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) return c.map((b) => (typeof b === 'string' ? b : b?.text || '')).join(' ').trim();
+    return '';
+  };
+  const firstUser = (hist.messages || []).find((m) => m.role === 'user' && !m.isMeta);
+  const lastUser = [...(hist.messages || [])].reverse().find((m) => m.role === 'user' && !m.isMeta);
+  const title = (entry.customTitle || textOf(firstUser) || shortSid).slice(0, 200);
+  const prompt = (textOf(lastUser) || title).slice(0, 100000);   // 续跑起点，用户可在编辑里改写
+
+  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');   // cli:xxxx → cli__xxxx
+  const taskDir = path.join(P.runnerRoot, safeKey);
+  const p2 = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
+  try {
+    fs.mkdirSync(taskDir, { recursive: true });
+    const taskJson = { taskKey, source: 'cli', title, prompt, mode: 'single', metaMode: 'overwrite', createdAt: nowStr };
+    if (hist.model) taskJson.model = hist.model;
+    if (hist.cwd) taskJson.cwd = hist.cwd;
+    fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
+    fs.writeFileSync(path.join(taskDir, 'state.json'), JSON.stringify({
+      state, enteredAt: nowStr, outcome: null, resolvedAt: null,
+      outcomeDetail: { quotaResetAt: null, failureReason: null, checkerExhausted: false },
+      history: [{ state, at: nowStr, by: 'user:materialize-cli' }],
+    }, null, 2), 'utf8');
+    const meta = { sessionId: fullSid };
+    if (hist.cwd) meta.cwd = hist.cwd;
+    if (hist.gitBranch) meta.gitBranch = hist.gitBranch;
+    fs.writeFileSync(path.join(taskDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
+  } catch (e) {
+    return { ok: false, error: `物化 CLI 任务包失败: ${e.message}` };
+  }
+  removeWatchlist(fullSid);   // 去重：改由 runner-state 包出卡
+  return { ok: true, taskKey, state, materialized: true, sessionId: fullSid };
+}
+
 // 退回计划（awaiting-human/done → plan）：把终态任务退回 plan 桶，供编辑配置 / 改期后重新执行。
 // 关掉可能仍空转的 Mode B 会话（释放 claude 进程）但**保留 meta.sessionId**——之后确认执行时 startTask 据它
-// --resume 续上之前的对话。CLI 会话无 state.json / 无 plan 态，拒绝。
+// --resume 续上之前的对话。CLI 会话（尚无任务包）→ 先物化成一等托管任务、直接落 plan 桶（不再按来源特判拒绝）。
 export function moveTaskToPlan({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
-  if (String(taskKey).startsWith('cli:')) return { ok: false, error: 'CLI 会话无 plan 态，不能退回计划' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
+  // CLI 会话未物化（无任务包）→ 物化成托管任务并直接落 plan（source 仍 'cli'，仅元数据）
+  if (String(taskKey).startsWith('cli:') && !fs.existsSync(taskDir)) {
+    return materializeCliTask(taskKey, { state: 'plan' });
+  }
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found（归档任务请先取消归档再退回计划）' };
   const stateFile = path.join(taskDir, 'state.json');
   let state = {};
@@ -204,15 +271,16 @@ export function moveTaskToPlan({ taskKey }) {
   return { ok: true, taskKey, state: 'plan' };
 }
 
-// 回复任务：CLI 会话走 cli-reply-runner（观察侧，另一功能）；其余走 Mode B（复用 live 会话 / --resume 重挂）。
-// effort：per-reply reasoning 档位覆盖（仅 --resume 重挂新会话时生效，live 会话 spawn 时已定）。
+// 回复任务：package-first——有任务包（含物化 CLI）走 Mode B（复用 live 会话 / --resume 重挂）；未物化的 CLI 会话
+// （无包）才走观察侧 cli-reply-runner。effort：per-reply reasoning 档位覆盖（仅 --resume 重挂新会话时生效）。
 export function replyToTask({ taskKey, message, model, effort }) {
-  if (String(taskKey || '').startsWith('cli:')) return replyCliSession({ taskKey, message, model });
-  const msg = String(message || '').trim();
-  if (!msg) return { ok: false, error: 'message required' };
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
+  // 未物化的 CLI 会话（无任务包）→ 观察侧 replyCliSession；有包一律走下面统一的 Mode B 路径
+  if (String(taskKey).startsWith('cli:') && !fs.existsSync(taskDir)) return replyCliSession({ taskKey, message, model });
+  const msg = String(message || '').trim();
+  if (!msg) return { ok: false, error: 'message required' };
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found（归档任务请先取消归档再回复）' };
   let state = null;
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }

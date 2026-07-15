@@ -385,7 +385,8 @@ function readCliWorkerLog(taskKey) {
 
 // worker-log 端点：从 CC 官方 jsonl 拼 sessionHistory[] 多轮内容（阶段 3 起，替代旧 watch-worker-*.log）
 export function readWorkerLog(taskKey, maxSessions = 20) {
-  if (typeof taskKey === 'string' && taskKey.startsWith('cli:')) return readCliWorkerLog(taskKey);
+  // 未物化的 CLI 会话（无任务包）→ 直接从 CC jsonl 拼历史；物化后有包（meta.sessionId 指向同一 jsonl）→ 走下面统一路径
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey)) return readCliWorkerLog(taskKey);
   const safeKey = safeKeyOf(taskKey);
   if (!safeKey) return { ok: false, error: 'invalid taskKey', taskKey };
   const taskDir = path.join(P.runnerRoot, safeKey);
@@ -592,10 +593,17 @@ export function setTaskDescription(taskKey, newDesc) {
   return { ok: true, taskKey, description: task.description || null };
 }
 
+// 该 taskKey 是否已有 runner-state / archive 任务包（物化过的 CLI 会话也有）——决定走「按来源(watchlist)」还是
+// 「按包」的统一路径。见 README「任务来源不变量」：cli: 前缀仅在「尚无任务包」时才走 watchlist 分支，物化后一律走包路径。
+function hasTaskPackage(taskKey) {
+  const sk = safeKeyOf(taskKey);
+  return !!sk && (fs.existsSync(path.join(P.runnerRoot, sk)) || fs.existsSync(path.join(P.archiveRoot, sk)));
+}
+
 // 重命名任务：写 task.json.customTitle（优先级：customTitle > 首条用户消息 > issue title > taskKey）
 export function renameTask(taskKey, newTitle) {
-  // CLI 走独立分支：改标题 = watchlist 写 customTitle（CLI 会话无任务包，不落 task.json）——与 archiveTask 同构
-  if (typeof taskKey === 'string' && taskKey.startsWith('cli:')) {
+  // 未物化的 CLI 会话（无任务包）：改标题 = watchlist 写 customTitle；物化后走下面统一的 task.json 路径
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey)) {
     const shortSid = taskKey.slice(4);
     const w = _cliWatchlist.readWatchlist();
     const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
@@ -630,8 +638,8 @@ export function renameTask(taskKey, newTitle) {
 
 // 归档 done 任务：docs/tmp/runner-state/<safeKey>/ → docs/tmp/runner-archive/<safeKey>/
 export function archiveTask(taskKey) {
-  // CLI 走独立分支：手动归档 = watchlist 里写 archivedAt；不动 jsonl
-  if (typeof taskKey === 'string' && taskKey.startsWith('cli:')) {
+  // 未物化的 CLI 会话（无任务包）：手动归档 = watchlist 写 archivedAt；物化后走下面统一的目录搬迁路径
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey)) {
     const shortSid = taskKey.slice(4);
     const w = _cliWatchlist.readWatchlist();
     const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
@@ -659,7 +667,8 @@ export function archiveTask(taskKey) {
 // 取消归档：archiveTask 的逆操作，内部按来源分派——CLI 清 watchlist.archivedAt 回落自动判态；
 // 分身 runner-archive/<safeKey> 目录移回 runner-state/<safeKey>（collect 重新按 state.json 判态）。
 export function unarchiveTask(taskKey) {
-  if (typeof taskKey === 'string' && taskKey.startsWith('cli:')) {
+  // 未物化的 CLI 会话（无任务包）：清 watchlist.archivedAt；物化后走下面统一的目录搬迁路径
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey)) {
     const shortSid = taskKey.slice(4);
     const w = _cliWatchlist.readWatchlist();
     const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));

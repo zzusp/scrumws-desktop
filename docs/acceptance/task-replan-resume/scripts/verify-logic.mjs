@@ -65,10 +65,12 @@ console.log('\n[3] 非终态拒绝退回');
   assert(!r2.ok, 'plan 本身拒绝再退回', JSON.stringify(r2));
 }
 
-console.log('\n[4] CLI 键拒绝');
+console.log('\n[4] CLI 键未在 watchlist（无法物化）→ 报错；已跟踪的物化路径见 unify-task-source-handling/verify-cli-unify');
 {
+  // 旧语义「cli 一律拒绝退回计划」已移除（见 README 任务来源不变量）：现在 cli: 会物化成托管任务，
+  // 仅当会话未被 watchlist 跟踪、无从物化时报错。
   const r = moveTaskToPlan({ taskKey: 'cli:abcd1234' });
-  assert(!r.ok && /CLI/.test(r.error), 'cli: 拒绝', JSON.stringify(r));
+  assert(!r.ok && /watchlist/.test(r.error), 'cli 未跟踪 → not in watchlist', JSON.stringify(r));
 }
 
 console.log('\n[5] deleteTask guard：plan 且有 sessionId 拒删（改归档）');

@@ -16,7 +16,8 @@ function boardSessionIds() {
   return set;
 }
 
-const CC_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
+// 默认 ~/.claude/projects；SCRUMWS_CC_PROJECTS 可覆盖（沙箱验证隔离用，对齐 SCRUMWS_* 约定）
+const CC_PROJECTS = process.env.SCRUMWS_CC_PROJECTS || path.join(os.homedir(), '.claude', 'projects');
 const SID_FILE_RE = /^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i;
 
 // 罗列所有 <projectDir>/<sid>.jsonl，返回 stat（mtime/size）+ 路径。

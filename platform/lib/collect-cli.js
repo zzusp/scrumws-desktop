@@ -10,7 +10,8 @@ import { listWatchlist, upsertWatchlist, setDoneWatchlist } from './cli-watchlis
 import { P } from './paths.js';
 import { listSessions } from './session-manager.js';
 
-const CC_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
+// CC 会话 jsonl 根：默认 ~/.claude/projects；SCRUMWS_CC_PROJECTS 可覆盖（沙箱验证隔离用，对齐 SCRUMWS_* 约定）
+const CC_PROJECTS = process.env.SCRUMWS_CC_PROJECTS || path.join(os.homedir(), '.claude', 'projects');
 const CC_SESSIONS = path.join(os.homedir(), '.claude', 'sessions');
 
 // CC 活进程注册表：~/.claude/sessions/<pid>.json = {pid, sessionId, cwd, status: idle|busy, kind}
