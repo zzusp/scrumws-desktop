@@ -87,9 +87,9 @@ async function api(url, opts) {
   return r.json();
 }
 
-// ---- 平台守护卡（设置页 Runner Checker）----
-// 卡片 HTML（去派发器后仅 Runner Checker 用）：项目固有调度常开不可停，节拍以分钟为单位可编辑
-function liveJobCardHtml(t, { title, mono, hint }) {
+// ---- 平台守护（设置页 Runner Checker）----
+// 仅此一项 job（去派发器后调度器唯一的 job），直接铺在 sec-head 所在的 section 卡片里，不再多套一层卡片
+function liveJobCardHtml(t, { mono, hint }) {
   const stateTag = t.running
     ? '<span class="tag tag-jade">Running</span>'
     : '<span class="tag tag-jade">Ready</span>';
@@ -100,32 +100,28 @@ function liveJobCardHtml(t, { title, mono, hint }) {
       : `<span class="tag tag-amber" title="${escapeAttr(t.lastError || '')}">last=${escapeHtml(t.lastOutcome)}</span>`;
   const min = Math.max(1, Math.round((t.intervalSec || 60) / 60));
   return `
-    <div style="border:1px solid var(--hair);border-radius:11px;padding:14px 16px;background:var(--card2)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        ${title}
-        ${stateTag}
-        <span class="int-edit" style="margin-left:auto" title="调度节拍（分钟）">
-          每 <input type="number" class="int-input" data-checker-interval min="1" max="60" step="1" value="${min}"> 分钟
-        </span>
-      </div>
-      <div style="font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:8px">${mono}</div>
-      <div style="font-size:11px;color:var(--mut);line-height:1.55;margin-bottom:8px">${hint}</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px;color:var(--mut);font-family:var(--mono)">
-        <span>心跳 <b style="color:var(--ink2)">${t.heartbeat}</b></span>
-        ${lastTag}
-      </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      ${stateTag}
+      <span class="int-edit" style="margin-left:auto" title="调度节拍（分钟）">
+        每 <input type="number" class="int-input" data-checker-interval min="1" max="60" step="1" value="${min}"> 分钟
+      </span>
+    </div>
+    <div style="font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:8px">${mono}</div>
+    <div style="font-size:11px;color:var(--mut);line-height:1.55;margin-bottom:8px">${hint}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:11px;color:var(--mut);font-family:var(--mono)">
+      <span>心跳 <b style="color:var(--ink2)">${t.heartbeat}</b></span>
+      ${lastTag}
     </div>
   `;
 }
 
-// 设置页：平台守护卡（Runner Checker —— 平台内置 Node job，去派发器后调度器唯一的 job）
+// 设置页：Runner Checker（平台内置 Node job，去派发器后调度器唯一的 job）
 function renderChecker(checker) {
   const grid = $('checkerGrid');
   if (!grid || !checker) return;
   // 用户正在编辑节拍输入时不重画，避免轮询覆盖输入（同 syncProxyInput 的护栏）
   if (grid.querySelector('input[data-checker-interval]') === document.activeElement) return;
   grid.innerHTML = liveJobCardHtml(checker, {
-    title: `<div style="font-weight:600;font-size:13px;color:var(--ink2)">${escapeHtml(checker.label)}</div>`,
     mono: 'platform/lib/jobs/runner-checker.js · 平台内置',
     hint: escapeHtml(checker.hint || ''),
   });
@@ -2354,9 +2350,7 @@ function openCwdMenu() { renderCwdMenu(); $('newTaskCwdMenu')?.classList.add('op
   document.addEventListener('click', (e) => { if (!combo.contains(e.target)) closeCwdMenu(); });
 })();
 
-// req5：worktree 勾选切换 → 联动签出分支行显隐
-$('newTaskWorktree').addEventListener('change', toggleBranchRow);
-function toggleBranchRow() { $('newTaskBranchRow').style.display = $('newTaskWorktree').checked ? 'flex' : 'none'; }
+// req5：签出基分支行与 worktree 勾选相互独立、不再联动显隐（不勾选 worktree 也能单独设签出基分支）
 
 // req5：探测工作目录是否 git 项目 → 切 worktree 区显隐 + 填签出分支下拉。opts 用于编辑回填(worktree/baseBranch)。
 let newTaskBranchOptions = [];   // [{branch, isCurrent}] —— 可筛选下拉数据源
@@ -2378,7 +2372,6 @@ async function refreshWorktreeUi(cwd, opts) {
   $('newTaskBaseBranch').value = want;
   renderBranchMenu();
   if (opts && typeof opts.worktree === 'boolean') $('newTaskWorktree').checked = opts.worktree;
-  toggleBranchRow();
 }
 
 // req1：签出基分支 可筛选下拉（复用 cwd-combo 样式；输入即筛，选中写回 input.value）
@@ -2576,10 +2569,11 @@ $('newTaskSubmit').addEventListener('click', async () => {
   const effort = $('newTaskEffort').value;                          // req3
   const scheduledAt = toLocalStamp($('newTaskScheduledAt').value);  // req4
   const dynamicWorkflow = $('newTaskDynamicWorkflow').checked;      // req6
-  // req5：worktree 仅在 git 目录（worktree 区可见）且勾选时生效；分支取下拉当前值
+  // req5：worktree 仅在 git 目录（worktree 区可见）且勾选时生效；签出基分支与 worktree 勾选无关，独立生效
+  // （不勾选 worktree 时，签出基分支表示直接在工作目录本身签出该分支并拉取最新代码后工作）
   const worktreeVisible = $('newTaskWorktreeRow').style.display !== 'none';
   const worktree = worktreeVisible && $('newTaskWorktree').checked;
-  const baseBranch = worktree ? ($('newTaskBaseBranch').value || '') : '';
+  const baseBranch = worktreeVisible ? ($('newTaskBaseBranch').value || '') : '';
   const errBox = $('newTaskErr');
   const warnBox = $('newTaskWarn');
   errBox.style.display = 'none';

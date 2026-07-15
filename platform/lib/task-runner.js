@@ -9,7 +9,7 @@ import { P } from './paths.js';
 import { fmt, parse } from './timeutil.js';
 import { createSession, sendUserMessage, getSession, closeSession, getSessionIdByTaskKey } from './session-manager.js';
 import { readCcSessionForAdopt, ccMessagesToModeBSeed } from './logs.js';
-import { ensureWorktree } from './git.js';
+import { ensureWorktree, checkoutBranchLatest } from './git.js';
 import { readConfig } from './runner-config.js';
 
 // taskKey → 内存会话 id（reply 复用 / 详情接 live SSE / 判活）
@@ -217,21 +217,32 @@ export function drainQueued() {
 }
 function scheduleDrain() { setImmediate(() => { try { drainQueued(); } catch { /* 排空失败不拖垮事件流 */ } }); }
 
-// 解析任务真正运行的 cwd：worktree 开启且 cwd 是 git → 建/复用 worktree，运行在 worktree 目录；否则用 task.cwd。
+// 解析任务真正运行的 cwd：worktree 开启且 cwd 是 git → 建/复用 worktree，运行在 worktree 目录；
+// 否则（不勾 worktree）若单独设了签出基分支 → 首次运行时直接在工作目录本身签出该分支 + 拉取最新代码后工作，
+// 之后（reply/resume）复用、不重复签出（避免打断进行中的改动）；均落 meta.json 幂等标记。
 // worktreeDir/branch 落 meta.json：reply/resume 复用同目录续跑，且供 collect 侧栏展示。首次建失败即回错、不降级到主库。
 function resolveRunCwd(taskKey, task) {
   const cwd = task?.cwd || null;
-  if (!task?.worktree || !cwd) return { cwd };
+  if (!cwd) return { cwd };
   const metaFile = path.join(taskDirOf(taskKey), 'meta.json');
   const meta = readJson(metaFile) || {};
-  if (meta.worktreeDir && fs.existsSync(meta.worktreeDir)) return { cwd: meta.worktreeDir };   // 已建，复用
-  const name = String(taskKey).split(':').slice(1).join('-').replace(/[^A-Za-z0-9._-]/g, '-') || safeKeyOf(taskKey);
-  const r = ensureWorktree({ repoDir: cwd, name, baseBranch: task.baseBranch || null });
-  if (!r.ok) return { error: r.error };
-  meta.worktreeDir = r.worktreeDir;
-  meta.worktreeBranch = r.branch;
-  try { writeJson(metaFile, meta); } catch { /* 落盘失败不阻断，用返回值 */ }
-  return { cwd: r.worktreeDir };
+  if (task?.worktree) {
+    if (meta.worktreeDir && fs.existsSync(meta.worktreeDir)) return { cwd: meta.worktreeDir };   // 已建，复用
+    const name = String(taskKey).split(':').slice(1).join('-').replace(/[^A-Za-z0-9._-]/g, '-') || safeKeyOf(taskKey);
+    const r = ensureWorktree({ repoDir: cwd, name, baseBranch: task.baseBranch || null });
+    if (!r.ok) return { error: r.error };
+    meta.worktreeDir = r.worktreeDir;
+    meta.worktreeBranch = r.branch;
+    try { writeJson(metaFile, meta); } catch { /* 落盘失败不阻断，用返回值 */ }
+    return { cwd: r.worktreeDir };
+  }
+  if (task?.baseBranch && !meta.baseBranchApplied) {
+    const r = checkoutBranchLatest({ repoDir: cwd, baseBranch: task.baseBranch });
+    if (!r.ok) return { error: r.error };
+    meta.baseBranchApplied = task.baseBranch;
+    try { writeJson(metaFile, meta); } catch { /* 落盘失败不阻断 */ }
+  }
+  return { cwd };
 }
 
 // 起任务执行会话（queued/approve/restart → 起绑定会话，task.prompt 作本轮消息）。

@@ -456,7 +456,9 @@ export function createTask({ source, title, prompt, model, description, plan, cw
     if (cwdFinal) taskJson.cwd = cwdFinal;
     if (eff) taskJson.effort = eff;
     if (schedRaw) taskJson.scheduledAt = schedRaw;
-    if (wantWorktree) { taskJson.worktree = true; if (baseBr) taskJson.baseBranch = baseBr; }
+    // worktree 与签出基分支相互独立：不勾 worktree 也可单独设签出基分支（起会话前直接在工作目录本身签出+拉取最新，见 task-runner.resolveRunCwd）
+    if (wantWorktree) taskJson.worktree = true;
+    if (baseBr) taskJson.baseBranch = baseBr;
     if (dynFlow != null) taskJson.dynamicWorkflow = dynFlow;
     if (desc) taskJson.description = desc;
     fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
@@ -568,8 +570,9 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
   // 锁定时不动 task.cwd/worktree/baseBranch（保原值）；否则按提交值改写
   if (!locked) {
     if (cwdFinal) task.cwd = cwdFinal; else delete task.cwd;
-    if (cwdFinal && worktree) { task.worktree = true; if (baseBr) task.baseBranch = baseBr; else delete task.baseBranch; }
-    else { delete task.worktree; delete task.baseBranch; }
+    // worktree 与签出基分支相互独立：不勾 worktree 也可单独设签出基分支
+    if (cwdFinal && worktree) task.worktree = true; else delete task.worktree;
+    if (cwdFinal && baseBr) task.baseBranch = baseBr; else delete task.baseBranch;
   }
   if (dynFlow != null) task.dynamicWorkflow = dynFlow; else delete task.dynamicWorkflow;
   task.taskKey = task.taskKey || taskKey;

@@ -88,6 +88,20 @@ export function ensureWorktree({ repoDir, name, baseBranch }) {
   return { ok: true, worktreeDir, branch, reused: false };
 }
 
+// 不建 worktree、直接在工作目录本身签出基分支 + 拉取最新代码（无隔离，会切换该目录当前分支，供任务在其上工作）。
+export function checkoutBranchLatest({ repoDir, baseBranch }) {
+  const branch = String(baseBranch || '').trim();
+  if (!branch) return { ok: true, skipped: true };
+  const info = detectGit(repoDir);
+  if (!info.ok) return info;
+  if (!info.isGit) return { ok: false, error: `工作目录不是 git 项目，无法签出分支：${repoDir}` };
+  const co = git(repoDir, ['checkout', branch]);
+  if (!co.ok) return { ok: false, error: `git checkout ${branch} 失败：${co.error}` };
+  const pull = git(repoDir, ['pull']);
+  if (!pull.ok) return { ok: false, error: `git pull 失败：${pull.error}` };
+  return { ok: true, branch };
+}
+
 // 移除 worktree（收尾/清理用，best-effort）；--force 连未提交改动一起丢，仅在任务终态调用方决定时用。
 export function removeWorktree({ repoDir, worktreeDir }) {
   if (!worktreeDir || !fs.existsSync(worktreeDir)) return { ok: true, skipped: true };
