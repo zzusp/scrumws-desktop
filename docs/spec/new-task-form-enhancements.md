@@ -23,11 +23,13 @@
      plan 态且 `scheduledAt<=now` → `startTask()`（= 到点自动执行），清 `scheduledAt`。
    - 语义说明：本看板 `queued` 即刻转 `processing`（无独立消费 queued 的 loop），故「定时转 queued」= 到点起会话执行。
 
-5. **判断工作目录是否 git（支持 worktree）→ 显示 worktree 开关（默认开）+ 签出分支**
-   - 新增 `lib/git.js`：`detectGit(dir)`（isGit/root/currentBranch/branches）、`ensureWorktree({repoDir,name,baseBranch})`、`removeWorktree`。
+5. **判断工作目录是否 git（支持 worktree）→ 显示 worktree 开关（默认开）+ 签出分支（两者相互独立）**
+   - 新增 `lib/git.js`：`detectGit(dir)`（isGit/root/currentBranch/branches）、`ensureWorktree({repoDir,name,baseBranch})`、`checkoutBranchLatest({repoDir,baseBranch})`、`removeWorktree`。
    - 新增 `POST /api/git/detect` `{cwd}` → 检测结果。
-   - 前端：cwd 变更/浏览后探测；git → 显示 worktree toggle（默认勾）+ 分支下拉（默认 currentBranch）。
-   - 执行：`startTask` 若 `task.worktree && cwd 是 git` → `ensureWorktree` 建 `<gitRoot>/.claude/worktrees/<slug>`（分支 `worktree-<slug>` 基于 baseBranch），以 worktreeDir 为运行 cwd；worktreeDir/branch 落 `meta.json` 复用；reply 复用同目录。
+   - 前端：cwd 变更/浏览后探测；git → 显示 worktree toggle（默认勾）+ 分支下拉（默认 currentBranch）；分支下拉不再随 worktree 勾选联动显隐，勾/不勾都可单独设签出基分支。
+   - 执行（`task-runner.resolveRunCwd`）：
+     - `task.worktree && cwd 是 git` → `ensureWorktree` 建 `<gitRoot>/.claude/worktrees/<slug>`（分支 `worktree-<slug>` 基于 baseBranch），以 worktreeDir 为运行 cwd；worktreeDir/branch 落 `meta.json` 复用；reply 复用同目录。
+     - 不勾 worktree 但单独设了 `baseBranch` → 首次起会话时直接在工作目录本身 `git checkout <baseBranch> && git pull`（无隔离，会切换该目录当前分支），签出结果落 `meta.baseBranchApplied` 幂等标记，reply/resume 不重复签出（避免打断进行中的改动）。
    - 自管理而非原生 `--worktree`：与应用 cwd 追踪一致，且 `--settings/--worktree` 在 Windows shell:true spawn 下有引号/组合风险。
 
 6. **「动态工作流」开关（Claude Code Workflows 能力）**
@@ -37,7 +39,7 @@
    - 存 `task.json.dynamicWorkflow` 布尔；`createSession` 按值注入 env。默认 OFF（workflows 开销大、opt-in 更安全）。
 
 ## 数据形状（task.json 新增字段）
-`effort?`, `scheduledAt?`, `worktree?:bool`, `baseBranch?`, `dynamicWorkflow?:bool`（`worktreeDir`/`worktreeBranch` 落 meta.json 运行态）。
+`effort?`, `scheduledAt?`, `worktree?:bool`, `baseBranch?`（与 worktree 相互独立，不勾 worktree 也可单独存在）, `dynamicWorkflow?:bool`（`worktreeDir`/`worktreeBranch`/`baseBranchApplied` 落 meta.json 运行态）。
 
 ## 涉及文件
 - 后端：`lib/git.js`(新), `lib/task-actions.js`, `lib/session-manager.js`, `lib/task-runner.js`, `lib/scheduler.js`, `server.js`
