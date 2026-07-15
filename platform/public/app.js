@@ -433,8 +433,9 @@ function cardActionButtons(t, section) {
   const unarchiveBtn = `<button class="btn" onclick="unarchiveTaskAction('${_k}')" title="取消归档，回落自动判态">↺ 取消归档</button>`;
   const completeBtn = `<button class="btn" style="color:var(--jade)" onclick="completeTaskAction('${_k}')" title="人工确认已完成 → 移入 done">✓ 完成</button>`;
   const uncompleteBtn = `<button class="btn" style="color:var(--mut)" onclick="uncompleteTaskAction('${_k}')" title="取消完成，退回 awaiting-human">↺ 取消完成</button>`;
-  // 退回计划（awaiting-human/done → plan）：改配置/改期后再执行，确认执行会续上之前的对话；CLI 无 plan 态不给
-  const toPlanBtn = isCli ? '' : `<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_k}')" title="退回计划桶：可编辑配置/改期后重新执行，续上之前的对话（--resume）">↩ 退回计划</button>`;
+  // 退回计划（awaiting-human/done → plan）：改配置/改期后再执行，确认执行会续上之前的对话。所有来源一视同仁——
+  // CLI 会话点此会先物化成一等托管任务再落 plan（source 仍 'cli'，仅元数据；见 README「任务来源不变量」）
+  const toPlanBtn = `<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_k}')" title="退回计划桶：可编辑配置/改期后重新执行，续上之前的对话（--resume）">↩ 退回计划</button>`;
 
   const lead = isPlan ? editBtn : descBtn;
   let actionBtn = '';
@@ -1533,11 +1534,11 @@ function renderTaskSide(taskKey) {
     if (!isCli && liveRunning) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
   } else if (t.state === 'awaiting-human') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${_bk}')">✓ 完成</button>`);
-    if (!isCli) btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
+    btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   } else if (t.state === 'done') {
     btns.push(`<button class="btn" onclick="uncompleteTaskAction('${_bk}')">↺ 取消完成</button>`);
-    if (!isCli) btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
+    btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   }
   const descText = t.description || '';

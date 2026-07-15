@@ -409,18 +409,18 @@ const server = http.createServer(async (req, res) => {
       const r = cancelTask({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
-    // 人工确认完成（awaiting-human → done）；CLI 会话走 watchlist.doneAt（照抄归档机制）
+    // 人工确认完成（awaiting-human → done）；来源无关：completeTask 内部按「有无任务包」分派（未物化 CLI → watchlist.doneAt）
     if (req.method === 'POST' && pathname === '/api/task/complete') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
-      const r = taskKey.startsWith('cli:') ? completeCliSession(taskKey) : completeTask({ taskKey });
+      const r = completeTask({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
-    // 取消完成（done → awaiting-human）；按来源分派：CLI 清 watchlist.doneAt / 分身改 state.json
+    // 取消完成（done → awaiting-human）；来源无关：uncompleteTask 内部按「有无任务包」分派
     if (req.method === 'POST' && pathname === '/api/task/uncomplete') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
-      const r = taskKey.startsWith('cli:') ? uncompleteCliTask(taskKey) : uncompleteTask({ taskKey });
+      const r = uncompleteTask({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
     // 退回计划（awaiting-human/done → plan）：关空转会话 + 落 plan，保留 meta.sessionId 供确认执行时 --resume 续对话
