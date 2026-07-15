@@ -47,5 +47,27 @@
 SCRUMWS_DATA_ROOT=<tmp> node docs/acceptance/board-filter-iteration/scripts/seed-tasks.mjs
 SCRUMWS_DATA_ROOT=<tmp> SCRUMWS_PORT=8790 node platform/standalone.js &
 npm install puppeteer-core --no-save --prefer-offline
-node docs/acceptance/board-filter-iteration/scripts/verify-ui.mjs   # 20/20 PASS
+node docs/acceptance/board-filter-iteration/scripts/verify-ui.mjs   # 24/24 PASS
 ```
+
+---
+
+## 迭代 2（round-2）：来源 / 工作目录改自定义下拉
+
+### 需求
+1. 工作目录筛选的选项面板 UI 优化，参考新建任务表单的工作目录选项处理（自定义下拉，非原生 select）。
+2. 来源筛选由 chip 改为下拉框，选项面板与工作目录一致，不用浏览器原生 select。
+
+### 改动
+- `index.html`：删 `.fp-chips/.fp-chip` 样式，新增 `.fp-dd*`（触发按钮 + `.fp-dd-menu` 选项面板，对齐新建任务
+  `.cwd-menu` 范式：popover / mono 路径 / 截断省略 / hover-accent / 选中 ✓）。HTML 把 `#fpSourceChips`（chips）与
+  `#fpCwd`（原生 `<select>`）替换为两个 `.fp-dd`（`fpSourceBtn/fpSourceMenu`、`fpCwdBtn/fpCwdMenu`）。
+- `app.js`：新增 `makeFilterDropdown({btnId,menuId,items,getValue,onPick})` 工厂（来源 / 工作目录共用；菜单打开时按
+  `items()` 现取、选项永远最新，触发按钮标签随选择更新，点外关闭）。`updateBoardFilterOptions` 只维护
+  `boardSources/boardCwds` 数据源 + 回落失效选择；`syncBoardFilterUi` 改走 `srcDD/cwdDD.syncLabel()`；`initBoardFilter`
+  建两个下拉、删除旧 chip/select 事件。收筛选面板时一并 `srcDD/cwdDD.close()`。
+
+### 验证
+`scripts/verify-ui.mjs` 更新为下拉断言，真实 Chrome **24/24 PASS**（见 `round-2.md`）——含「无原生 select、
+选项面板同款 `.fp-dd-menu`」「来源下拉展开/选项取真实数据/触发按钮标签更新」「工作目录下拉选项取真实 cwd」。
+截图：`round-1/filter-source-dropdown.png`、`round-1/filter-cwd-dropdown.png`、`round-1/filter-panel.png`。
