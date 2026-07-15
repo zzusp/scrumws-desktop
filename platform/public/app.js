@@ -1666,6 +1666,7 @@ function renderTaskSide(taskKey) {
   // 动态：state 流转时间线（参考 cloud-team 右侧 timeline：竖线 + 彩点 + 间隔耗时）
   const TL_DOT = { plan: 'var(--dim)', queued: 'var(--mut)', processing: 'var(--amber)', done: 'var(--cyan)', 'awaiting-human': 'var(--coral)', cancelled: 'var(--coral)' };
   const history = Array.isArray(t.history) ? t.history : [];
+  // 倒叙展示（最新在上）：先按时间序算好每条的 +delta（距上一条更早状态的间隔，语义不变），再整体 reverse
   const tlHtml = history.map((h, i) => {
     let deltaTxt = '';
     if (i > 0 && history[i - 1].at && h.at) {
@@ -1680,7 +1681,7 @@ function renderTaskSide(taskKey) {
           <div class="tl-meta">${escapeHtml(h.at || '')}${deltaTxt}</div>
         </div>
       </div>`;
-  }).join('');
+  }).reverse().join('');
   // 统一字段值：所有任务「任务信息」按同一字段集展示，共有字段（cwd/git/最近活动）一律取自详情 round
   // （readWorkerLog 对 CLI/分身同构产出）+ t.cli/t.cwd 兜底，不按来源分叉；
   // 权限模式/后台agent/jsonl大小是 CLI 会话独有真实数据，按 t.cli 存在性显（分身无 → 不显/—）。
@@ -2052,12 +2053,13 @@ function pickCommandArgs(text) {
   return (m?.[1] ?? '').trim();
 }
 
-// 原地 rewind：改写某条历史 user 消息并从那里重新执行（仅 CLI 会话；对齐 CC 交互 double-Esc rewind：
-// 同一 session、同一张卡片；被截掉的原时间线直接丢弃、不备份）。两步：① 后端截断 jsonl 到该消息之前，
-// ② 收养成 Mode B live 会话把改写后的消息从截断处叶子重跑（同「续接」路径，不再走已废弃的 ps1 runner）。
-window.rewindCliMessage = async (uuid) => {
+// 原地 rewind：改写某条历史 user 消息并从那里重新执行（对齐 CC 交互 double-Esc rewind：同一 session、同一张卡片；
+// 被截掉的原时间线直接丢弃、不备份）。统一入口覆盖观察态 CLI + 托管任务，后端截断 jsonl 后按 hosted 分派重跑：
+//   · hosted=false（观察态 cli 会话）→ 前端收养成 Mode B live 会话、把改写后的消息从截断处叶子重跑（同「续接」路径）。
+//   · hosted=true（托管任务）→ 后端已 park 空转会话 + 截断 + --resume 重跑，前端刷 state 让新 mbSessionId 现身进 live。
+window.rewindMessage = async (uuid) => {
   const taskKey = modalPollTaskKey;
-  if (!taskKey || !taskKey.startsWith('cli:')) return;
+  if (!taskKey) return;
   // 从当前详情数据里找原文，预填编辑框
   let original = '';
   for (const rd of currentModalData?.rounds || []) {
@@ -2072,16 +2074,22 @@ window.rewindCliMessage = async (uuid) => {
   });
   if (v === null || !v.trim()) return;
   try {
-    // ① 截断 jsonl 到目标消息之前（后端返回 sid）
-    const r = await api('/api/cli/rewind', {
+    // 后端截断 jsonl 到目标消息之前，返回 { hosted, sid? }
+    const r = await api('/api/task/rewind', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskKey, uuid, message: v.trim() }),
     });
     if (!r.ok) { customAlert({ title: 'rewind 失败', message: escapeHtml(r.error || '未知错误') }); return; }
-    // ② 截断后收养成 Mode B live 会话，把改写后的消息作新一轮从截断处重跑（同 sendCliContinue 的收养路径）
-    const rr = await adoptCliToLive({ taskKey, sessionId: r.sid, msg: v.trim() });
-    if (!rr.ok) { customAlert({ title: 'rewind 后续接失败（jsonl 已截断，可在卡片里直接续接重发）', message: escapeHtml(rr.error || '未知错误') }); return; }
+    if (r.hosted) {
+      // 托管任务：后端已 --resume 重跑 → 刷 state 让新 mbSessionId 现身、重载详情进 live（历史(截断后)+改写消息即时可见）
+      await refreshState();
+      if (modalOpen && modalPollTaskKey === taskKey) loadTaskDetail(taskKey);
+    } else {
+      // 观察态 CLI：截断后收养成 Mode B live 会话，把改写后的消息作新一轮从截断处重跑
+      const rr = await adoptCliToLive({ taskKey, sessionId: r.sid, msg: v.trim() });
+      if (!rr.ok) { customAlert({ title: 'rewind 后续接失败（jsonl 已截断，可在卡片里直接续接重发）', message: escapeHtml(rr.error || '未知错误') }); return; }
+    }
   } catch (e) { customAlert({ title: 'rewind 失败', message: escapeHtml(e.message) }); }
 };
 
@@ -2105,12 +2113,13 @@ function renderUserTurn(m) {
   const bubble = text.length > 800
     ? `<details><summary style="cursor:pointer;list-style:none;white-space:pre-wrap;word-break:break-word;line-height:1.7"><span style="color:var(--amber);font-size:10.5px;font-family:var(--mono);margin-right:6px;background:var(--amberS);padding:1px 6px;border-radius:4px">▸ prompt 模板 · ${text.length}c</span></summary><div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--hair);white-space:pre-wrap;word-break:break-word">${escaped}</div></details>`
     : escaped;
-  // fork-rewind 按钮：仅「被旁观的 CLI 会话」(t.cli) + 消息有 uuid 时给。rewind = jsonl 截断 + 收养重跑，是
-  // 观察侧会话的操作；物化后的托管任务（无 t.cli）改历史应走托管重跑（另属特性），且其 sid 已不在 watchlist，
-  // 走观察侧 rewindCliSession 会「not in watchlist」——故按 t.cli 门控（不按 source 前缀），避免给出会报错的按钮。
-  const canRewind = !!findTaskInState(modalPollTaskKey)?.cli && m.uuid;
+  // 改写重跑按钮：消息有 uuid（观察态 cli 走 watchlist sid、托管任务走 meta.sessionId，两路 rewindTaskMessage 统一处理）+
+  // 该任务有可 rewind 的会话（t.cli 观察态 ∪ 有 meta.sessionId 的托管任务）+ 非归档。uuid 只在磁盘/seed 消息上有，
+  // live 流的最新消息无 uuid（不给按钮，本也不该 rewind 刚发的消息）。不按 source 前缀特判——按真实能力门控。
+  const _rwT = findTaskInState(modalPollTaskKey);
+  const canRewind = m.uuid && !!(_rwT?.cli || _rwT?.meta?.sessionId) && !_rwT?.isArchive;
   const rewindBtn = canRewind
-    ? `<div class="msg-rewind"><button class="btn" style="font-size:10px;padding:2px 9px;color:var(--dim)" onclick="rewindCliMessage('${escapeAttr(m.uuid)}')" title="改写这条消息，fork 新会话从这里重新执行（原会话不动）">⑂ 改写重跑</button></div>`
+    ? `<div class="msg-rewind"><button class="btn" style="font-size:10px;padding:2px 9px;color:var(--dim)" onclick="rewindMessage('${escapeAttr(m.uuid)}')" title="改写这条消息并从这里重跑（这条及之后的时间线被替换，原时间线丢弃）">⑂ 改写重跑</button></div>`
     : '';
   return `
     <div class="msg-user">
@@ -3073,7 +3082,8 @@ function mbToRounds() {
       curAsst = null;
       let content = ev.message.content;
       if (typeof content === 'string') content = [{ type: 'text', text: content }];
-      messages.push({ role: 'user', at: (content || [])[0]?._ts || null, content: content || [], isMeta: false });
+      // uuid：seed 的历史消息带（ccMessagesToModeBSeed 透传磁盘 uuid）→ 详情可「改写重跑」；live 流的新消息无 uuid
+      messages.push({ role: 'user', at: (content || [])[0]?._ts || null, uuid: ev.uuid || null, content: content || [], isMeta: false });
     }
   }
   const inflight = mb.state === 'running' || mb.state === 'starting';

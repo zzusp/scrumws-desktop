@@ -279,7 +279,18 @@ export function rewindCliSession({ taskKey, uuid, message } = {}) {
     return { ok: false, error: 'session 仍在运行（看板会话/终端/回复进程活着），停下后再 rewind' };
   }
 
-  // 按行读原 jsonl，找目标消息行
+  // 截断（纯 jsonl 手术）：找目标 user 消息行、把它及之后全丢，写回原文件（sid 不变）
+  const tr = truncateSessionJsonlByUuid(jsonlPath, uuid);
+  if (!tr.ok) return tr;
+
+  // 截断完成 → 交前端收养成 Mode B live 会话（/api/session/adopt + 改写后的消息经 live 视图发出重跑）。
+  return { ok: true, sid, taskKey: `cli:${sid.slice(0, 8)}`, cwd: tr.cwd };
+}
+
+// 纯截断：把 jsonl 截到目标 user 消息之前（该消息及之后的时间线直接丢弃），原子写回原文件（sid 不变）。
+// 供观察态 CLI rewind 与托管任务 rewind 共用。返回 { ok, cwd } | { ok:false, error }。
+export function truncateSessionJsonlByUuid(jsonlPath, uuid) {
+  if (!uuid || !/^[a-f0-9-]{36}$/i.test(String(uuid))) return { ok: false, error: 'invalid uuid（目标消息）' };
   let lines;
   try { lines = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).filter((l) => l.trim()); }
   catch (e) { return { ok: false, error: `读 jsonl 失败: ${e.message}` }; }
@@ -299,8 +310,6 @@ export function rewindCliSession({ taskKey, uuid, message } = {}) {
   if (!cwd || !fs.existsSync(cwd)) {
     return { ok: false, error: `session 原 cwd 不存在（${cwd || '未知'}），无法 resume` };
   }
-
-  // 截断写回原文件（tmp + rename 原子替换；sid 不变；截掉的时间线直接丢弃）
   try {
     const tmp = jsonlPath + '.rewind-tmp';
     fs.writeFileSync(tmp, lines.slice(0, cutIdx).join('\n') + '\n', 'utf8');
@@ -308,9 +317,7 @@ export function rewindCliSession({ taskKey, uuid, message } = {}) {
   } catch (e) {
     return { ok: false, error: `截断写回失败: ${e.message}` };
   }
-
-  // 截断完成 → 交前端收养成 Mode B live 会话（/api/session/adopt + 改写后的消息经 live 视图发出重跑）。
-  return { ok: true, sid, taskKey: `cli:${sid.slice(0, 8)}`, cwd };
+  return { ok: true, cwd };
 }
 
 // 看板向 CLI session 发回复：spawn cli-reply-runner.ps1 → claude --resume 追加一轮。

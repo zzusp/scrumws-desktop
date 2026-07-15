@@ -249,8 +249,8 @@ export function startTask(taskKey) {
   let r;
   if (sid) {
     const hist = readCcSessionForAdopt(sid);
+    // seed 只含历史；本轮 prompt 由 createSession→sendUserMessage 自记进 transcript（不再往 seed 尾追，避免重复）
     const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
-    seed.push({ type: 'user', message: { content: task.prompt } });
     r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, resume: sid, prompt: task.prompt, seedTranscript: seed, bypass: true });
   } else {
     r = createSession({ taskKey, cwd: rc.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, prompt: task.prompt, bypass: true });
@@ -279,11 +279,11 @@ export function replyTask(taskKey, message, model, effort) {
   const state = readJson(path.join(dir, 'state.json'));
   const sid = meta?.sessionId || state?.outcomeDetail?.resumeSessionId || null;
   if (!sid) return { ok: false, error: '无 sessionId 可 --resume（会话从未成功起过，请重新发起）' };
-  // 会话进程已死（用户取消 / 服务重启）→ --resume 重挂。喂回历史 transcript + 这条 reply 回显作 seed，
+  // 会话进程已死（用户取消 / 服务重启）→ --resume 重挂。喂回历史 transcript 作 seed，
   // 否则详情连上 live 会话时 transcript 只有新一轮、历史全丢（与 adopt 同款 seed 机制）。
+  // 本轮 reply 由 createSession→sendUserMessage 自记进 transcript（不再往 seed 尾追，避免重复）。
   const hist = readCcSessionForAdopt(sid);
   const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
-  seed.push({ type: 'user', message: { content: msg } });
   const rc = resolveRunCwd(taskKey, task || {});
   if (rc.error) return { ok: false, error: rc.error };
   const r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: model || task?.model || undefined, effort: effort || task?.effort || undefined, dynamicWorkflow: task?.dynamicWorkflow, resume: sid, prompt: msg, seedTranscript: seed, bypass: true });
@@ -323,6 +323,9 @@ export function parkTaskSession(taskKey) {
   if (!id) return { ok: true, taskKey, killed: null };   // 无 live 会话（服务重启后 / 从未起）：只清 lease
   const s = getSession(id);
   if (s && onEvent) s.emitter.off('event', onEvent);
+  // 解绑 taskKey：closeSession 是异步宽限关（1.5s 才强杀），期间会话仍在 sessions Map、state 可能还是 idle，
+  // 若不解绑，紧随其后的 startTask/replyTask 经 getSessionIdByTaskKey 仍会找到这个正在关闭的会话并误复用（rewind 竞态）。
+  if (s) s.taskKey = null;
   try { closeSession(id); } catch { /* 已退 */ }
   return { ok: true, taskKey, killed: id };
 }
