@@ -834,8 +834,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </section>
           <section class="card" style="margin-bottom:var(--gap)">
             <div class="sec-head">
-              <h2>账号用量</h2>
-              <span class="sec-sub">Claude Code 账号 5h/7d 滚动窗 · 后端每 5 分钟经代理拉取 api.anthropic.com（间隔在设置页可调）</span>
+              <h2>每日用量趋势</h2>
+              <span class="sec-sub">Claude Code 每日 token 用量柱状图（扫本机所有项目 session）· 全局 vs scrumws · 近 7 天</span>
             </div>
             <div id="ccUsageGrid"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
@@ -877,34 +877,34 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <button class="btn theme-btn" id="themeBtn" title="切换明暗主题">☀️</button>
           </section>
 
-          <!-- 网络：出网代理（打 Anthropic usage 端点用；受限地区直连会 403） -->
+          <!-- 模型上下文上限：详情页上下文环形的分母，读本地配置不打 API -->
           <section class="card" style="max-width:640px;margin-bottom:var(--gap)">
             <div class="sec-head">
-              <h2>网络</h2>
-              <span class="sec-sub">出网代理 · 拉取 Claude Code 账号用量（5h/7d）时经此代理访问 api.anthropic.com</span>
+              <h2>模型上下文上限</h2>
+              <span class="sec-sub">详情页「上下文用量环形」的分母（model → max_input_tokens）· 读本地配置，不再访问 api.anthropic.com · 编辑 JSON 后保存</span>
             </div>
             <div class="field">
-              <input type="text" id="proxyUrlInput" class="field-input mono" autocomplete="off" placeholder="http://127.0.0.1:10808（留空 = 用系统 HTTP(S)_PROXY 环境变量）">
+              <textarea id="modelLimitsInput" class="field-input mono" autocomplete="off" spellcheck="false" rows="10" style="resize:vertical;line-height:1.5;width:100%"></textarea>
               <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
-                <button class="btn" id="proxySaveBtn">保存</button>
-                <span id="proxySaveHint" style="font-size:11.5px;color:var(--dim)"></span>
+                <button class="btn" id="modelLimitsSaveBtn">保存</button>
+                <span id="modelLimitsSaveHint" style="font-size:11.5px;color:var(--dim)"></span>
               </div>
             </div>
           </section>
 
-          <!-- 账号用量刷新：后端定时拉取 5h/7d 用量的间隔（唯一访问 api.anthropic.com 的节拍） -->
+          <!-- 账号用量刷新：后端 spawn claude -p /usage 的「基准」间隔（实际每次叠加随机抖动，避免固定心跳被风控识别） -->
           <section class="card" style="max-width:640px;margin-bottom:var(--gap)">
             <div class="sec-head">
               <h2>账号用量刷新</h2>
-              <span class="sec-sub">后端定时拉取 Claude Code 账号 5h/7d 用量的间隔 · 这是唯一访问 api.anthropic.com 的节拍</span>
+              <span class="sec-sub">后端定时 spawn 官方 <code>claude -p /usage</code> 查 session/本周用量 · 由官方 CLI 去查、桌面只解析，不直连 api.anthropic.com · 下方是「基准」间隔，实际每次拉取叠加随机抖动</span>
             </div>
             <div class="set-list">
-              <div class="set-row set-static" title="账号用量拉取间隔">
+              <div class="set-row set-static" title="账号用量拉取基准间隔">
                 <span class="set-main">
-                  <span class="set-name">刷新间隔</span>
-                  <span class="set-desc">每隔一段时间拉一次账号级用量；运行时面板展示 5h/7d 与上次刷新时间</span>
+                  <span class="set-name">刷新间隔（基准）</span>
+                  <span class="set-desc">每隔一段时间查一次账号用量；实际间隔在此基准上随机抖动（×0.6–1.6），不固定心跳。运行时面板与详情页卡片展示 session/本周</span>
                 </span>
-                <span class="int-edit">每 <input type="number" id="usagePollMinInput" class="int-input" min="1" max="60" step="1"> 分钟</span>
+                <span class="int-edit">每 <input type="number" id="usagePollMinInput" class="int-input" min="2" max="60" step="1"> 分钟</span>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:10px;margin-top:10px">

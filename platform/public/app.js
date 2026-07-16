@@ -119,7 +119,7 @@ function liveJobCardHtml(t, { mono, hint }) {
 function renderChecker(checker) {
   const grid = $('checkerGrid');
   if (!grid || !checker) return;
-  // 用户正在编辑节拍输入时不重画，避免轮询覆盖输入（同 syncProxyInput 的护栏）
+  // 用户正在编辑节拍输入时不重画，避免轮询覆盖输入（同 syncMaxRunnersInput 的护栏）
   if (grid.querySelector('input[data-checker-interval]') === document.activeElement) return;
   grid.innerHTML = liveJobCardHtml(checker, {
     mono: 'platform/lib/jobs/runner-checker.js · 平台内置',
@@ -187,7 +187,7 @@ function renderRuntime(rt) {
   // ---- 用量汇总：CC 全局每日 token 表格（7/15/30 天切换）----
   dailyUsageData = Array.isArray(rt.dailyUsage) ? rt.dailyUsage : null;
   renderUsageTable();
-  // ---- 账号级用量卡（左 5h/7d 均分 · 右 Chart.js 柱状图：7 天全局 vs scrumws）----
+  // ---- 账号级用量卡（左 session/本周滚动窗 · 右 Chart.js 柱状图：7 天全局 vs scrumws）----
   const ccGrid = $('ccUsageGrid');
   if (ccGrid) {
     ccGrid.innerHTML = ccAccountUsageHtml(rt.claudeUsage, rt.usagePoll);
@@ -195,32 +195,7 @@ function renderRuntime(rt) {
   }
 }
 
-// 运行时面板：账号级 5h/7d 用量（复用详情页 ccUsageBarHtml 的横条）+ 定时拉取的上次刷新时间。
-// 数据来自 /api/state 的 runtime.claudeUsage（账号用量）+ runtime.usagePoll（定时器实况），不再单独轮询。
-function ccAccountUsageHtml(cu, pollInfo) {
-  const poll = pollInfo || {};
-  const intervalMin = poll.intervalSec ? Math.round(poll.intervalSec / 60) : 5;
-  const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
-  const lastTxt = poll.lastRunAt ? hhmm(poll.lastRunAt) : '—';
-  const foot = `<div class="cc-usage-note" style="margin-top:10px">上次刷新 ${lastTxt} · 每 ${intervalMin} 分钟自动刷新${poll.lastOk === false ? ' · <span style="color:var(--coral)">上次拉取失败</span>' : ''}</div>`;
-  let body;
-  if (!cu || cu.error === 'pending') body = '<div class="cc-usage-note">用量加载中…（定时器首拉）</div>';
-  else if (!cu.ok) body = `<div class="cc-usage-note">用量不可用（${escapeHtml(cu.error || 'unknown')}）</div>`;
-  else if (!cu.subscription) body = `<div class="cc-usage-note">当前套餐（${escapeHtml(cu.plan || '—')}）无 5h/7d 滚动窗用量</div>`;
-  else if (cu.error) {
-    const msg = cu.error === 'token-expired' ? 'OAuth 凭据已过期，重新登录 Claude Code 后恢复' : `用量读取失败（${escapeHtml(cu.error)}）`;
-    body = `<div class="cc-usage-note">${msg}</div>`;
-  } else {
-    const bars = ccUsageBarHtml('5 小时', cu.fiveHour) + ccUsageBarHtml('7 天', cu.sevenDay);
-    body = bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
-  }
-  const plan = cu?.plan ? `<span class="tag ${cu?.subscription ? 'tag-jade' : 'tag-mut'}" style="text-transform:uppercase">${escapeHtml(cu.plan)}</span>` : '';
-  const left = `<div class="cc-usage" style="flex:1 1 0;min-width:240px">${plan ? `<div style="margin-bottom:12px">${plan}</div>` : ''}${body}${foot}</div>`;
-  const right = `<div class="du-wrap"><div class="du-title">7 天用量（总 token） · 全局 vs scrumws</div><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
-  return `<div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">${left}${right}</div>`;
-}
-
-// ---- 用量汇总表格（CC 全局每日 token，7/15/30 切换）+ 账号卡柱状图（Chart.js）----
+// ---- 用量汇总表格（CC 全局每日 token，7/15/30 切换）+ 每日柱状图（Chart.js）----
 let dailyUsageData = null;    // 最近一次近 30 天每日用量（tab 切换复用同一份，不重新请求）
 let usageTableDays = 7;       // 表格维度：7 / 15 / 30
 let duChartInstance = null;   // Chart.js 实例（重渲染前 destroy 防泄漏）
@@ -1454,22 +1429,41 @@ if (window.marked?.use) {
   window.marked.use({ renderer: { html: (t) => escapeHtml(typeof t === 'string' ? t : (t?.text ?? '')) } });
 }
 
-// ---- Claude Code 账号级用量（详情页卡片）：套餐 + Pro/Max 的 5h/7d 滚动窗，账号全局非按任务 ----
-// 后端 /api/claude-usage 已 60s 缓存；前端再缓存一层，详情页 5s 轮询不必每 tick 拉。
-let claudeUsage = null;          // 最近一次 /api/claude-usage 结果
-let claudeUsageAt = 0;           // 拉取时刻（毫秒）
-let claudeUsageInflight = false;
-const CLAUDE_USAGE_TTL = 60000;
-async function refreshClaudeUsage(taskKey) {
-  if (claudeUsageInflight) return;
-  if (claudeUsage && Date.now() - claudeUsageAt < CLAUDE_USAGE_TTL) return;   // 新鲜：不重复拉
-  claudeUsageInflight = true;
-  try {
-    const u = await api('/api/claude-usage');
-    claudeUsage = u; claudeUsageAt = Date.now();
-    if (modalOpen && modalPollTaskKey === taskKey) renderTaskSide(taskKey);   // 到货重画卡片
-  } catch { /* 网络抖动：忽略，下一 tick 再拉 */ }
-  finally { claudeUsageInflight = false; }
+// ---- Claude Code 账号级用量渲染（数据经官方 CLI /usage 查得，见后端 claude-usage.js）----
+// 单条滚动窗横条：label + resets 文本 + 进度条 + N% used。缺 pct 不渲染。填充分档：≥80% 红、≥50% 琥珀、否则绿。
+function ccUsageBarHtml(label, win) {
+  if (!win || win.pct == null) return '';
+  const pct = Math.max(0, Math.min(100, Number(win.pct)));
+  const fillBase = pct >= 80 ? 'var(--destructive)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
+  const fill = `color-mix(in oklab, ${fillBase} 62%, transparent)`;
+  return `
+    <div class="cc-bar">
+      <div class="cc-bar-left">
+        <div class="cc-bar-label">${escapeHtml(label)}</div>
+        ${win.resets ? `<div class="cc-bar-reset">resets ${escapeHtml(win.resets)}</div>` : ''}
+      </div>
+      <div class="cc-bar-track"><div class="cc-bar-fill" style="width:${pct}%;background:${fill}"></div></div>
+      <div class="cc-bar-pct">${pct.toFixed(0)}% used</div>
+    </div>`;
+}
+// 用量主体：会话 / 本周(all) / 本周(Fable) 三条；未就绪 / 非订阅 / 失败各自提示
+function ccUsageBody(cu) {
+  if (!cu || cu.error === 'pending') return '<div class="cc-usage-note">用量加载中…（首次经 CLI 查约 10s）</div>';
+  if (!cu.ok) return `<div class="cc-usage-note">用量不可用（${escapeHtml(cu.error || 'unknown')}）</div>`;
+  if (!cu.subscription) return '<div class="cc-usage-note">当前非订阅账号，无 session / 本周滚动窗用量</div>';
+  const bars = ccUsageBarHtml('会话', cu.session) + ccUsageBarHtml('本周', cu.weekAll) + ccUsageBarHtml('本周 Fable', cu.weekFable);
+  return bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
+}
+// 运行时面板：账号用量（左，复用 ccUsageBarHtml）+ 每日柱状图（右）。数据来自 /api/state 的 runtime.claudeUsage + usagePoll。
+function ccAccountUsageHtml(cu, pollInfo) {
+  const poll = pollInfo || {};
+  const intervalMin = poll.intervalSec ? Math.round(poll.intervalSec / 60) : 10;
+  const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  const lastTxt = poll.lastRunAt ? hhmm(poll.lastRunAt) : '—';
+  const foot = `<div class="cc-usage-note" style="margin-top:10px">上次刷新 ${lastTxt} · 基准约 ${intervalMin} 分钟、随机抖动拉取${poll.lastOk === false ? ' · <span style="color:var(--coral)">上次拉取失败</span>' : ''}</div>`;
+  const left = `<div class="cc-usage" style="flex:1 1 0;min-width:240px">${ccUsageBody(cu)}${foot}</div>`;
+  const right = `<div class="du-wrap"><div class="du-title">7 天用量（总 token） · 全局 vs scrumws</div><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
+  return `<div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">${left}${right}</div>`;
 }
 
 // token 压缩显示（对齐 renderRuntime 的 compact：百万级用 K/M/B）
@@ -1481,66 +1475,17 @@ function compactTokens(n) {
   return String(n);
 }
 
-// 距刷新剩余（resetsAt ISO → 「1d 22h 后刷新 / 3h 20m 后刷新 / 12m 后刷新 / 即将刷新」）
-function fmtResetIn(resetsAt) {
-  const ms = new Date(resetsAt) - Date.now();
-  if (!isFinite(ms) || ms <= 0) return '即将刷新';
-  const totalMin = Math.floor(ms / 60000);
-  const d = Math.floor(totalMin / 1440);
-  const h = Math.floor((totalMin % 1440) / 60);
-  const m = totalMin % 60;
-  if (d > 0) return `${d}d ${h}h 后刷新`;
-  if (h > 0) return `${h}h ${m}m 后刷新`;
-  return `${m}m 后刷新`;
-}
-
-// 单个滚动窗横向进度条（5h / 7d），三段式（参考 CC CLI plan usage limits）：
-// 左 = label + 距刷新剩余（淡灰小字）· 中 = 进度条 · 右 = 「N% used」（淡灰小字）。
-// 填充按用量分档：≥80% 红、≥50% 琥珀、否则绿（柔和半透明底色，不刺眼）。
-function ccUsageBarHtml(label, win) {
-  if (!win || win.utilization == null) return '';
-  const pct = Math.max(0, Math.min(100, Number(win.utilization)));
-  const fillBase = pct >= 80 ? 'var(--destructive)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
-  const fill = `color-mix(in oklab, ${fillBase} 62%, transparent)`;
-  const reset = win.resetsAt ? fmtResetIn(win.resetsAt) : '';
-  return `
-    <div class="cc-bar">
-      <div class="cc-bar-left">
-        <div class="cc-bar-label">${escapeHtml(label)}</div>
-        ${reset ? `<div class="cc-bar-reset">${escapeHtml(reset)}</div>` : ''}
-      </div>
-      <div class="cc-bar-track"><div class="cc-bar-fill" style="width:${pct}%;background:${fill}"></div></div>
-      <div class="cc-bar-pct">${pct.toFixed(0)}% used</div>
-    </div>`;
-}
-
-// Claude Code 卡片：sessionId / 模型(拼 effort，如 "claude-sonnet-5 · medium") / 动态工作流 + Pro/Max 的 5h/7d 滚动窗（token 明细行已按需求移除）
+// Claude Code 卡片：sessionId / 模型(拼 effort，如 "claude-sonnet-5 · medium") / 动态工作流 + 账号用量(session/本周)
 function claudeCodeCardHtml(t, model) {
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const sessionId = t.meta?.sessionId || null;
   const modelVal = t.effort ? `${model} · ${t.effort}` : model;
-  // 用量区：套餐 Pro/Max 才有 5h/7d 滚动窗；数据未到 / 非订阅 / 拉取失败各自提示
-  const cu = claudeUsage;
-  let usageHtml = '';
-  if (!cu) {
-    usageHtml = '<div class="cc-usage-note">用量加载中…</div>';
-  } else if (cu.ok && cu.subscription) {
-    if (cu.error) {
-      const msg = cu.error === 'token-expired' ? 'OAuth 凭据已过期，重新登录 Claude Code 后恢复' : `用量读取失败（${escapeHtml(cu.error)}）`;
-      usageHtml = `<div class="cc-usage-note">${msg}</div>`;
-    } else {
-      const bars = ccUsageBarHtml('5 小时', cu.fiveHour) + ccUsageBarHtml('7 天', cu.sevenDay);
-      usageHtml = bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
-    }
-  }
-  // 套餐徽章：max/pro 高亮，其余淡显
-  const plan = cu?.plan;
-  const planTag = plan
-    ? `<span class="tag ${cu?.subscription ? 'tag-jade' : 'tag-mut'}" style="text-transform:uppercase">${escapeHtml(plan)}</span>`
-    : '';
+  // 账号用量：读 /api/state 已缓存的 runtime.claudeUsage（订阅账号才有 session/本周），无则不显示
+  const cu = stateData?.runtime?.claudeUsage;
+  const usageHtml = (cu && cu.ok && cu.subscription) ? ccUsageBody(cu) : '';
   return `
     <div class="side-block">
-      <h3>Claude Code ${planTag ? `<span style="margin-left:auto">${planTag}</span>` : ''}</h3>
+      <h3>Claude Code</h3>
       ${kv('session', sessionId ? escapeHtml(sessionId) : '<span style="color:var(--dim)">—</span>')}
       ${kv('模型', escapeHtml(modelVal))}
       ${t.dynamicWorkflow != null ? kv('动态工作流', t.dynamicWorkflow ? '<span style="color:var(--jade)">开</span>' : '关') : ''}
@@ -1766,8 +1711,6 @@ function renderTaskSide(taskKey) {
   // 面包屑末级同步任务标题（详情页 header 已移除，标题改在此块内展示 · req4）
   const crumbLast = document.getElementById('crumbLast');
   if (crumbLast) crumbLast.textContent = sideTitle;
-  // Claude Code 卡片的账号级用量：懒加载（到货后回调重画本卡）
-  refreshClaudeUsage(taskKey);
   // 底栏上下文用量环形：每次侧栏刷新（轮询 / live 同步）都同步一次，跟随 contextSize 变化
   syncContextRing(taskKey);
 }
@@ -2169,7 +2112,7 @@ async function refreshState() {
     renderChecker(stateData.checker);
     renderRuntime(stateData.runtime);
     renderLifecycle(stateData.lifecycle);
-    syncProxyInput();
+    syncModelLimitsInput();
     syncMaxRunnersInput();
     syncUsagePollInput();
   } catch (e) { console.error('state error:', e); }
@@ -2191,26 +2134,60 @@ async function refreshState() {
   });
 })();
 
-// 设置页出网代理：从 state 回填（不覆盖用户正在编辑的输入），保存走 /api/config/proxy
-function syncProxyInput() {
-  const inp = $('proxyUrlInput');
+// 设置页模型上下文上限：从 state 回填「生效映射」（编辑中不覆盖），保存走 /api/config/model-limits。
+// 详情页上下文环形的分母改读此映射（内置默认 + 用户覆盖），不再打 /v1/models。
+function syncModelLimitsInput() {
+  const inp = $('modelLimitsInput');
   if (!inp || inp === document.activeElement || inp.dataset.dirty === '1') return;   // 编辑中不回填
-  inp.value = stateData?.runnerConfig?.proxyUrl || '';
+  const map = stateData?.runnerConfig?.modelContextLimits || {};
+  inp.value = JSON.stringify(map, null, 2);
 }
 {
-  const inp = $('proxyUrlInput');
-  const btn = $('proxySaveBtn');
-  const hint = $('proxySaveHint');
+  const inp = $('modelLimitsInput');
+  const btn = $('modelLimitsSaveBtn');
+  const hint = $('modelLimitsSaveHint');
   if (inp) inp.addEventListener('input', () => { inp.dataset.dirty = '1'; if (hint) hint.textContent = ''; });
   if (btn) btn.addEventListener('click', async () => {
-    const proxyUrl = (inp.value || '').trim();
+    let map;
+    try { map = JSON.parse(inp.value || '{}'); } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = 'JSON 格式错误'; } return; }
     btn.disabled = true; if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '保存中…'; }
     try {
-      const r = await api('/api/config/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxyUrl }) });
+      const r = await api('/api/config/model-limits', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelContextLimits: map }) });
       if (r.ok) {
         delete inp.dataset.dirty;
-        claudeUsage = null; claudeUsageAt = 0;   // 代理变了：清前端用量缓存，详情页下次即重拉
-        if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = proxyUrl ? '已保存 · 用量将经此代理拉取' : '已清除 · 回退系统环境变量代理'; }
+        if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = '已保存 · 详情页上下文环形改用此上限'; }
+        refreshState();
+      } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
+    } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
+    finally { btn.disabled = false; }
+  });
+}
+
+// 设置页账号用量刷新间隔：从 state 回填「基准」间隔（编辑中不覆盖），保存走 /api/usage-poll/interval（分钟→秒）。
+// 实际每次拉取在此基准上叠加随机抖动（后端 claude-usage.js），避免固定心跳被风控识别。
+function syncUsagePollInput() {
+  const inp = $('usagePollMinInput');
+  if (!inp || inp === document.activeElement || inp.dataset.dirty === '1') return;
+  const sec = stateData?.runnerConfig?.usagePollSec ?? 600;
+  inp.value = String(Math.round(sec / 60));
+}
+{
+  const inp = $('usagePollMinInput');
+  const btn = $('usagePollSaveBtn');
+  const hint = $('usagePollSaveHint');
+  if (inp) inp.addEventListener('input', () => { inp.dataset.dirty = '1'; if (hint) hint.textContent = ''; });
+  if (btn) btn.addEventListener('click', async () => {
+    let min = Math.round(Number(inp.value));
+    if (!Number.isFinite(min)) min = 10;
+    min = Math.min(Math.max(min, 2), 60);
+    inp.value = String(min);
+    btn.disabled = true; if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '保存中…'; }
+    try {
+      const r = await api('/api/usage-poll/interval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intervalSec: min * 60 }) });
+      if (r.ok) {
+        delete inp.dataset.dirty;
+        if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = `已保存 · 基准每 ${min} 分钟（随机抖动）`; }
+        refreshState();
       } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
     } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
     finally { btn.disabled = false; }
@@ -2239,36 +2216,6 @@ function syncMaxRunnersInput() {
       if (r.ok) {
         delete inp.dataset.dirty;
         if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = max === 0 ? '已保存 · 不限并发' : `已保存 · 最多 ${max} 个同时执行`; }
-        refreshState();
-      } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
-    } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
-    finally { btn.disabled = false; }
-  });
-}
-
-// 设置页账号用量刷新间隔：从 state 回填（编辑中不覆盖），保存走 /api/usage-poll/interval（分钟→秒）
-function syncUsagePollInput() {
-  const inp = $('usagePollMinInput');
-  if (!inp || inp === document.activeElement || inp.dataset.dirty === '1') return;
-  const sec = stateData?.runnerConfig?.usagePollSec ?? 300;
-  inp.value = String(Math.round(sec / 60));
-}
-{
-  const inp = $('usagePollMinInput');
-  const btn = $('usagePollSaveBtn');
-  const hint = $('usagePollSaveHint');
-  if (inp) inp.addEventListener('input', () => { inp.dataset.dirty = '1'; if (hint) hint.textContent = ''; });
-  if (btn) btn.addEventListener('click', async () => {
-    let min = Math.round(Number(inp.value));
-    if (!Number.isFinite(min)) min = 5;
-    min = Math.min(Math.max(min, 1), 60);
-    inp.value = String(min);
-    btn.disabled = true; if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '保存中…'; }
-    try {
-      const r = await api('/api/usage-poll/interval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intervalSec: min * 60 }) });
-      if (r.ok) {
-        delete inp.dataset.dirty;
-        if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = `已保存 · 每 ${min} 分钟拉取一次`; }
         refreshState();
       } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
     } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
