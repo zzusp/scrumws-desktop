@@ -183,17 +183,25 @@ function extractTailInfo(tailLines) {
 //   当前在跑 = 启动集合 − 完成集合（agent 每次停都 fire notification，用集合去重）
 // 不含 Bash run_in_background（"Command running in background"）：其无自动完成通知、BashOutput 检索
 //   success≠命令结束，无法可靠判在跑，纳入会因永不减而永久误报 processing。
-export function countRunningSubagents(jsonlPath) {
+// 后台 subagent 启动后超过此时长仍未被 <task-notification> 配平 → 视为已完成、按启动时间兜底剔除。
+// 后台 agent 正常几十秒~几分钟即收敛（完成即 fire notification 唤醒主进程续跑）；长期未配平多半是
+// 完成通知没落进 jsonl 或形态不可识别（实测：subagent 报告内容触发 harness 安全中和
+// dangerously-skip-permissions 时，其 task-notification 不以标准 user+纯串形态注入 jsonl，永远配不平），
+// 不能因此把看板永久钉在"1 个后台 agent 运行中"。真卡死超此阈值的极少，宁可少报不永久误报。
+const SUBAGENT_STALE_MS = 15 * 60 * 1000;
+
+export function countRunningSubagents(jsonlPath, now = Date.now()) {
   let content;
   try { content = fs.readFileSync(jsonlPath, 'utf8'); } catch { return 0; }
   const agentUseIds = new Set();   // assistant 真正发起的 Agent/Task 工具调用 id
-  const launched = new Set(), done = new Set();
+  const launched = new Map(), done = new Set();   // launched: tool_use_id → 启动回执时间戳(ms)，供陈旧兜底
   for (const line of content.split(/\r?\n/)) {
     // 粗筛：只 parse 可能相关的行（Agent 调用 / 后台启动回执 / 完成通知），大 jsonl 省 JSON.parse
     if (!line.includes('"name":"Agent"') && !line.includes('"name":"Task"')
       && !line.includes('Async agent launched successfully') && !line.includes('<task-notification>')) continue;
     let o; try { o = JSON.parse(line); } catch { continue; }
     const c = o.message?.content;
+    const ts = Date.parse(o.timestamp) || 0;   // 该行时间戳（启动回执行 = 后台 agent 启动时刻）
     // 完成：CC 注入的独立 user 消息，content 为纯 <task-notification> 字符串（排除 assistant 复述 /
     // tool_result 里读到的 output 文件内容——那些不是完成信号，会把在跑的 agent 误配平掉）。
     if (o.type === 'user' && typeof c === 'string' && c.includes('<task-notification>')) {
@@ -211,12 +219,17 @@ export function countRunningSubagents(jsonlPath) {
       else if (b.type === 'tool_result' && b.tool_use_id && agentUseIds.has(b.tool_use_id)) {
         const t = typeof b.content === 'string' ? b.content
           : Array.isArray(b.content) ? b.content.map((x) => x?.text || '').join(' ') : '';
-        if (t.includes('Async agent launched successfully')) launched.add(b.tool_use_id);
+        if (t.includes('Async agent launched successfully')) launched.set(b.tool_use_id, ts);
       }
     }
   }
   let n = 0;
-  for (const id of launched) if (!done.has(id)) n++;
+  for (const [id, launchTs] of launched) {
+    if (done.has(id)) continue;
+    // 启动已久仍未配平 → 完成通知丢失/变形（见 SUBAGENT_STALE_MS 注释），兜底剔除避免永久误报
+    if (launchTs && now - launchTs > SUBAGENT_STALE_MS) continue;
+    n++;
+  }
   return n;
 }
 
