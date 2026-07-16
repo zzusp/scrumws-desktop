@@ -2003,14 +2003,14 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
   units.forEach((u) => {
     if (u.kind === 'u') {
       // 分派（学 claude-code-session/server/lib/system-tags.ts 与 web/MessageBubble.tsx）：
-      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE / INJECTED_RETRY_RE 命中 → 归 Claude Code 运行输出（左侧细line）：
-      //      <local-command-*> + <system-reminder> + CC/runner 注入的工具重试消息（都非真人发送）
+      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE / INJECTED_RETRY_RE / INTERRUPT_RE 命中 → 归 Claude Code 运行输出（左侧细line）：
+      //      <local-command-*> + <system-reminder> + CC/runner 注入的工具重试消息 + 用户打断标记（都非真人发送）
       //   2. CMD_HEAD_RE 命中 → 提取 <command-args> body 当用户真实 prompt；无 args → 整条跳过（/clear /model）
       //   3. 兜底 isMeta 字段 → 同上归运行输出
       //   4. 否则 → 正常 user 气泡（右侧只放真人真实发送的消息）
       const text = (u.m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
       if (LOCAL_CMD_CAVEAT_RE.test(text)) return;   // 跑本地命令注入的 caveat 样板(+命令块) → 纯运行噪声，整条不显示
-      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text) || INJECTED_RETRY_RE.test(text)) {
+      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text) || INJECTED_RETRY_RE.test(text) || INTERRUPT_RE.test(text)) {
         blocks.push({ t: 'meta', m: u.m });
       } else if (CMD_HEAD_RE.test(text)) {
         const argsBody = pickCommandArgs(text);
@@ -2100,11 +2100,14 @@ const LOCAL_CMD_CAVEAT_RE = /^\s*(?:<local-command-caveat>\s*)?Caveat: The messa
 //   1. CC_SYNTHETIC_RE：CC 自身在工具调用解析失败时注入的重试提示。
 //   2. INJECTED_RETRY_RE：本看板 runner 的「泄漏空转」自动重试（见 task-runner.js isLeakedToolTurn 里
 //      sendUserMessage 的原文）——模型把 tool_use 输出成了文本、没真执行，runner 补一条让它用结构化工具重发。
+//   3. INTERRUPT_RE：用户打断某轮时 CC 注入的 role:user 标记（[Request interrupted by user] / …for tool use）——
+//      是"打断"这一运行事件的记录、不是用户说的话，绝不能当用户气泡（还会误带上「改写重跑」按钮）。
 // 磁盘 jsonl 里 CC 那条带 isMeta:true（disk 路径靠 isMeta 也能归位），但 runner 注入的这条 isMeta 缺失、
 // 且 Mode B live 的 stream-json 输出根本不带 isMeta envelope（见 mbToRounds 硬编 isMeta:false），
 // 两路都只能按内容识别，否则被错渲成用户气泡。
 const CC_SYNTHETIC_RE = /^\s*Your tool call was malformed and could not be parsed\. Please retry\.\s*$/;
 const INJECTED_RETRY_RE = /把工具调用输出成了文本[\s\S]*请用结构化工具重新发起这次调用/;
+const INTERRUPT_RE = /^\s*\[Request interrupted by user(?: for tool use)?\]\s*$/;
 function pickCommandArgs(text) {
   if (!CMD_HEAD_RE.test(text)) return null;
   const m = text.match(/<command-args>([\s\S]*?)<\/command-args>/);
