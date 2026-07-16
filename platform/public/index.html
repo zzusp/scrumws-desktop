@@ -633,13 +633,15 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 /* ---------- 自定义 confirm ---------- */
 .confirm-card{background:var(--popover);border-radius:var(--r-2xl);padding:20px 24px;width:94%;max-width:480px;box-shadow:var(--ring1),var(--shadow);animation:rise .22s}
 .confirm-title{font-family:var(--display);font-size:14.5px;font-weight:600;color:var(--ink);margin-bottom:10px;line-height:1.4}
-.confirm-body{font-size:12.5px;color:var(--mut);line-height:1.7;margin-bottom:18px;white-space:pre-wrap;word-break:break-word}
+/* body 只管排版，不带 white-space——它渲染的是「作者写的 HTML 结构」，源码里的换行 / 缩进必须被忽略。
+   动态纯文本要靠 \n 断行的需求下沉到 .confirm-text，别让整个 body 背 pre-wrap（那会把模板字面量的缩进当内容渲染成空行）。 */
+.confirm-body{font-size:12.5px;color:var(--mut);line-height:1.7;margin-bottom:18px;word-break:break-word}
+/* 唯一需要 pre-wrap 的地方：message 里的动态串（后端 e.message 可能带真 \n）由它断行 */
+.confirm-text{white-space:pre-wrap}
 .confirm-body code,.confirm-body b{font-family:var(--mono);font-size:11px;color:var(--ink2);background:var(--card2);box-shadow:inset 0 0 0 1px var(--hair);padding:1px 6px;border-radius:4px;font-weight:500}
 .confirm-actions{display:flex;justify-content:flex-end;gap:8px}
 .confirm-actions .btn{padding:7px 18px;font-size:12px;font-weight:500}
-/* 仅一个 textarea 的输入弹窗（customPrompt）：子元素都是块级、自己控距，不能吃 confirm-body 的 pre-wrap——
-   否则模板字面量里的换行 + 缩进会当真空白渲染成空行，把各行间距撑到 50px+ */
-.confirm-body.prompt-body{white-space:normal;margin-bottom:14px}
+/* 仅一个 textarea 的输入弹窗（customPrompt） */
 .prompt-msg{margin-bottom:8px;line-height:1.6}
 .prompt-hint{display:flex;align-items:center;margin-top:7px;font-size:10.5px;color:var(--dim);font-family:var(--mono)}
 .prompt-count{margin-left:auto;font-variant-numeric:tabular-nums}
