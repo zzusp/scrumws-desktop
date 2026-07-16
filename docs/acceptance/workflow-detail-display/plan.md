@@ -60,6 +60,11 @@ Workflow 的实际签名是 `{status:'async_launched', taskId, taskType:'local_w
   - `toolArgSummary` 增 `case 'Workflow'`；`renderCcTool` 入参区对 `{script}` 原样出源码（不 JSON 转义）；
     `catOf`/`phrase` 增 `workflow` → `launched N workflows`。
 
+> ⚠️ **round-2 的修法（transcriptDir 活动锚点）已被 round-3 推翻并删除**：那是在通用 bug 上打的 workflow
+> 单类补丁。真问题是 15min 死线本身，它在误杀全部四类后台任务（bgcmd 17% / workflow 36% / subagent 4%）。
+> 根治见 `round-3.md`：删掉死线，回到「会话活着才可能有在跑的后台任务」，由 pid 实测的 sessionAlive 短路。
+> 下面 round-2 一节保留作为推导过程（现象与心跳信号的实测仍然有效），但**修法以 round-3 为准**。
+
 ## round-2 修正：15min 死线会把在跑的长工作流误杀
 
 round-1 全绿后拿现场任务实测，`cli:66b52133` **正在跑 workflow**，详情页却什么都不显示（`backgroundTaskCount=0`）。
