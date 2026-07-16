@@ -1362,18 +1362,72 @@ async function restartTaskAction(taskKey) {
 }
 window.restartTaskAction = restartTaskAction;
 
+// ===== 添加本地文件（新建任务 / 详情回复共用）=====
+// 取路径的文件名（Windows/Posix 分隔符都吃）
+function baseName(p) { return String(p || '').split(/[\\/]/).pop() || String(p || ''); }
+// 与后端 session-manager.appendAttachments 同款拼接格式（乐观回显用），改格式需两处同步。
+function attachSuffix(text, files) {
+  const list = (files || []).map((f) => String(f || '').trim()).filter(Boolean);
+  if (!list.length) return String(text || '');
+  return `${String(text || '')}\n\n[附加本地文件 · 请用 Read 工具读取]\n${list.map((f) => `- ${f}`).join('\n')}`;
+}
+// 附件管理器：维护一组绝对路径，「+」按钮调 /api/pick-file（Electron 多选）追加，chip 可删。
+function makeAttachController({ btnId, boxId }) {
+  let files = [];
+  function render() {
+    const box = $(boxId);
+    if (!box) return;
+    if (!files.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    box.style.display = 'flex';
+    box.innerHTML = files.map((p, i) =>
+      `<span class="attach-chip" title="${escapeAttr(p)}"><span class="ac-name">${escapeHtml(baseName(p))}</span><span class="ac-x" data-i="${i}" role="button" aria-label="移除">×</span></span>`
+    ).join('');
+    box.querySelectorAll('.ac-x').forEach((x) => x.addEventListener('click', () => {
+      files.splice(Number(x.dataset.i), 1); render();
+    }));
+  }
+  async function pick() {
+    const btn = $(btnId);
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api('/api/pick-file', { method: 'POST' });
+      if (r && r.ok && Array.isArray(r.files)) {
+        for (const f of r.files) if (f && !files.includes(f)) files.push(f);
+        render();
+      } else if (r && r.ok === false && r.error) {
+        customAlert({ title: '添加文件', message: escapeHtml(r.error) });
+      }
+    } catch (e) {
+      customAlert({ title: '添加文件失败', message: escapeHtml(e.message) });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+  const btn0 = $(btnId);
+  if (btn0) btn0.addEventListener('click', pick);
+  return {
+    get: () => files.slice(),
+    set: (arr) => { files = (Array.isArray(arr) ? arr : []).map((f) => String(f || '').trim()).filter(Boolean); render(); },
+    clear: () => { files = []; render(); },
+  };
+}
+const replyAttachCtl = makeAttachController({ btnId: 'modalReplyAttachBtn', boxId: 'modalReplyAttach' });
+const newTaskAttachCtl = makeAttachController({ btnId: 'newTaskAttachBtn', boxId: 'newTaskAttach' });
+
 async function sendReply(taskKey) {
   const text = $('modalReplyText');
   const send = $('modalReplySend');
   const model = $('modalReplyModel').value;
   const effort = $('modalReplyEffort').value;   // req3：per-reply effort 覆盖（仅 --resume 重挂新会话时生效）
   const msg = text.value.trim();
+  const attachments = replyAttachCtl.get();
   if (!msg) { showReplyToast('消息不能为空', 'err'); return; }
   send.disabled = true; text.disabled = true; send.textContent = '发送中…';
   try {
     const body = { message: msg };
     if (model) body.model = model;
     if (effort) body.effort = effort;
+    if (attachments.length) body.attachments = attachments;
     const r = await api(`/api/task/reply?taskKey=${encodeURIComponent(taskKey)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1381,6 +1435,7 @@ async function sendReply(taskKey) {
     });
     if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
     text.value = '';
+    replyAttachCtl.clear();
     updateReplyCount(0);
     // reply 走 --resume 重挂了一个绑定该任务的 Mode B 会话（后端已 seed 历史 + 这条回复）。
     // 立即刷 state 让 mbSessionId 现身、重载详情进 live（连 SSE 回放 seed → 历史 + 这条继续即时可见），
@@ -2307,6 +2362,7 @@ function resetNewTaskExtras() {
   $('newTaskWorktree').checked = true;         // req5：支持 worktree 时默认开启
   $('newTaskDynamicWorkflow').checked = false; // req6：默认关闭
   setDirWorktreeLocked(false);                 // 新建：工作目录 / worktree 可编辑
+  newTaskAttachCtl.clear();                    // 附加本地文件归空
 }
 
 // 退回来的、有会话记录的 plan 任务：锁定 工作目录 / worktree / 基分支（改了会让确认执行的 --resume 找不到原会话）。
@@ -2341,6 +2397,7 @@ async function openEditTask(taskKey) {
   $('newTaskScheduledAt').value = toDatetimeLocal(r.scheduledAt || '');   // req4
   window.__syncDtPicker?.();                                              // 同步日历选择器显示
   $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
+  newTaskAttachCtl.set(r.attachments || []);                             // 回填附加本地文件
   // req5：git 探测后回填 worktree 勾选 + 签出分支（默认开启沿用旧值；旧 plan 无该字段则默认开）
   refreshWorktreeUi(r.cwd || '', { worktree: r.worktree !== false, baseBranch: r.baseBranch || '' });
   // 退回来的、有会话记录的任务：锁定 工作目录 / worktree（续对话须保持原运行目录）
@@ -2596,6 +2653,7 @@ $('newTaskCwdBrowse').addEventListener('click', async () => {
 window.closeNewTaskModal = () => {
   $('newTaskModal').style.display = 'none';
   editingTaskKey = null;   // 关闭即回落新建模式基线，下次「新建」打开干净
+  newTaskAttachCtl.clear();   // 附加本地文件归空
 };
 $('newTaskSubmit').addEventListener('click', async () => {
   const title = $('newTaskTitle').value.trim();
@@ -2611,6 +2669,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
   const worktreeVisible = $('newTaskWorktreeRow').style.display !== 'none';
   const worktree = worktreeVisible && $('newTaskWorktree').checked;
   const baseBranch = worktreeVisible ? ($('newTaskBaseBranch').value || '') : '';
+  const attachments = newTaskAttachCtl.get();   // 附加本地文件：随任务发给 claude
   const errBox = $('newTaskErr');
   const warnBox = $('newTaskWarn');
   errBox.style.display = 'none';
@@ -2626,7 +2685,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
       const r = await api(`/api/task/edit?taskKey=${encodeURIComponent(editing)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }),
+        body: JSON.stringify({ title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }),
       });
       if (!r.ok) { errBox.textContent = r.error || '未知错误'; errBox.style.display = 'block'; return; }
       closeNewTaskModal();
@@ -2637,7 +2696,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
     const r = await api('/api/task/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, prompt, model, description, plan: true, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }),
+      body: JSON.stringify({ title, prompt, model, description, plan: true, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }),
     });
     if (!r.ok) {
       errBox.textContent = r.error || '未知错误';
@@ -3301,8 +3360,9 @@ async function mbSend() {
   if (!mb) return;
   const ta = $('modalReplyText'); const msg = ta.value.trim();
   if (!msg) return;
+  const attachments = replyAttachCtl.get();   // 读附件（发送成功后清空）
   ta.value = ''; updateReplyCount(0);
-  mb.transcript.push({ type: 'user', message: { role: 'user', content: msg } });   // 乐观回显
+  mb.transcript.push({ type: 'user', message: { role: 'user', content: attachSuffix(msg, attachments) } });   // 乐观回显（含附件路径，与后端 transcript 一致）
   mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); mb.liveUsage = null;   // 从发送即开始计时（CC 风格）
   mb.state = 'running'; mbRenderBody(); mbSyncLiveHead();
   // 绑定「文件任务」（有任务包）→ /api/task/reply（内部 sendUserMessage + 置任务 state=processing + lease）；
@@ -3311,10 +3371,13 @@ async function mbSend() {
   //（已废弃 ps1），既撞不到活的 runner、guard 又会误判终端占用而拒发。物化后的 cli 任务有包、无 t.cli → 走 task/reply。
   const tk = mb.info?.taskKey;
   const useTaskReply = tk && !findTaskInState(tk)?.cli;
+  const payload = { message: msg };
+  if (attachments.length) payload.attachments = attachments;   // 附加本地文件：后端拼进文本尾部让 claude 用 Read 读
   const r = useTaskReply
-    ? await api(`/api/task/reply?taskKey=${encodeURIComponent(tk)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }))
-    : await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) }).catch((e) => ({ ok: false, error: e.message }));
+    ? await api(`/api/task/reply?taskKey=${encodeURIComponent(tk)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch((e) => ({ ok: false, error: e.message }))
+    : await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch((e) => ({ ok: false, error: e.message }));
   if (!r.ok) customAlert({ title: '发送失败', message: escapeHtml(r.error || '') });
+  else replyAttachCtl.clear();
 }
 window.mbRespond = async (requestId, allow) => {
   if (!mb) return;
