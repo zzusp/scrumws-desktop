@@ -1834,6 +1834,28 @@ function renderDetailTab(r, liveMb) {
   return parts.join('');
 }
 
+// Workflow（动态工作流）入参两形：首发 {script:<整段 JS 源码>}，迭代 / 续跑 {scriptPath, resumeFromRunId?}。
+// 走默认的 JSON.stringify 会把整段脚本源码糊进摘要行（实测前 90 字全是 meta 头），故单独取名：
+// 源码里按 CC 约定的 `export const meta = { name, description }` 提取；只有 scriptPath 时退到文件名
+// （CC 落盘名为 <name>-<runId>.js）。两者都取不到只出「工作流」，不拿源码片段硬凑。
+function workflowArgSummary(i) {
+  // 从 meta 块起非贪婪找首个该键 → 不会被脚本正文里别处的 name/description 骗到
+  const inMeta = (key) => {
+    const m = String(i.script || '').match(
+      new RegExp(`export\\s+const\\s+meta\\s*=\\s*\\{[\\s\\S]*?\\b${key}\\s*:\\s*['"]([^'"]+)['"]`));
+    return m ? m[1] : '';
+  };
+  let name = inMeta('name');
+  if (!name && i.scriptPath) {
+    name = String(i.scriptPath).split(/[\\/]/).pop().replace(/-wf_[^.]*(?=\.js$)/i, '').replace(/\.js$/i, '');
+  }
+  const bits = [name || '工作流'];
+  const desc = inMeta('description');
+  if (desc) bits.push(desc);
+  if (i.resumeFromRunId) bits.push(`续跑 ${i.resumeFromRunId}`);
+  return bits.join(' · ');
+}
+
 // 时间格式化
 function fmtTime(iso) {
   if (!iso) return '';
@@ -1854,6 +1876,7 @@ function toolArgSummary(c) {
     case 'Read': case 'Edit': case 'Write': case 'NotebookEdit': s = i.file_path; break;
     case 'Grep': case 'Glob': s = i.pattern; break;
     case 'Task': case 'Agent': s = i.description || i.prompt; break;
+    case 'Workflow': s = workflowArgSummary(i); break;
     case 'TodoWrite': s = `${(i.todos || []).length} todos`; break;
     case 'TaskCreate': s = `✚ ${i.subject || i.description || ''}`; break;
     case 'TaskUpdate': s = `↻ #${i.taskId || '?'} → ${i.status || i.subject || '?'}`; break;
@@ -1889,10 +1912,14 @@ function renderCcTool(c, result, inflight) {
   } else if (!result && inflight && useTs) {
     durBadge = `<span class="cc-step-dur cc-live-timer" data-since="${useTs}" style="color:var(--amber);margin-left:6px;font-size:10.5px" title="进行中，已用时">· ${fmtDuration(Date.now() - useTs)}</span>`;
   }
-  // 入参展开区：Edit 渲染成 old/new diff 色块；其余美化 JSON
+  // 入参展开区：Edit 渲染成 old/new diff 色块；Workflow 的 script 直接出源码；其余美化 JSON
   let inputBody;
   if (c.name === 'Edit' && c.input?.old_string != null) {
     inputBody = `<pre class="diff-old">${escapeHtml(String(c.input.old_string).slice(0, 2000))}</pre><pre class="diff-new">${escapeHtml(String(c.input.new_string ?? '').slice(0, 2000))}</pre>`;
+  } else if (c.name === 'Workflow' && c.input?.script) {
+    // 编排脚本是整段 JS，JSON.stringify 后换行全成字面 \n 挤成一行、没法读 → 原样出源码
+    const src = String(c.input.script);
+    inputBody = `<pre class="cc-pre">${escapeHtml(src.slice(0, 8000))}${src.length > 8000 ? '\n…(截断)' : ''}</pre>`;
   } else {
     inputBody = `<pre class="cc-pre">${escapeHtml(JSON.stringify(c.input || {}, null, 2).slice(0, 4000))}</pre>`;
   }
@@ -1955,6 +1982,7 @@ function toolGroupSummary(tools) {
       case 'Edit': case 'Write': case 'NotebookEdit': return 'edit';
       case 'WebFetch': case 'WebSearch': return 'web';
       case 'Task': case 'Agent': return 'agent';
+      case 'Workflow': return 'workflow';
       case 'TodoWrite': return 'todo';
       case 'TaskCreate': case 'TaskUpdate': case 'TaskList': return 'task';
       case 'ExitPlanMode': return 'plan';
@@ -1973,6 +2001,7 @@ function toolGroupSummary(tools) {
       case 'edit': return `edited ${n} file${s}`;
       case 'web': return `fetched ${n} web page${s}`;
       case 'agent': return `launched ${n} agent${s}`;
+      case 'workflow': return `launched ${n} workflow${s}`;
       case 'todo': return 'updated todos';
       case 'task': return `updated ${n} task${s}`;
       case 'plan': return 'submitted plan';
