@@ -11,7 +11,7 @@ import { leaseAlive } from './lease.js';
 import { collectCliSessions, readAttachedSessions, backgroundAgentCountBySid } from './collect-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { listSessions } from './session-manager.js';
-import { usageSnapshot } from './claude-usage.js';
+import { modelContextLimits, usageSnapshot } from './claude-usage.js';
 import { getDailyUsage } from './daily-usage.js';
 
 // ---------- 通用小工具 ----------
@@ -303,7 +303,7 @@ function buildRuntime(buckets) {
   for (const sid of attached.keys()) if (!boardSids.has(sid)) attachedCli++;
 
   detectClaudeRuntime();   // TTL 到点则后台重探（读缓存，不阻塞）
-  const snap = usageSnapshot();   // 账号级 5h/7d 用量 + 定时拉取实况（纯读定时器缓存，不打端点）
+  const snap = usageSnapshot();   // 账号级用量（session/本周）+ 定时拉取实况（纯读定时器缓存，不 spawn）
   // scrumws 平台任务的 sessionId 集合（有任务包的托管任务 meta.sessionId，不含被旁观的 cli watchlist 会话）
   // → 日用量柱状图「平台子集」过滤。按 t.cli 判：物化后的 CLI 任务无 t.cli、算平台任务（任务来源不变量）
   const platformSids = new Set();
@@ -324,7 +324,7 @@ function buildRuntime(buckets) {
       processing: buckets.processing.length,
     },
     usage: computeRuntimeUsage(buckets),
-    claudeUsage: snap.data,     // 账号级 5h/7d 滚动窗（Pro/Max）：{ ok, plan, subscription, fiveHour, sevenDay, error? } | null
+    claudeUsage: snap.data,     // 账号级用量（经官方 CLI /usage）：{ ok, subscription, session, weekAll, weekFable } | null
     usagePoll: snap.poll,       // 定时拉取实况：{ intervalSec, lastRunAt, nextRunAt, lastOk, lastError }
     dailyUsage: getDailyUsage(platformSids),   // 近 30 天每天用量（token）：[{ date, input, output, cache, total, platform }] | null（首次扫描中）。柱状图取后 7 天(total+platform)，表格按 tab 取后 7/15/30 天
   };
@@ -388,8 +388,8 @@ export async function collectState() {
     },
     runnerConfig: {
       maxConcurrentRunners: cfg.maxConcurrentRunners ?? 5,
-      proxyUrl: cfg.proxyUrl || '',                   // 平台出网代理（打 Anthropic usage 端点用）；空=回退系统 HTTP(S)_PROXY
-      usagePollSec: cfg.usagePollSec ?? 300,          // 账号用量定时拉取间隔（秒，默认 5min）
+      usagePollSec: cfg.usagePollSec ?? 600,          // 账号用量定时拉取「基准」间隔（秒，默认 10min；每次实际叠加随机抖动 ×[0.6,1.6)）
+      modelContextLimits: modelContextLimits(),       // 生效的 model→上下文上限映射（内置默认 + 用户配置）：设置页据此回填、详情页环形取分母
     },
   };
 }

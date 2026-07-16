@@ -10,7 +10,7 @@ import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
-import { getClaudeUsage, invalidateClaudeUsage, getModelContextLimit, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
+import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
 import { P } from './lib/paths.js';
 
@@ -177,9 +177,9 @@ const server = http.createServer(async (req, res) => {
   const { pathname, searchParams } = new URL(req.url, 'http://x');
   try {
     if (pathname === '/api/state') return sendJson(res, 200, await collectState());
-    // Claude Code 账号级用量（详情页 Claude Code 卡片）：套餐 + Pro/Max 的 5h/7d 滚动窗；模块内 60s 缓存
+    // Claude Code 账号级用量（详情页卡片 + 运行时面板）：session / 本周滚动窗；经官方 CLI `/usage` 查、模块内缓存
     if (pathname === '/api/claude-usage') return sendJson(res, 200, await getClaudeUsage());
-    // 模型上下文窗口上限（详情页上下文用量环形的分母）：取该 model 真实 max_input_tokens；模块内每 model 缓存 6h
+    // 模型上下文窗口上限（详情页上下文用量环形的分母）：读设置页配置的 model→max_input_tokens 映射，不打 API
     if (pathname === '/api/model-context') {
       const model = searchParams.get('model');
       if (!model) return sendJson(res, 400, { ok: false, error: 'model required' });
@@ -273,19 +273,40 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // 出网代理配置（设置页）：body {proxyUrl}；空串=清除、回退系统 HTTP(S)_PROXY。存 runner-config.json，
-    // 清 claude-usage 缓存令下次拉取立即用新代理。
-    if (req.method === 'POST' && pathname === '/api/config/proxy') {
+    // 模型上下文上限配置（设置页）：body {modelContextLimits:{modelId:number}}；存 runner-config.json。
+    // 详情页上下文环形的分母改读此映射，不再打 /v1/models（也不再需要代理/凭据）。
+    if (req.method === 'POST' && pathname === '/api/config/model-limits') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const raw = payload?.modelContextLimits;
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return sendJson(res, 400, { ok: false, error: 'modelContextLimits 需为对象 {modelId: 数字}' });
+        const clean = {};
+        for (const [k, v] of Object.entries(raw)) {
+          const n = Number(v);
+          if (!String(k).trim() || !Number.isFinite(n) || n <= 0) return sendJson(res, 400, { ok: false, error: `无效项：${k} → ${v}（值需为正整数 token 数）` });
+          clean[String(k).trim()] = Math.round(n);
+        }
+        writeConfig({ modelContextLimits: clean });
+        sendJson(res, 200, { ok: true, modelContextLimits: clean });
+      });
+      return;
+    }
+    // 账号用量定时拉取间隔（设置页）：后端每隔一段时间 spawn 一次 `claude -p /usage`（唯一触发 CLI 查用量的节拍）。
+    // body {intervalSec}；夹到 [120, 3600] 秒（默认 600=10min），存 runner-config.json 后热更定时器。
+    if (req.method === 'POST' && pathname === '/api/usage-poll/interval') {
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const proxyUrl = String(payload?.proxyUrl ?? '').trim();
-        if (proxyUrl && !/^https?:\/\/[^\s]+$/i.test(proxyUrl)) return sendJson(res, 400, { ok: false, error: '代理地址需形如 http://host:port' });
-        writeConfig({ proxyUrl });
-        invalidateClaudeUsage();
-        sendJson(res, 200, { ok: true, proxyUrl });
+        const sec = Math.round(Number(payload?.intervalSec));
+        if (!Number.isFinite(sec) || sec < 120 || sec > 3600) return sendJson(res, 400, { ok: false, error: '间隔需为 120–3600 秒' });
+        writeConfig({ usagePollSec: sec });
+        reloadUsageTimer();
+        sendJson(res, 200, { ok: true, intervalSec: sec });
       });
       return;
     }
@@ -301,22 +322,6 @@ const server = http.createServer(async (req, res) => {
         if (!Number.isFinite(sec) || sec < 30 || sec > 3600) return sendJson(res, 400, { ok: false, error: '间隔需为 30–3600 秒' });
         writeConfig({ checkerIntervalSec: sec });
         scheduler.reload();
-        sendJson(res, 200, { ok: true, intervalSec: sec });
-      });
-      return;
-    }
-    // 账号用量定时拉取间隔（设置页）：唯一打 api.anthropic.com/usage 的节拍。
-    // body {intervalSec}；夹到 [60, 3600] 秒（默认 300=5min），存 runner-config.json 后热更定时器。
-    if (req.method === 'POST' && pathname === '/api/usage-poll/interval') {
-      let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
-      req.on('end', () => {
-        let payload = null;
-        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const sec = Math.round(Number(payload?.intervalSec));
-        if (!Number.isFinite(sec) || sec < 60 || sec > 3600) return sendJson(res, 400, { ok: false, error: '间隔需为 60–3600 秒' });
-        writeConfig({ usagePollSec: sec });
-        reloadUsageTimer();
         sendJson(res, 200, { ok: true, intervalSec: sec });
       });
       return;
@@ -588,7 +593,7 @@ export function start() {
       console.log(`claude 活儿总览（分身 + 本机 CLI）→ http://${HOST}:${PORT}`);
       // 调度器在端口拿到后再启动：撞端口的第二实例不会碰 scheduler.lock
       const mode = scheduler.start();
-      // usage 定时拉取只在主（持锁）实例启：副实例「只看不调度」，不重复打 api.anthropic.com
+      // 账号用量定时拉取只在主（持锁）实例启：副实例「只看不调度」，不重复 spawn claude
       if (mode === 'running') startUsageTimer();
       resolve({ host: HOST, port: PORT, server });
     });
