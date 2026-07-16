@@ -521,15 +521,26 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .reply-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .reply-header #modalReplyHint{font-size:11.5px;color:var(--mut);line-height:1.5;flex:1;min-width:160px}
 .reply-header #modalReplyHint b{color:var(--ink2);font-weight:600}
-.reply-composer{display:flex;flex-direction:column;margin-top:10px;background:var(--card);border:1px solid var(--input);border-radius:var(--r-lg);transition:border-color .15s,box-shadow .15s}
-.reply-composer:focus-within{border-color:var(--ring);box-shadow:var(--focus-ring)}
-.reply-composer textarea{font-family:var(--sans);font-size:13px;padding:12px 14px 8px;border:none;background:transparent;color:var(--ink);resize:vertical;outline:none;line-height:1.65;min-height:72px;border-radius:var(--r-lg) var(--r-lg) 0 0}
-.reply-composer textarea::placeholder{color:var(--dim)}
-.reply-composer textarea:disabled{background:var(--card2);color:var(--dim);cursor:not-allowed}
-.reply-toolbar{display:flex;align-items:center;gap:10px;padding:7px 10px 7px 12px;background:var(--muted);border-top:1px solid var(--hair);border-radius:0 0 calc(var(--r-lg) - 1px) calc(var(--r-lg) - 1px);flex-wrap:wrap}
+/* 重构（参考 send.png）：输入框独立带边框 + 右下内嵌发送箭头；工具条移到框外、透明 */
+.reply-composer{display:flex;flex-direction:column;gap:9px;margin-top:10px}
+.composer-field{position:relative;background:var(--card);border:1px solid var(--input);border-radius:var(--r-lg);transition:border-color .15s,box-shadow .15s}
+.composer-field:focus-within{border-color:var(--ring);box-shadow:var(--focus-ring)}
+.composer-field textarea{display:block;width:100%;box-sizing:border-box;font-family:var(--sans);font-size:13px;padding:12px 50px 12px 14px;border:none;background:transparent;color:var(--ink);resize:vertical;outline:none;line-height:1.65;min-height:64px;border-radius:var(--r-lg)}
+.composer-field textarea::placeholder{color:var(--dim)}
+.composer-field textarea:disabled{color:var(--dim);cursor:not-allowed}
+/* 发送箭头（↵）：输入框右下角圆形主色按钮 */
+.composer-send{position:absolute;right:8px;bottom:8px;width:30px;height:30px;padding:0;border:none;border-radius:50%;background:var(--primary);color:var(--primary-foreground);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:opacity .15s,transform .1s}
+.composer-send:hover{opacity:.9}
+.composer-send:active{transform:scale(.94)}
+.composer-send:disabled{opacity:.4;cursor:not-allowed}
+.composer-send.busy>svg{display:none}
+.composer-send.busy::after{content:"";width:14px;height:14px;border:2px solid var(--primary-foreground);border-top-color:transparent;border-radius:50%;animation:cs-spin .7s linear infinite}
+@keyframes cs-spin{to{transform:rotate(360deg)}}
+.reply-toolbar{display:flex;align-items:center;gap:8px;padding:0 2px;background:transparent;flex-wrap:wrap}
+.reply-toolbar .attach-btn{margin-right:auto}
 .mes-wrap{position:relative;flex:none}
-/* 上下文用量环形：紧贴 model 控件右侧，margin-right:auto 让其后的打断/发送靠右（容器常驻、无数据时空） */
-.reply-toolbar .ctx-ring-wrap{margin-right:auto;display:flex;align-items:center;flex:none}
+/* 上下文用量环形：紧贴 model 选择器右侧（重构后归右组，不再靠 margin 撑开布局）*/
+.reply-toolbar .ctx-ring-wrap{display:flex;align-items:center;flex:none}
 .ctx-ring{position:relative;display:inline-flex;align-items:center;gap:5px;padding:2px 5px;border-radius:var(--r-md);cursor:default;outline:none}
 .ctx-ring:hover,.ctx-ring:focus-visible{background:var(--raise)}
 .ctx-ring-svg{flex:none;display:block}
@@ -585,8 +596,6 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .reply-toolbar .reply-count.warn{color:var(--amber)}
 .reply-toolbar .reply-kbd{font-size:10.5px;color:var(--dim);display:inline-flex;align-items:center;gap:3px}
 .reply-toolbar .reply-kbd kbd{font-family:var(--mono);font-size:10px;background:var(--card);box-shadow:inset 0 0 0 1px var(--hair),inset 0 -1px 0 var(--hair2);border-radius:4px;padding:2px 5px;color:var(--ink2);line-height:1}
-.reply-toolbar .reply-send{font-size:12px;padding:6px 18px;flex:none;font-weight:600;letter-spacing:.02em}
-.reply-toolbar .reply-send:disabled{opacity:.5;cursor:not-allowed}
 /* ---------- 添加本地文件（新建任务 / 详情回复共用）：加号按钮 + 附件 chip ---------- */
 .attach-btn{font-family:var(--sans);font-size:15px;line-height:1;width:28px;height:28px;padding:0;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--mut);cursor:pointer;flex:none;display:inline-flex;align-items:center;justify-content:center;transition:border-color .15s,background .15s,color .15s}
 .attach-btn:hover{background:var(--raise);border-color:var(--hair2);color:var(--ink)}
@@ -972,9 +981,16 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             </div>
             <!-- body A：可对话时的输入卡片（textarea + 底部 toolbar 一体化）-->
             <div id="modalReplyBody" class="reply-composer" style="display:none">
-              <textarea id="modalReplyText" rows="3" placeholder="继续输入消息…（Ctrl+Enter 快速发送）"></textarea>
-              <!-- 附件 chip 区：选了本地文件才显示（app.js attachController 渲染） -->
-              <div class="attach-chips" id="modalReplyAttach" style="display:none;padding:8px 12px 0"></div>
+              <!-- 输入框：独立带边框圆角，右下角内嵌发送箭头（参考 send.png）-->
+              <div class="composer-field">
+                <textarea id="modalReplyText" rows="3" placeholder="继续输入消息…（Ctrl+Enter 快速发送）"></textarea>
+                <button type="button" class="composer-send" id="modalReplySend" title="发送（Ctrl+Enter）" aria-label="发送">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg>
+                </button>
+              </div>
+              <!-- 附件 chip 区（框外）：选了本地文件才显示（app.js attachController 渲染） -->
+              <div class="attach-chips" id="modalReplyAttach" style="display:none"></div>
+              <!-- 工具条（框外、透明；参考 send.png：左「+」加文件，右 模型/effort 选择器 + 上下文环 + 打断）-->
               <div class="reply-toolbar">
                 <!-- 添加本地文件（参考 send.png 的「+」）：随消息发给 claude，后端拼进文本尾部让 claude 用 Read 读 -->
                 <button type="button" class="attach-btn" id="modalReplyAttachBtn" title="添加本地文件（随消息发给 claude，用 Read 工具读取）" aria-label="添加本地文件">＋</button>
@@ -1004,7 +1020,6 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
                 <!-- 上下文用量环形（app.js syncContextRing 填充；无会话上下文时留空，但保留 margin-right:auto 支撑布局）-->
                 <div class="ctx-ring-wrap" id="modalCtxRing"></div>
                 <button class="btn" id="modalReplyInterrupt" style="display:none" title="打断当前轮（interrupt）">■ 打断</button>
-                <button class="btn btn-primary reply-send" id="modalReplySend">发送</button>
               </div>
             </div>
             <!-- body B：需要重新发起时的 CTA -->
