@@ -255,7 +255,11 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
       // 回写 watchlist 记住新路径
       upsertWatchlist(sid, { jsonlPath, projectDir });
     } else {
-      // jsonl 真消失：返回 stub 卡片让用户能看到 + 移除
+      // jsonl 真消失：返回 stub 卡片让用户能看到 + 移除。
+      // 手动态（archivedAt/doneAt）与正常路径同优先级照常生效——jsonl 没了只是推不出存活态，
+      // 不代表用户点的归档/完成不算数。曾漏此判：归档已写进 watchlist，卡片却恒停在 awaiting-human
+      // 桶，而「移除」只在归档区渲染 → 脏卡永远清不掉（2026-07-16）。
+      const stubState = sidEntry.archivedAt ? 'archived' : sidEntry.doneAt ? 'done' : 'awaiting-human';
       return {
         taskKey: `cli:${sid.slice(0, 8)}`,
         safeTaskKey: `cli__${sid}`,
@@ -264,7 +268,7 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
         description: sidEntry.note || null,
         source: 'cli',
         kind: null,
-        state: 'awaiting-human',
+        state: stubState,
         cwd: null,
         worktreeDir: null,
         backgroundAgentCount: 0,
