@@ -26,6 +26,17 @@ const sessions = new Map();    // id → Session
 
 function nowStr() { return new Date().toISOString(); }
 
+// 「附加本地文件」→ 把绝对路径拼进消息文本尾部：claude 本地全权限、Read 工具支持任意类型（含图片），
+// 让它按需读，无需 Node 侧读文件/base64/判类型（对齐 CC 对大文件的 compact_file_reference 策略）。
+// 前端乐观回显用同款格式（public/app.js attachSuffix），改格式需两处同步。
+export function appendAttachments(text, attachments) {
+  const files = (Array.isArray(attachments) ? attachments : [])
+    .map((p) => String(p || '').trim()).filter(Boolean);
+  const base = String(text || '');
+  if (!files.length) return base;
+  return `${base}\n\n[附加本地文件 · 请用 Read 工具读取]\n${files.map((p) => `- ${p}`).join('\n')}`;
+}
+
 class Session {
   constructor({ id, cwd, model, effort, taskKey, gitBranch }) {
     this.id = id;                    // 看板内部句柄
@@ -144,7 +155,7 @@ function armInitWatchdog(s) {
 
 // ---- 对外 API ----
 
-export function createSession({ cwd, model, effort, resume, prompt, seedTranscript, taskKey, bypass, gitBranch, dynamicWorkflow } = {}) {
+export function createSession({ cwd, model, effort, resume, prompt, attachments, seedTranscript, taskKey, bypass, gitBranch, dynamicWorkflow } = {}) {
   if (cwd) {
     try { if (!fs.statSync(cwd).isDirectory()) return { ok: false, error: `cwd 不是目录：${cwd}` }; }
     catch { return { ok: false, error: `cwd 不存在：${cwd}` }; }
@@ -188,16 +199,17 @@ export function createSession({ cwd, model, effort, resume, prompt, seedTranscri
   }
   sessions.set(id, s);
   wireChild(s);
-  if (prompt) sendUserMessage(id, prompt);
+  if (prompt) sendUserMessage(id, prompt, attachments);
   return { ok: true, id, info: s.info() };
 }
 
-export function sendUserMessage(id, message) {
+export function sendUserMessage(id, message, attachments) {
   const s = sessions.get(id);
   if (!s) return { ok: false, error: 'session not found' };
   if (s.state === 'closed' || s.state === 'error') return { ok: false, error: `session 已${s.state}` };
-  const text = String(message || '');
-  if (!text.trim()) return { ok: false, error: 'message required' };
+  if (!String(message || '').trim()) return { ok: false, error: 'message required' };
+  // 附加本地文件 → 拼进文本尾部（claude 用 Read 读）；transcript 也存拼接版（claude 所见 = 历史所存）
+  const text = appendAttachments(message, attachments);
   const ok = writeStdin(s, { type: 'user', message: { role: 'user', content: text } });
   // 记入 transcript（不 emit）：claude stdout stream-json 不回显用户输入，用户消息只有这里自记才进得了历史。
   // 否则续轮 reply / leak-retry 等经本函数发出的用户消息从不入 transcript → 详情重开(SSE 回放)时全丢。

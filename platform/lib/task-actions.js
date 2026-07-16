@@ -30,6 +30,23 @@ const ALLOWED_MODELS = new Set([
 // claude --effort 合法档位（与 session-manager 同集）
 const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
+// 规范化「附加本地文件」路径数组：字符串、trim、去空、去重、限量；不校验文件系统存在性
+//（选时由 Electron dialog 保证存在，执行时若已删由 claude Read 自行报错——比 plan 保存时强校验更鲁棒）
+const MAX_ATTACHMENTS = 20;
+function normalizeAttachments(input) {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of input) {
+    const p = String(raw || '').trim();
+    if (!p || p.length > 1000 || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+    if (out.length >= MAX_ATTACHMENTS) break;
+  }
+  return out;
+}
+
 // 手动中断任务（标 awaiting-human + outcome=cancelled + kill worker pid；独立 cancelled 态 2026-07-10 废除，
 // "谁按的停止键"由 outcome 记录，state 统一走 awaiting-human → 归档即人工处理完毕的出口）
 // 顺序：**先写 state.json 后 kill pid** —— 否则 runner 被强杀后 state 停 processing、runner-checker 会当孤儿收纳
@@ -283,7 +300,7 @@ export function moveTaskToPlan({ taskKey }) {
 
 // 回复任务：package-first——有任务包（含物化 CLI）走 Mode B（复用 live 会话 / --resume 重挂）；未物化的 CLI 会话
 // （无包）才走观察侧 cli-reply-runner。effort：per-reply reasoning 档位覆盖（仅 --resume 重挂新会话时生效）。
-export function replyToTask({ taskKey, message, model, effort }) {
+export function replyToTask({ taskKey, message, model, effort, attachments }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
@@ -303,7 +320,7 @@ export function replyToTask({ taskKey, message, model, effort }) {
     return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
   }
   // 走 Mode B：live 会话在则复用续轮 / 会话已死则 --resume 重挂（task-runner 内写 state=processing + lease）
-  return replyTask(taskKey, msg, model, eff || undefined);
+  return replyTask(taskKey, msg, model, eff || undefined, normalizeAttachments(attachments));
 }
 
 // 改写重跑（原地 rewind）：改写某条历史 user 消息、从那里替换重跑（该消息及之后的时间线丢弃，对齐 CC 交互 double-Esc）。
@@ -403,7 +420,7 @@ export function taskCwds() {
 // cwd（可选）：claude 工作目录，校验存在且是目录后写进 task.json.cwd。effort（可选）：reasoning 档位。
 // scheduledAt（可选）：定时执行时刻（本地串），到点由调度器把 plan 提升为执行；给了则强制 plan。
 // worktree/baseBranch（可选）：git 项目下隔离 worktree 运行 + 签出基分支。dynamicWorkflow（可选）：动态工作流开关。
-export function createTask({ source, title, prompt, model, description, plan, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }) {
+export function createTask({ source, title, prompt, model, description, plan, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }) {
   const src = String(source || 'manual').trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
   const t = String(title || '').trim();
@@ -430,6 +447,7 @@ export function createTask({ source, title, prompt, model, description, plan, cw
   const wantWorktree = !!worktree;
   const baseBr = String(baseBranch || '').trim();
   const dynFlow = dynamicWorkflow == null ? null : !!dynamicWorkflow;
+  const attachList = normalizeAttachments(attachments);
 
   const slug = genSlug();
   const taskKey = `${src}:${slug}`;
@@ -460,6 +478,7 @@ export function createTask({ source, title, prompt, model, description, plan, cw
     if (wantWorktree) taskJson.worktree = true;
     if (baseBr) taskJson.baseBranch = baseBr;
     if (dynFlow != null) taskJson.dynamicWorkflow = dynFlow;
+    if (attachList.length) taskJson.attachments = attachList;   // 附加本地文件：绝对路径数组，startTask 拼进首轮 prompt
     if (desc) taskJson.description = desc;
     fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
     // state.json = plan（先计划，用户确认后执行）或 queued（即将自动起会话）
@@ -510,6 +529,7 @@ export function readTaskEdit(taskKey) {
     worktree: !!task.worktree,
     baseBranch: task.baseBranch || '',
     dynamicWorkflow: task.dynamicWorkflow == null ? null : !!task.dynamicWorkflow,
+    attachments: Array.isArray(task.attachments) ? task.attachments : [],
     // 有会话记录（从 待人工/完成 退回来的）→ 工作目录 / worktree 锁定：改了会让确认执行的 --resume 找不到原会话
     resumeLocked: !!meta?.sessionId,
   };
@@ -518,7 +538,7 @@ export function readTaskEdit(taskKey) {
 // 编辑 plan 态任务：改写 task.json 的 title/prompt/model/cwd/description + effort/scheduledAt/worktree/baseBranch/dynamicWorkflow。
 // 仅 plan 且非归档可编辑（已 queued/processing/收敛的任务不给改）。复用 createTask 同套校验（model/effort 白名单、cwd 必须存在目录）。
 // 编辑后 title 落 task.title 且清 customTitle（编辑即权威标题）。
-export function editTask({ taskKey, title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow }) {
+export function editTask({ taskKey, title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
@@ -575,6 +595,8 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
     if (cwdFinal && baseBr) task.baseBranch = baseBr; else delete task.baseBranch;
   }
   if (dynFlow != null) task.dynamicWorkflow = dynFlow; else delete task.dynamicWorkflow;
+  const attachList = normalizeAttachments(attachments);
+  if (attachList.length) task.attachments = attachList; else delete task.attachments;
   task.taskKey = task.taskKey || taskKey;
   try { fs.writeFileSync(taskFile, JSON.stringify(task, null, 2), 'utf8'); }
   catch (e) { return { ok: false, error: `写 task.json 失败: ${e.message}` }; }

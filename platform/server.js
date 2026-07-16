@@ -220,7 +220,7 @@ const server = http.createServer(async (req, res) => {
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        sendJson(res, 200, sendUserMessage(id, payload?.message));
+        sendJson(res, 200, sendUserMessage(id, payload?.message, payload?.attachments));
       });
       return;
     }
@@ -380,6 +380,23 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: false, error: `目录选择失败：${e.message}` });
       }
     }
+    // 系统文件选择（新建任务 / 详情回复「添加本地文件」）：仅桌面端（Electron dialog）；web 模式回退提示手填。
+    // 多选，返回绝对路径数组 {ok, files}；随任务/消息传给 claude（后端拼进文本尾部，让 claude 用 Read 读）。
+    if (req.method === 'POST' && pathname === '/api/pick-file') {
+      if (!process.versions?.electron) {
+        return sendJson(res, 200, { ok: false, error: 'web 模式无法调起系统文件选择，请在桌面端使用' });
+      }
+      try {
+        const { dialog, BrowserWindow } = await import('electron');
+        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+        const opts = { title: '选择本地文件', properties: ['openFile', 'multiSelections'] };
+        const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+        if (r.canceled || !r.filePaths?.length) return sendJson(res, 200, { ok: true, canceled: true, files: [] });
+        return sendJson(res, 200, { ok: true, files: r.filePaths });
+      } catch (e) {
+        return sendJson(res, 200, { ok: false, error: `文件选择失败：${e.message}` });
+      }
+    }
     // 探测工作目录是否 git 项目（= 是否支持 worktree）：body {cwd} → {ok, isGit, root, currentBranch, branches}
     // 新建任务表单选目录后调，决定是否显示 worktree 开关 + 签出分支下拉。
     if (req.method === 'POST' && pathname === '/api/git/detect') {
@@ -444,7 +461,7 @@ const server = http.createServer(async (req, res) => {
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const r = replyToTask({ taskKey, message: payload?.message, model: payload?.model, effort: payload?.effort });
+        const r = replyToTask({ taskKey, message: payload?.message, model: payload?.model, effort: payload?.effort, attachments: payload?.attachments });
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;

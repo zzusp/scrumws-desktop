@@ -587,6 +587,18 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .reply-toolbar .reply-kbd kbd{font-family:var(--mono);font-size:10px;background:var(--card);box-shadow:inset 0 0 0 1px var(--hair),inset 0 -1px 0 var(--hair2);border-radius:4px;padding:2px 5px;color:var(--ink2);line-height:1}
 .reply-toolbar .reply-send{font-size:12px;padding:6px 18px;flex:none;font-weight:600;letter-spacing:.02em}
 .reply-toolbar .reply-send:disabled{opacity:.5;cursor:not-allowed}
+/* ---------- 添加本地文件（新建任务 / 详情回复共用）：加号按钮 + 附件 chip ---------- */
+.attach-btn{font-family:var(--sans);font-size:15px;line-height:1;width:28px;height:28px;padding:0;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--mut);cursor:pointer;flex:none;display:inline-flex;align-items:center;justify-content:center;transition:border-color .15s,background .15s,color .15s}
+.attach-btn:hover{background:var(--raise);border-color:var(--hair2);color:var(--ink)}
+.attach-btn:disabled{opacity:.5;cursor:not-allowed}
+.attach-btn.wide{width:auto;height:auto;padding:7px 12px;font-size:12px;gap:4px;font-weight:500;color:var(--ink2)}
+.attach-head{display:flex;align-items:center;gap:10px}
+.attach-head .f-label{flex:1;margin:0}
+.attach-chips{display:flex;flex-wrap:wrap;gap:6px}
+.attach-chip{display:inline-flex;align-items:center;gap:6px;max-width:260px;padding:3px 5px 3px 9px;background:var(--muted);border:1px solid var(--hair2);border-radius:var(--r-md);font-size:11.5px;color:var(--ink2)}
+.attach-chip .ac-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11px}
+.attach-chip .ac-x{cursor:pointer;color:var(--dim);font-size:15px;line-height:1;flex:none;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px}
+.attach-chip .ac-x:hover{color:var(--coralT);background:var(--raise)}
 .reply-restart{display:flex;align-items:center;gap:14px;margin-top:10px;padding:12px 14px;background:color-mix(in oklab, var(--warning) 7%, transparent);border:1px dashed color-mix(in oklab, var(--warning) 40%, transparent);border-radius:var(--r-lg)}
 .reply-restart-btn{font-size:12.5px;padding:8px 18px;background:var(--warning);color:oklch(0.2 0.02 85);border-color:transparent;font-weight:600;letter-spacing:.02em;flex:none}
 .reply-restart-btn:hover{background:color-mix(in oklab, var(--warning) 85%, white);border-color:transparent;color:oklch(0.2 0.02 85)}
@@ -961,7 +973,11 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <!-- body A：可对话时的输入卡片（textarea + 底部 toolbar 一体化）-->
             <div id="modalReplyBody" class="reply-composer" style="display:none">
               <textarea id="modalReplyText" rows="3" placeholder="继续输入消息…（Ctrl+Enter 快速发送）"></textarea>
+              <!-- 附件 chip 区：选了本地文件才显示（app.js attachController 渲染） -->
+              <div class="attach-chips" id="modalReplyAttach" style="display:none;padding:8px 12px 0"></div>
               <div class="reply-toolbar">
+                <!-- 添加本地文件（参考 send.png 的「+」）：随消息发给 claude，后端拼进文本尾部让 claude 用 Read 读 -->
+                <button type="button" class="attach-btn" id="modalReplyAttachBtn" title="添加本地文件（随消息发给 claude，用 Read 工具读取）" aria-label="添加本地文件">＋</button>
                 <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
                 <select id="modalReplyModel" style="display:none">
                   <option value="claude-opus-4-8" selected>Opus 4.8</option>
@@ -1026,6 +1042,14 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <span class="f-label">Prompt（发给 claude 的内容）</span>
           <textarea id="newTaskPrompt" class="field-input" rows="10" placeholder="任务说明、上下文、期望产出..."></textarea>
         </label>
+        <!-- 附加本地文件（可选）：随任务发给 claude，后端拼进 prompt 尾部让 claude 用 Read 读 -->
+        <div class="field" style="gap:8px">
+          <div class="attach-head">
+            <span class="f-label">附加本地文件（可选 · 随任务发给 claude，用 Read 工具读取）</span>
+            <button type="button" class="attach-btn wide" id="newTaskAttachBtn" title="选择本地文件">＋ 添加文件</button>
+          </div>
+          <div class="attach-chips" id="newTaskAttach" style="display:none"></div>
+        </div>
         <label class="field">
           <span class="f-label">描述（可选 · 自己看的备注，不会发给 claude）</span>
           <textarea id="newTaskDesc" class="field-input" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…"></textarea>

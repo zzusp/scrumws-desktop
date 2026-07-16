@@ -262,9 +262,9 @@ export function startTask(taskKey) {
     const hist = readCcSessionForAdopt(sid);
     // seed 只含历史；本轮 prompt 由 createSession→sendUserMessage 自记进 transcript（不再往 seed 尾追，避免重复）
     const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
-    r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, resume: sid, prompt: task.prompt, seedTranscript: seed, bypass: true });
+    r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, resume: sid, prompt: task.prompt, attachments: task.attachments, seedTranscript: seed, bypass: true });
   } else {
-    r = createSession({ taskKey, cwd: rc.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, prompt: task.prompt, bypass: true });
+    r = createSession({ taskKey, cwd: rc.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, prompt: task.prompt, attachments: task.attachments, bypass: true });
   }
   if (!r.ok) return r;
   bind(taskKey, r.id);
@@ -274,12 +274,12 @@ export function startTask(taskKey) {
 
 // 回复任务：live 会话在则复用（多轮）；已死则 --resume 重挂。model/effort 覆盖仅在 --resume 重挂时生效
 // （live 会话的 model/effort 在 spawn 时已定、无法中途改）。
-export function replyTask(taskKey, message, model, effort) {
+export function replyTask(taskKey, message, model, effort, attachments) {
   const msg = String(message || '').trim();
   if (!msg) return { ok: false, error: 'message required' };
   const liveId = getTaskSessionId(taskKey);
   if (liveId) {
-    const r = sendUserMessage(liveId, msg);
+    const r = sendUserMessage(liveId, msg, attachments);
     if (!r.ok) return r;
     markProcessing(taskKey, liveId);
     return { ok: true, taskKey, sessionUiId: liveId, reused: true };
@@ -297,7 +297,7 @@ export function replyTask(taskKey, message, model, effort) {
   const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
   const rc = resolveRunCwd(taskKey, task || {});
   if (rc.error) return { ok: false, error: rc.error };
-  const r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: model || task?.model || undefined, effort: effort || task?.effort || undefined, dynamicWorkflow: task?.dynamicWorkflow, resume: sid, prompt: msg, seedTranscript: seed, bypass: true });
+  const r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: model || task?.model || undefined, effort: effort || task?.effort || undefined, dynamicWorkflow: task?.dynamicWorkflow, resume: sid, prompt: msg, attachments, seedTranscript: seed, bypass: true });
   if (!r.ok) return r;
   bind(taskKey, r.id);
   markProcessing(taskKey, r.id);
