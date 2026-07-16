@@ -196,14 +196,35 @@ function bgLaunchTtlMs(r) {
   if (!r || typeof r !== 'object') return null;
   if (r.isAsync === true) return 0;
   if (r.backgroundTaskId) return 0;
-  // Workflow：整条工作流（编排若干 subagent）在后台跑，无自带死线，跑到收敛 / TaskStop → 落 BG_STALE_MS。
-  // 它的 subagent 落在自己的 transcriptDir、不进主 jsonl，故整条工作流按一个后台任务计。
+  // Workflow：整条工作流（编排若干 subagent）在后台跑，无自带死线。它的 subagent 落在自己的
+  // transcriptDir、不进主 jsonl，故整条工作流按一个后台任务计。死线锚点另算，见 lastActivityMs。
   if (r.taskType === 'local_workflow') return 0;
   // Monitor 的 timeoutMs 是 CC 的硬死线（到点必杀进程），persistent 则跑到 TaskStop / 会话结束
   if (r.taskId && typeof r.timeoutMs === 'number' && typeof r.persistent === 'boolean') {
     return r.persistent ? 0 : r.timeoutMs;
   }
   return null;
+}
+
+// Workflow 的「最后活动时刻」= transcriptDir 里最新文件的 mtime（0 = 取不到）。
+// 为什么 workflow 不能像 subagent / 后台命令那样用「启动至今」比 BG_STALE_MS：workflow 编排多个 subagent、
+// 实测单次跑 3～31min，还盯完过一条跑满 108.9min 才收尾的 —— 15min 死线会在它干到第 15 分钟时抹掉它、
+// 之后 90 多分钟一直错报"没有后台任务"，而这恰是最该显示的那种。它又没有心跳可用：主 jsonl 从启动到终态只有一条记录（实测在跑的 w302v3gbz
+// 全文件仅 1 次命中），tasks/<taskId>.output 恒 0 字节且 mtime 停在启动时刻 —— 两者都判不了活。
+// CC 在 toolUseResult 给了 transcriptDir（该工作流的 subagent 全落那），拿它当锚点即可把判据从
+// "跑了多久"换成"多久没动静"：长工作流不误杀，会话崩了也照样在 15min 静默后自然收敛。
+// 只看目录里文件的 mtime，不看目录自身：NTFS 的目录 mtime 只在增删条目时更新，文件内容追加不刷新。
+function lastActivityMs(dir) {
+  let newest = 0;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      try {
+        const m = fs.statSync(path.join(dir, name)).mtimeMs;
+        if (m > newest) newest = m;
+      } catch { }
+    }
+  } catch { return 0; }
+  return newest;
 }
 
 // <task-notification> 的三种落盘载体（实测全库终态通知：queue-operation 506 / attachment 298 / user 195
@@ -256,15 +277,19 @@ export function countRunningBackgroundTasks(jsonlPath, now = Date.now()) {
     if (ttl === null || !Array.isArray(o.message?.content)) continue;
     const at = Date.parse(o.timestamp) || 0;
     const key = r.taskId || r.backgroundTaskId || r.agentId || null;   // TaskStop 按此 id 寻址
+    // workflow 判活锚点（见 lastActivityMs）；其余三类无此需求，dir=null 时仍按启动时刻比死线
+    const dir = r.taskType === 'local_workflow' ? (r.transcriptDir || null) : null;
     for (const b of o.message.content) {
-      if (b?.type === 'tool_result' && b.tool_use_id) launched.set(b.tool_use_id, { at, ttl, key });
+      if (b?.type === 'tool_result' && b.tool_use_id) launched.set(b.tool_use_id, { at, ttl, key, dir });
     }
   }
   let n = 0;
-  for (const [id, { at, ttl, key }] of launched) {
+  for (const [id, { at, ttl, key, dir }] of launched) {
     if (done.has(id) || (key && stopped.has(key))) continue;
-    // 启动已久仍未配平 → 会话崩溃 / 通知丢失（见 BG_STALE_MS），兜底剔除避免永久误报
-    if (at && now > at + (ttl > 0 ? ttl + BG_TTL_GRACE_MS : BG_STALE_MS)) continue;
+    // 死线锚点：一般后台任务按启动时刻；workflow 按它最后一次有动静的时刻（长工作流不误杀，见 lastActivityMs）
+    const anchor = dir ? Math.max(at, lastActivityMs(dir)) : at;
+    // 锚点已久仍未配平 → 会话崩溃 / 通知丢失（见 BG_STALE_MS），兜底剔除避免永久误报
+    if (anchor && now > anchor + (ttl > 0 ? ttl + BG_TTL_GRACE_MS : BG_STALE_MS)) continue;
     n++;
   }
   return n;
