@@ -538,6 +538,14 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 @keyframes cs-spin{to{transform:rotate(360deg)}}
 .reply-toolbar{display:flex;align-items:center;gap:8px;padding:0 2px;background:transparent;flex-wrap:wrap}
 .reply-toolbar .attach-btn{margin-right:auto}
+/* 重构后 model/effort 选择器 + 上下文环移到工具条右侧：弹出面板改向左展开（right 对齐），
+   否则默认 left:0 向右展开会溢出 detail-main(overflow:hidden) 右边界被裁 / 被右侧信息栏盖住。
+   二级飞出同向左（JS flip 基于视口，向左时不误触发，保持一致）。
+   注：不能改用 fixed 脱离裁切——.reply-box 的 backdrop-filter 会给 fixed 后代建 containing block，
+   令 fixed 相对 reply-box 而非 viewport 定位而错位。*/
+.reply-toolbar .mes-menu{left:auto;right:0}
+.reply-toolbar .mes-sub{left:auto;right:calc(100% + 6px)}
+.reply-toolbar .ctx-ring-tip{left:auto;right:0}
 .mes-wrap{position:relative;flex:none}
 /* 上下文用量环形：紧贴 model 选择器右侧（重构后归右组，不再靠 margin 撑开布局）*/
 .reply-toolbar .ctx-ring-wrap{display:flex;align-items:center;flex:none}
