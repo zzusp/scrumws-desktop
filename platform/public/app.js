@@ -1397,7 +1397,7 @@ async function sendReply(taskKey) {
   const msg = text.value.trim();
   const attachments = replyAttachCtl.get();
   if (!msg) { showReplyToast('消息不能为空', 'err'); return; }
-  send.disabled = true; text.disabled = true; send.textContent = '发送中…';
+  send.disabled = true; text.disabled = true; send.classList.add('busy');
   try {
     const body = { message: msg };
     if (model) body.model = model;
@@ -1420,7 +1420,7 @@ async function sendReply(taskKey) {
   } catch (e) {
     showReplyToast(e.message, 'err');
   } finally {
-    send.disabled = false; text.disabled = false; send.textContent = '发送 ⏎';
+    send.disabled = false; text.disabled = false; send.classList.remove('busy');
   }
 }
 
@@ -1457,14 +1457,14 @@ async function sendCliContinue(taskKey) {
   const sessionId = t?.meta?.sessionId;
   if (!sessionId) { showReplyToast('该会话无 sessionId，无法续接', 'err'); return; }
   if (t?.state === 'processing') { showReplyToast('会话仍在运行——先退出终端再续接，避免两个进程同写一个会话', 'err'); return; }
-  send.disabled = true; text.disabled = true; send.textContent = '续接中…';
+  send.disabled = true; text.disabled = true; send.classList.add('busy');
   try {
     const r = await adoptCliToLive({ taskKey, sessionId, msg, model, effort });
     if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
   } catch (e) {
     showReplyToast(e.message, 'err');
   } finally {
-    send.disabled = false; text.disabled = false; send.textContent = '发送 ⏎';
+    send.disabled = false; text.disabled = false; send.classList.remove('busy');
   }
 }
 window.sendCliContinue = sendCliContinue;
