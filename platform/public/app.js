@@ -183,15 +183,16 @@ function renderRuntime(rt) {
         <div class="rt-sess-label">活跃会话</div>
         <div class="rt-sess-sub">板内 ${s.board ?? 0} · 终端 ${s.cli ?? 0}</div>
       </div>
-    </div>
-    ${ccAccountUsageBarsHtml(rt.claudeUsage, rt.usagePoll)}`;
+    </div>`;
   // ---- 用量汇总：CC 全局每日 token 表格（7/15/30 天切换）----
   dailyUsageData = Array.isArray(rt.dailyUsage) ? rt.dailyUsage : null;
   renderUsageTable();
-  // ---- 每日用量趋势卡（左柱状图 · 右 7 天用量总 token 汇总，独立成卡）----
+  // ---- 账号用量卡（5h/7d 滚动窗）与每日用量趋势卡（7 天柱状图）：并排两张独立卡，各占一半宽度 ----
+  const ccAccountGrid = $('ccAccountUsageGrid');
+  if (ccAccountGrid) ccAccountGrid.innerHTML = ccAccountUsageBarsHtml(rt.claudeUsage, rt.usagePoll);
   const ccGrid = $('ccUsageGrid');
   if (ccGrid) {
-    ccGrid.innerHTML = ccDailyUsageCardHtml(rt.dailyUsage);
+    ccGrid.innerHTML = `<div class="du-wrap"><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
     renderDailyChart(rt.dailyUsage);
   }
 }
@@ -1522,7 +1523,7 @@ function ccUsageBody(cu) {
   const bars = ccUsageBarHtml('5 小时', cu.session) + ccUsageBarHtml('7 天', cu.weekAll);
   return bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
 }
-// 运行时卡片内的账号用量条（session 5h / 本周 7d 滚动窗，复用 ccUsageBarHtml）+ 刷新脚注。
+// 账号用量卡内容（session 5h / 本周 7d 滚动窗，复用 ccUsageBarHtml）+ 刷新脚注。
 // 数据来自 /api/state 的 runtime.claudeUsage + usagePoll。
 function ccAccountUsageBarsHtml(cu, pollInfo) {
   const poll = pollInfo || {};
@@ -1530,21 +1531,7 @@ function ccAccountUsageBarsHtml(cu, pollInfo) {
   const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
   const lastTxt = poll.lastRunAt ? hhmm(poll.lastRunAt) : '—';
   const foot = `<div class="cc-usage-note" style="margin-top:10px">上次刷新 ${lastTxt} · 基准约 ${intervalMin} 分钟、随机抖动拉取${poll.lastOk === false ? ' · <span style="color:var(--coral)">上次拉取失败</span>' : ''}</div>`;
-  return `<div class="cc-usage" style="margin-top:16px">${ccUsageBody(cu)}${foot}</div>`;
-}
-
-// 每日用量趋势卡：左半每日柱状图（近 7 天，全局 vs scrumws），右半 7 天用量（总 token）汇总，两栏等宽。
-function ccDailyUsageCardHtml(daily) {
-  const days = Array.isArray(daily) ? daily.slice(-7) : [];
-  const sum = days.reduce((a, d) => ({ total: a.total + d.total, platform: a.platform + d.platform }), { total: 0, platform: 0 });
-  const left = `<div class="du-wrap"><div class="du-title">每日用量趋势 · 全局 vs scrumws</div><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
-  const right = `<div class="du-stat-wrap">
-    <div class="du-title">7 天用量（总 token）</div>
-    <div class="stat-val">${compactTokens(sum.total)}</div>
-    <div class="stat-label">全局 · 近 7 天合计</div>
-    <div class="stat-sub">scrumws ${compactTokens(sum.platform)} token</div>
-  </div>`;
-  return `<div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">${left}${right}</div>`;
+  return `<div class="cc-usage">${ccUsageBody(cu)}${foot}</div>`;
 }
 
 // token 压缩显示（对齐 renderRuntime 的 compact：百万级用 K/M/B）
