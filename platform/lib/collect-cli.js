@@ -172,72 +172,104 @@ function extractTailInfo(tailLines) {
   return { last, lastTurn, lastAssistant, lastUser, lastMode, lastEnv };
 }
 
-// 统计会话 jsonl 里"当前在跑的后台 subagent"数——对 headless(entrypoint=sdk-cli，task-runner 的
-// claude -p) 与交互(entrypoint=cli) 会话统一。
+// 后台任务启动后超过死线仍未被终态 <task-notification> 配平 → 视为已结束、兜底剔除。
+// 会话崩溃 / 通知真丢时不能把看板永久钉在"N 个后台任务运行中"；真卡死超此阈值的极少，
+// 宁可少报不永久误报。Monitor 另有自带硬死线（见 bgLaunchTtlMs），比此统一阈值精确。
+const BG_STALE_MS = 15 * 60 * 1000;
+const BG_TTL_GRACE_MS = 60 * 1000;   // 自带死线的宽限：到点杀进程 + 落通知有延迟
+
+// 终态 status：只有它们代表后台任务真结束。stopped = CC 在会话 resume 时对上轮遗留后台命令的对账补发。
+const TERMINAL_STATUS = new Set(['completed', 'failed', 'killed', 'stopped']);
+
+// 读 CC 原生落盘的 toolUseResult（tool_result 行的兄弟字段，CC 侧写入）：该 tool_result 是否"起了一个
+// 后台任务"。命中返回该任务自带的硬死线 ttl(ms)，0 = 无声明死线（落 BG_STALE_MS）；null = 不是后台启动。
+// 三类后台任务的结构化签名互斥（实测全库无第四种工具落这些键）：
+//   Agent 后台 subagent                → isAsync:true（status=async_launched）
+//   Bash/PowerShell run_in_background  → backgroundTaskId（含超预算自动转后台；前台命令无此键）
+//   Monitor（恒后台）                   → taskId + timeoutMs + persistent
+// 为什么不匹配回执文案（"Command running in background with ID" / "Async agent launched successfully"）：
+// 命令自身 stdout 可能原样含该串（实测 10 条误命中，全是打印过该串的脚本输出），且真后台命令另有变体
+// 文案会漏；toolUseResult 由 CC 写入，命令输出污染不到。判据纯净度实测：13355 条前台命令全部无
+// backgroundTaskId；Agent 的 isAsync 与锚定字符串 41/41 一致。
+function bgLaunchTtlMs(r) {
+  if (!r || typeof r !== 'object') return null;
+  if (r.isAsync === true) return 0;
+  if (r.backgroundTaskId) return 0;
+  // Monitor 的 timeoutMs 是 CC 的硬死线（到点必杀进程），persistent 则跑到 TaskStop / 会话结束
+  if (r.taskId && typeof r.timeoutMs === 'number' && typeof r.persistent === 'boolean') {
+    return r.persistent ? 0 : r.timeoutMs;
+  }
+  return null;
+}
+
+// <task-notification> 的三种落盘载体（实测全库终态通知：queue-operation 506 / attachment 298 / user 195
+// 条）——只认 user 会漏掉大多数完成通知，launched 便永远配不平、看板永久误报 processing。
+function taskNotificationText(o) {
+  if (o.type === 'user' && typeof o.message?.content === 'string') return o.message.content;
+  if (o.type === 'attachment' && o.attachment?.commandMode === 'task-notification') return o.attachment.prompt;
+  if (o.type === 'queue-operation' && typeof o.content === 'string') return o.content;
+  return null;
+}
+
+// 统计会话 jsonl 里"当前在跑的后台任务"数（后台 subagent + 后台命令 + Monitor）——对 headless
+// (entrypoint=sdk-cli，task-runner 的 claude -p) 与交互(entrypoint=cli) 会话统一。
 // 为什么不用 pendingBackgroundAgentCount：它只挂在 system/turn_duration 事件上，而 turn_duration
 // 仅交互会话写、headless -p 根本不写（实测 262 个 sdk-cli 会话该事件全为 0）——对 manual/file 等
 // 走 task-runner 的任务恒 0，不通用。
-// 通用信号（都在 assistant/user 事件内容里，两种会话都有）：
-//   启动：后台 Agent 的 tool_result 含 "Async agent launched successfully"，记其 tool_use_id
-//   完成：注入的 <task-notification> 携带 <tool-use-id>，与启动的 tool_use_id 精确匹配
-//   当前在跑 = 启动集合 − 完成集合（agent 每次停都 fire notification，用集合去重）
-// 不含 Bash run_in_background（"Command running in background"）：其无自动完成通知、BashOutput 检索
-//   success≠命令结束，无法可靠判在跑，纳入会因永不减而永久误报 processing。
-// 后台 subagent 启动后超过此时长仍未被 <task-notification> 配平 → 视为已完成、按启动时间兜底剔除。
-// 后台 agent 正常几十秒~几分钟即收敛（完成即 fire notification 唤醒主进程续跑）；长期未配平多半是
-// 完成通知没落进 jsonl 或形态不可识别（实测：subagent 报告内容触发 harness 安全中和
-// dangerously-skip-permissions 时，其 task-notification 不以标准 user+纯串形态注入 jsonl，永远配不平），
-// 不能因此把看板永久钉在"1 个后台 agent 运行中"。真卡死超此阈值的极少，宁可少报不永久误报。
-const SUBAGENT_STALE_MS = 15 * 60 * 1000;
-
-export function countRunningSubagents(jsonlPath, now = Date.now()) {
+// 通用信号（三类后台任务同构，两种会话都有）：
+//   启动：tool_result 的 toolUseResult 命中后台签名（见 bgLaunchTtlMs），记其 tool_use_id
+//   完成：<task-notification> 携带 <tool-use-id> + 终态 <status>，与启动的 tool_use_id 精确匹配
+//   当前在跑 = 启动集合 − 完成集合 − 过死线（每个后台任务停时都 fire 终态通知，用集合去重）
+export function countRunningBackgroundTasks(jsonlPath, now = Date.now()) {
   let content;
   try { content = fs.readFileSync(jsonlPath, 'utf8'); } catch { return 0; }
-  const agentUseIds = new Set();   // assistant 真正发起的 Agent/Task 工具调用 id
-  const launched = new Map(), done = new Set();   // launched: tool_use_id → 启动回执时间戳(ms)，供陈旧兜底
+  // launched: tool_use_id → { at: 启动时刻, ttl: 自带死线, key: TaskStop 寻址用的任务 id }
+  const launched = new Map(), done = new Set(), stopped = new Set();
   for (const line of content.split(/\r?\n/)) {
-    // 粗筛：只 parse 可能相关的行（Agent 调用 / 后台启动回执 / 完成通知），大 jsonl 省 JSON.parse
-    if (!line.includes('"name":"Agent"') && !line.includes('"name":"Task"')
-      && !line.includes('Async agent launched successfully') && !line.includes('<task-notification>')) continue;
+    // 粗筛：只 parse 可能相关的行（后台启动回执 / 完成通知 / TaskStop 回执），大 jsonl 省 JSON.parse。
+    // 前三个键与 bgLaunchTtlMs 的签名一一对应，改判据要同步改这里。
+    if (!line.includes('"isAsync":true') && !line.includes('"backgroundTaskId":"')
+      && !line.includes('"timeoutMs":') && !line.includes('"task_id":"')
+      && !line.includes('<task-notification>')) continue;
     let o; try { o = JSON.parse(line); } catch { continue; }
-    const c = o.message?.content;
-    const ts = Date.parse(o.timestamp) || 0;   // 该行时间戳（启动回执行 = 后台 agent 启动时刻）
-    // 完成：CC 注入的独立 user 消息，content 为纯 <task-notification> 字符串（排除 assistant 复述 /
-    // tool_result 里读到的 output 文件内容——那些不是完成信号，会把在跑的 agent 误配平掉）。
-    if (o.type === 'user' && typeof c === 'string' && c.includes('<task-notification>')) {
-      const m = c.match(/<tool-use-id>(toolu_[^<]+)<\/tool-use-id>/);
-      if (m) done.add(m[1]);
+    // 完成：仅终态通知才配平。Monitor 的每条事件也发 <task-notification>（无 tool-use-id / 无 status）、
+    // 后台命令卡交互输入时发的"疑似阻塞"提醒带 tool-use-id 但无 status——都不是结束，不能据此配平。
+    const notif = taskNotificationText(o);
+    if (notif && notif.includes('<task-notification>')) {
+      const id = notif.match(/<tool-use-id>(toolu_[^<]+)<\/tool-use-id>/);
+      const st = notif.match(/<status>(\w+)<\/status>/);
+      if (id && st && TERMINAL_STATUS.has(st[1])) done.add(id[1]);
       continue;
     }
-    if (!Array.isArray(c)) continue;
-    for (const b of c) {
-      if (!b || typeof b !== 'object') continue;
-      // 记录真正的 Agent/Task 工具调用 id（assistant 发起）。后台启动回执须匹配它——排除本会话在
-      // tool_result 里恰好读到 "Async agent launched" 字符串（如读别的 jsonl / 调试打印）的误配。
-      if (b.type === 'tool_use' && (b.name === 'Agent' || b.name === 'Task') && b.id) agentUseIds.add(b.id);
-      // 启动：Agent 的 tool_result 回执（tool_use_id 命中真调用）含 "Async agent launched successfully"
-      else if (b.type === 'tool_result' && b.tool_use_id && agentUseIds.has(b.tool_use_id)) {
-        const t = typeof b.content === 'string' ? b.content
-          : Array.isArray(b.content) ? b.content.map((x) => x?.text || '').join(' ') : '';
-        if (t.includes('Async agent launched successfully')) launched.set(b.tool_use_id, ts);
-      }
+    const r = o.toolUseResult;
+    // TaskStop 主动停掉的后台任务不发终态通知（leak TaskStopTool.ts 的 call() 只 stopTask、无 enqueue），
+    // 只能读 TaskStop 自己的成功回执 { message, task_id, task_type, command } 配平——否则会一直挂到死线。
+    // persistent Monitor 只能靠 TaskStop 结束，不认这条就必然误报。
+    if (r?.task_id && r.task_type) { stopped.add(r.task_id); continue; }
+    // 启动：tool_result 行的 toolUseResult 命中后台签名；行时间戳 = 后台任务启动时刻
+    const ttl = bgLaunchTtlMs(r);
+    if (ttl === null || !Array.isArray(o.message?.content)) continue;
+    const at = Date.parse(o.timestamp) || 0;
+    const key = r.taskId || r.backgroundTaskId || r.agentId || null;   // TaskStop 按此 id 寻址
+    for (const b of o.message.content) {
+      if (b?.type === 'tool_result' && b.tool_use_id) launched.set(b.tool_use_id, { at, ttl, key });
     }
   }
   let n = 0;
-  for (const [id, launchTs] of launched) {
-    if (done.has(id)) continue;
-    // 启动已久仍未配平 → 完成通知丢失/变形（见 SUBAGENT_STALE_MS 注释），兜底剔除避免永久误报
-    if (launchTs && now - launchTs > SUBAGENT_STALE_MS) continue;
+  for (const [id, { at, ttl, key }] of launched) {
+    if (done.has(id) || (key && stopped.has(key))) continue;
+    // 启动已久仍未配平 → 会话崩溃 / 通知丢失（见 BG_STALE_MS），兜底剔除避免永久误报
+    if (at && now > at + (ttl > 0 ? ttl + BG_TTL_GRACE_MS : BG_STALE_MS)) continue;
     n++;
   }
   return n;
 }
 
 // 经 sessionId 定位 jsonl 再统计——runner-state 任务无 jsonlPath，靠 meta.sessionId 反查。
-export function backgroundAgentCountBySid(sid) {
+export function backgroundTaskCountBySid(sid) {
   if (!sid) return 0;
   const found = locateJsonlBySid(sid);
-  return found ? countRunningSubagents(found.jsonlPath) : 0;
+  return found ? countRunningBackgroundTasks(found.jsonlPath) : 0;
 }
 
 // 单个 watchlist entry → 卡片对象；jsonl 缺失时返回 stub 卡片（提示"文件已消失"）
@@ -271,7 +303,7 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
         state: stubState,
         cwd: null,
         worktreeDir: null,
-        backgroundAgentCount: 0,
+        backgroundTaskCount: 0,
         outcome: 'jsonl-missing',
         outcomeDetail: { failureReason: 'jsonl 文件已消失（可能被清理）' },
         enteredAt: sidEntry.addedAt,
@@ -322,9 +354,9 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   // 看板持有的 Mode B 会话在跑=权威 processing 信号（sdk-cli 进程不写 att.status，只能靠它判在跑）。
   // running/starting=正在生成回复 → processing；idle=一轮收敛等下一条 → awaiting-human。
   const boardState = board ? (board.bySid.get(sid) || board.byTask.get(`cli:${sid.slice(0, 8)}`) || null) : null;
-  // 后台 subagent 计数（统一维度，见 countRunningSubagents）。会话进程活着才算数——后台 agent 是该
+  // 后台任务计数（统一维度，见 countRunningBackgroundTasks）。会话进程活着才算数——后台任务是该
   // 进程的子进程，进程死则后台必随之结束，历史 jsonl 里未配平的 launched 便是陈旧值。
-  const backgroundAgentCount = countRunningSubagents(jsonlPath);
+  const backgroundTaskCount = countRunningBackgroundTasks(jsonlPath);
   const sessionAlive = !!(boardState || att || replyRunnerPid);
   let state;
   if (sidEntry.archivedAt) state = 'archived';
@@ -333,9 +365,9 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   else if (att) state = att.status === 'busy' ? 'processing' : 'awaiting-human';
   else if (replyRunnerPid) state = 'processing';
   else state = 'awaiting-human';
-  // 后台维度：主 agent 已收敛(awaiting-human)但会话活 + 仍有后台 agent 在跑 → 整体仍 processing。
+  // 后台维度：主 agent 已收敛(awaiting-human)但会话活 + 仍有后台任务在跑 → 整体仍 processing。
   // 主进程只是让出等后台完成（CC 自动注入 <task-notification> 唤醒续跑），任务未结束。
-  if (state === 'awaiting-human' && sessionAlive && backgroundAgentCount > 0) state = 'processing';
+  if (state === 'awaiting-human' && sessionAlive && backgroundTaskCount > 0) state = 'processing';
 
   const createdAt = first?.timestamp ? fmt(new Date(first.timestamp)) : sidEntry.addedAt;
   const lastActivity = last?.timestamp ? fmt(new Date(last.timestamp)) : fmt(new Date(mtimeMs));
@@ -404,8 +436,8 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
     // 工作目录/worktree 目录（与 runner 任务同字段）：cwd=base 仓库根供卡片展示，worktreeDir=实际 worktree 运行目录
     cwd: baseCwd,
     worktreeDir,
-    // 统一后台维度（runner/cli 同字段）：>0 = 该会话仍有后台 agent 在跑，卡片/详情据此渲染
-    backgroundAgentCount,
+    // 统一后台维度（runner/cli 同字段）：>0 = 该会话仍有后台任务在跑，卡片/详情据此渲染
+    backgroundTaskCount,
     outcome: state === 'done' ? 'success' : null,
     enteredAt: createdAt,
     resolvedAt: state === 'archived' ? lastActivity : state === 'done' ? doneAt : null,
