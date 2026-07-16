@@ -1459,12 +1459,12 @@ function ccUsageBarHtml(label, win) {
       <div class="cc-bar-pct">${pct.toFixed(0)}% used</div>
     </div>`;
 }
-// 用量主体：5 小时（会话）/ 7 天（本周）/ 本周 Fable 三条；未就绪 / 非订阅 / 失败各自提示
+// 用量主体：5 小时（会话）/ 7 天（本周）两条；未就绪 / 非订阅 / 失败各自提示
 function ccUsageBody(cu) {
   if (!cu || cu.error === 'pending') return '<div class="cc-usage-note">用量加载中…（首次经 CLI 查约 10s）</div>';
   if (!cu.ok) return `<div class="cc-usage-note">用量不可用（${escapeHtml(cu.error || 'unknown')}）</div>`;
   if (!cu.subscription) return '<div class="cc-usage-note">当前非订阅账号，无 5h / 7d 滚动窗用量</div>';
-  const bars = ccUsageBarHtml('5 小时', cu.session) + ccUsageBarHtml('7 天', cu.weekAll) + ccUsageBarHtml('本周 Fable', cu.weekFable);
+  const bars = ccUsageBarHtml('5 小时', cu.session) + ccUsageBarHtml('7 天', cu.weekAll);
   return bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
 }
 // 运行时面板：账号用量（左，复用 ccUsageBarHtml）+ 每日柱状图（右）。数据来自 /api/state 的 runtime.claudeUsage + usagePoll。

@@ -95,9 +95,9 @@ export function parseUsage(text) {
   };
   const session = pick(/^Current session:\s*(\d+)%\s*used(?:\s*·\s*resets\s*(.+))?$/i);
   const weekAll = pick(/^Current week \(all models\):\s*(\d+)%\s*used(?:\s*·\s*resets\s*(.+))?$/i);
-  const weekFable = pick(/^Current week \(Fable\):\s*(\d+)%\s*used(?:\s*·\s*resets\s*(.+))?$/i);
+  // 「Current week (Fable)」按需求不展示，故不解析。
   if (!session && !weekAll) return { ok: false, error: 'parse-failed' };
-  return { ok: true, subscription, session, weekAll, weekFable };
+  return { ok: true, subscription, session, weekAll };
 }
 
 // spawn 官方 CLI 查用量。Windows 须 shell:true 执行 claude.cmd（CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd）。
