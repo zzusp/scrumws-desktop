@@ -183,10 +183,11 @@ const TERMINAL_STATUS = new Set(['completed', 'failed', 'killed', 'stopped']);
 
 // 读 CC 原生落盘的 toolUseResult（tool_result 行的兄弟字段，CC 侧写入）：该 tool_result 是否"起了一个
 // 后台任务"。命中返回该任务自带的硬死线 ttl(ms)，0 = 无声明死线（落 BG_STALE_MS）；null = 不是后台启动。
-// 三类后台任务的结构化签名互斥（实测全库无第四种工具落这些键）：
+// 四类后台任务的结构化签名互斥（实测全库 1682 个 jsonl，键签名两两不重叠）：
 //   Agent 后台 subagent                → isAsync:true（status=async_launched）
 //   Bash/PowerShell run_in_background  → backgroundTaskId（含超预算自动转后台；前台命令无此键）
 //   Monitor（恒后台）                   → taskId + timeoutMs + persistent
+//   Workflow 动态工作流（恒后台）        → taskType:'local_workflow'（status=async_launched + runId + workflowName）
 // 为什么不匹配回执文案（"Command running in background with ID" / "Async agent launched successfully"）：
 // 命令自身 stdout 可能原样含该串（实测 10 条误命中，全是打印过该串的脚本输出），且真后台命令另有变体
 // 文案会漏；toolUseResult 由 CC 写入，命令输出污染不到。判据纯净度实测：13355 条前台命令全部无
@@ -195,6 +196,9 @@ function bgLaunchTtlMs(r) {
   if (!r || typeof r !== 'object') return null;
   if (r.isAsync === true) return 0;
   if (r.backgroundTaskId) return 0;
+  // Workflow：整条工作流（编排若干 subagent）在后台跑，无自带死线，跑到收敛 / TaskStop → 落 BG_STALE_MS。
+  // 它的 subagent 落在自己的 transcriptDir、不进主 jsonl，故整条工作流按一个后台任务计。
+  if (r.taskType === 'local_workflow') return 0;
   // Monitor 的 timeoutMs 是 CC 的硬死线（到点必杀进程），persistent 则跑到 TaskStop / 会话结束
   if (r.taskId && typeof r.timeoutMs === 'number' && typeof r.persistent === 'boolean') {
     return r.persistent ? 0 : r.timeoutMs;
@@ -227,9 +231,10 @@ export function countRunningBackgroundTasks(jsonlPath, now = Date.now()) {
   const launched = new Map(), done = new Set(), stopped = new Set();
   for (const line of content.split(/\r?\n/)) {
     // 粗筛：只 parse 可能相关的行（后台启动回执 / 完成通知 / TaskStop 回执），大 jsonl 省 JSON.parse。
-    // 前三个键与 bgLaunchTtlMs 的签名一一对应，改判据要同步改这里。
+    // 前四个键与 bgLaunchTtlMs 的签名一一对应，改判据要同步改这里。
     if (!line.includes('"isAsync":true') && !line.includes('"backgroundTaskId":"')
-      && !line.includes('"timeoutMs":') && !line.includes('"task_id":"')
+      && !line.includes('"timeoutMs":') && !line.includes('"local_workflow"')
+      && !line.includes('"task_id":"')
       && !line.includes('<task-notification>')) continue;
     let o; try { o = JSON.parse(line); } catch { continue; }
     // 完成：仅终态通知才配平。Monitor 的每条事件也发 <task-notification>（无 tool-use-id / 无 status）、

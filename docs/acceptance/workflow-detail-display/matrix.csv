@@ -1,0 +1,20 @@
+case,描述,round-1
+BG-1,L1 Workflow 启动后 1min → 侧栏后台任务计入 1,PASS
+BG-2,L1 启动前一刻 → 0（不凭空冒出）,PASS
+BG-3,L2 启动后 1min → 计入 1（L1 已过 15min 死线剔除）,PASS
+BG-4,L2 收到终态 failed 通知后 → 配平归 0,PASS
+BG-5,L3 启动后 1min → 计入 1,PASS
+BG-6,L3 过 15min 死线 → 兜底剔除归 0,PASS
+BG-7,负对照：撤回 collect-cli 改动后 BG-1/3/5 全 FAIL（实得 0）→ 证明改动是生效点,PASS
+BG-8,全库 6 个含 workflow 会话共 16 次启动：15 次在跑的全部由 0 变可见,PASS
+BG-9,全库唯一 1 次「启动即终态（+0.0s failed）」改动前后计数一致 → 不误计,PASS
+BG-10,全库回归：各会话 backgroundTaskCount 在会话末刻改动前后逐一未变,PASS
+ARG-1,首发 {script} → ⏺ 行取 meta.name（cloud-p0p1）而非脚本源码,PASS
+ARG-2,首发 {script} → 带上 meta.description,PASS
+ARG-3,迭代 {scriptPath} → 从文件名还原名、剥掉 -wf_ 后缀与 .js,PASS
+ARG-4,续跑 {scriptPath+resumeFromRunId} → 标出「续跑 <runId>」,PASS
+ARG-5,负对照：改动前摘要确为脚本源码 JSON 串,PASS
+ARG-6,摘要长度受控 ≤90 且不夹带源码,PASS
+RENDER-1,真 CSS + 真 app.js + 真数据 渲染截图：三种入参形态 ⏺ 行均可读,PASS
+RENDER-2,入参展开区出可读多行 JS 源码（非 JSON 转义单行）,PASS
+RENDER-3,渲染 HTML 无未转义脚本注入,PASS
