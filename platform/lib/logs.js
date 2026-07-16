@@ -267,8 +267,10 @@ export function latestGitBranchBySid(sessionId) {
 export function ccMessagesToModeBSeed(messages) {
   return (messages || []).map((m) => m.role === 'assistant'
     ? { type: 'assistant', message: { id: m.messageId || null, content: m.content || [], usage: m.usage || null, model: m.model || null } }
-    // user 事件保留磁盘 uuid（顶层，对齐 CC jsonl 形状）→ live 详情里 seed 的历史消息也带 uuid，可「改写重跑」
-    : { type: 'user', uuid: m.uuid || null, message: { content: m.content || [] } });
+    // user 事件保留磁盘 uuid（顶层，对齐 CC jsonl 形状）→ live 详情里 seed 的历史消息也带 uuid，可「改写重跑」；
+    // 同样保留 isMeta —— caveat / system-reminder / Skill 注入正文等系统性 user 消息全靠它归「运行输出」，
+    // 丢了就会在 live 详情里被错渲成右侧用户气泡（磁盘路径有 isMeta 所以一直是对的）。
+    : { type: 'user', uuid: m.uuid || null, isMeta: !!m.isMeta, message: { content: m.content || [] } });
 }
 
 // 独立入口：从 sessionId 对应的 CC jsonl 提取真人 cc:（供 collect.js 每任务展示卡片用）

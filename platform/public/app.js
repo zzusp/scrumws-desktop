@@ -2002,15 +2002,15 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
   units.forEach((u) => {
     if (u.kind === 'u') {
       // 分派（学 claude-code-session/server/lib/system-tags.ts 与 web/MessageBubble.tsx）：
-      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE / INJECTED_RETRY_RE / INTERRUPT_RE / SKILL_LAUNCH_RE 命中 → 归 Claude Code
+      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE / INJECTED_RETRY_RE / INTERRUPT_RE / SKILL_BODY_RE 命中 → 归 Claude Code
       //      运行输出（左侧细line）：<local-command-*> + <system-reminder> + CC/runner 注入的工具重试消息 +
-      //      用户打断标记 + Skill 启动回执（都非真人发送）
+      //      用户打断标记 + Skill 注入的技能正文（都非真人发送）
       //   2. CMD_HEAD_RE 命中 → 提取 <command-args> body 当用户真实 prompt；无 args → 整条跳过（/clear /model）
-      //   3. 兜底 isMeta 字段 → 同上归运行输出
+      //   3. 兜底 isMeta 字段 → 同上归运行输出（磁盘路径的 caveat/system-reminder/Skill 正文走这条）
       //   4. 否则 → 正常 user 气泡（右侧只放真人真实发送的消息）
       const text = (u.m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
       if (LOCAL_CMD_CAVEAT_RE.test(text)) return;   // 跑本地命令注入的 caveat 样板(+命令块) → 纯运行噪声，整条不显示
-      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text) || INJECTED_RETRY_RE.test(text) || INTERRUPT_RE.test(text) || SKILL_LAUNCH_RE.test(text)) {
+      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text) || INJECTED_RETRY_RE.test(text) || INTERRUPT_RE.test(text) || SKILL_BODY_RE.test(text)) {
         blocks.push({ t: 'meta', m: u.m });
       } else if (CMD_HEAD_RE.test(text)) {
         const argsBody = pickCommandArgs(text);
@@ -2102,16 +2102,17 @@ const LOCAL_CMD_CAVEAT_RE = /^\s*(?:<local-command-caveat>\s*)?Caveat: The messa
 //      sendUserMessage 的原文）——模型把 tool_use 输出成了文本、没真执行，runner 补一条让它用结构化工具重发。
 //   3. INTERRUPT_RE：用户打断某轮时 CC 注入的 role:user 标记（[Request interrupted by user] / …for tool use）——
 //      是"打断"这一运行事件的记录、不是用户说的话，绝不能当用户气泡（还会误带上「改写重跑」按钮）。
-//   4. SKILL_LAUNCH_RE：Skill 工具的启动回执（Launching skill: run / dws / plugin:skill）。磁盘 jsonl 里它是
-//      结构化 tool_result（已被 units 过滤、配对到 ⏺ Skill 行下的 ⎿，不走这里）；但 live 流把它当普通 user
-//      文本消息送来时会落到兜底分支被渲成用户气泡 —— 按内容识别归运行输出。
+//   4. SKILL_BODY_RE：Skill 加载时 CC 注入的技能正文（首行恒为 "Base directory for this skill: <path>"，
+//      跟在 Skill 工具的 ⎿ "Launching skill: X" 回执之后）——是被塞进上下文的技能说明、不是真人发的话。
+//      磁盘 jsonl 里它带 isMeta:true（靠下面的 isMeta 分支即可归位）；但 live 流不带 isMeta envelope，
+//      只能按这个稳定首行识别，否则被错渲成右侧用户气泡。
+//      （注：⎿ "Launching skill: X" 那行回执本身是结构化 tool_result，已被 units 过滤配对，不经这里。）
 // 磁盘 jsonl 里 CC 那条带 isMeta:true（disk 路径靠 isMeta 也能归位），但 runner 注入的这条 isMeta 缺失、
-// 且 Mode B live 的 stream-json 输出根本不带 isMeta envelope（见 mbToRounds 硬编 isMeta:false），
-// 两路都只能按内容识别，否则被错渲成用户气泡。
+// 且 Mode B live 的 stream-json 输出根本不带 isMeta envelope，两路都只能按内容识别，否则被错渲成用户气泡。
 const CC_SYNTHETIC_RE = /^\s*Your tool call was malformed and could not be parsed\. Please retry\.\s*$/;
 const INJECTED_RETRY_RE = /把工具调用输出成了文本[\s\S]*请用结构化工具重新发起这次调用/;
 const INTERRUPT_RE = /^\s*\[Request interrupted by user(?: for tool use)?\]\s*$/;
-const SKILL_LAUNCH_RE = /^\s*Launching skill:\s*\S+\s*$/;
+const SKILL_BODY_RE = /^\s*Base directory for this skill:\s*\S/;
 function pickCommandArgs(text) {
   if (!CMD_HEAD_RE.test(text)) return null;
   const m = text.match(/<command-args>([\s\S]*?)<\/command-args>/);
@@ -3153,8 +3154,10 @@ function mbToRounds() {
       curAsst = null;
       let content = ev.message.content;
       if (typeof content === 'string') content = [{ type: 'text', text: content }];
-      // uuid：seed 的历史消息带（ccMessagesToModeBSeed 透传磁盘 uuid）→ 详情可「改写重跑」；live 流的新消息无 uuid
-      messages.push({ role: 'user', at: (content || [])[0]?._ts || null, uuid: ev.uuid || null, content: content || [], isMeta: false });
+      // uuid / isMeta：seed 的历史消息带（ccMessagesToModeBSeed 透传磁盘 uuid + isMeta）→ 详情可「改写重跑」、
+      // caveat/system-reminder/Skill 注入正文能归运行输出；live 流的新消息两者都不带（stream-json 无此 envelope），
+      // 那条路靠 renderCcFlow 的内容识别兜（SKILL_BODY_RE 等）。此处绝不能硬编 isMeta:false 覆盖 seed 的真值。
+      messages.push({ role: 'user', at: (content || [])[0]?._ts || null, uuid: ev.uuid || null, content: content || [], isMeta: !!ev.isMeta });
     }
   }
   const inflight = mb.state === 'running' || mb.state === 'starting';
