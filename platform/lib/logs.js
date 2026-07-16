@@ -84,7 +84,11 @@ function parseCcSession(jsonlText) {
   const activeSet = new Set();
   for (let cur = leaf, guard = 0; cur && guard < 100000; guard++) {
     activeSet.add(cur.uuid);
-    cur = cur.parentUuid ? byUuid.get(cur.parentUuid) : null;
+    // /compact 落的 system:compact_boundary 事件 parentUuid 恒为 null（CC 有意断链、另起新根），
+    // 指向 compact 前历史的真链接放在 logicalParentUuid → 只认 parentUuid 会在此以为"已到根"停下，
+    // 把整段 compact 前历史全判成撤回丢掉（实测 943 条只剩 5 条、assistant 归零、详情近乎空白）。
+    const parentUuid = cur.parentUuid || cur.logicalParentUuid;
+    cur = parentUuid ? byUuid.get(parentUuid) : null;
   }
   const onDeadBranch = (e) => !!leaf && !!e.uuid && !activeSet.has(e.uuid);
 
