@@ -462,6 +462,21 @@ select.field-input{background:var(--card)}
 /* 发送区与消息流同宽居中：水平内边距对齐 #modalBody 的居中列，两侧留白露出左栏背景（不再是整条 glass 横幅）。 */
 .reply-box{flex:none;margin-top:0;padding:12px max(7%, (100% - var(--chat-col)) / 2);background:transparent;border:none;border-radius:0}
 
+/* 后台任务栏：夹在消息流与发送区之间，与二者同宽居中（padding 对齐 --chat-col 列）。
+   琥珀色沿用「后台在跑」的既有语义色；flex:none 使其不参与滚动、常驻可见。 */
+.bg-tasks{flex:none;padding:0 max(7%, (100% - var(--chat-col)) / 2);margin-bottom:2px}
+.bg-tasks-inner{border:1px solid color-mix(in srgb, var(--amber) 30%, transparent);background:color-mix(in srgb, var(--amber) 7%, var(--card));border-radius:var(--r-lg);padding:7px 10px;display:flex;flex-direction:column;gap:5px}
+.bg-tasks-head{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--mut)}
+.bg-tasks-head b{color:var(--amber);font-weight:600}
+.bg-task-row{display:flex;align-items:center;gap:8px;font-size:12px;min-width:0}
+.bg-task-kind{flex:none;font-size:10.5px;padding:1px 6px;border-radius:999px;background:color-mix(in srgb, var(--amber) 16%, transparent);color:var(--amber);white-space:nowrap}
+.bg-task-desc{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink2)}
+.bg-task-act{flex:none;padding:2px 8px;font-size:11px;border:1px solid var(--input);border-radius:var(--r-sm);background:var(--card);color:var(--ink2);cursor:pointer}
+.bg-task-act:hover{border-color:var(--ring)}
+.bg-task-act:disabled{opacity:.45;cursor:not-allowed}
+.bg-task-act.danger:hover{border-color:var(--amber);color:var(--amber)}
+.bg-task-out{max-height:180px;overflow:auto;margin:0;padding:8px 10px;background:var(--bg);border:1px solid var(--input);border-radius:var(--r-sm);font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:var(--ink2)}
+
 /* 消息时间线：user 右对齐软气泡 */
 .msg-user{padding:12px 0;display:flex;flex-direction:column;align-items:flex-end}
 .msg-user-bubble{max-width:82%;background:var(--muted);border-radius:var(--r-2xl);padding:10px 16px;line-height:1.7;white-space:pre-wrap;word-break:break-word;font-size:13px;color:var(--ink)}
@@ -1003,6 +1018,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
       <div id="view-task" class="view" style="display:none">
         <div class="detail-main">
           <div id="modalBody"></div>
+          <!-- 后台任务栏（内容区与发送区之间，flex:none 常驻）：数据源是 CC 推的 background_tasks_changed
+               全表（后台命令 / Monitor / subagent），可查看输出、可停止（走 stop_task 控制请求）。
+               仅 Mode B 会话有此能力——控制通道 = 该 claude 进程的 stdin。 -->
+          <div id="modalBgTasks" class="bg-tasks" style="display:none"></div>
           <!-- 继续对话（底部固定条；三态自适应：可对话 / 正在处理 / 需重发）-->
           <div id="modalReplyBox" class="reply-box" style="display:none">
             <div class="reply-header">

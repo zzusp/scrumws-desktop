@@ -1,0 +1,23 @@
+case,desc,round-1
+P1,CC 2.1.211 推 background_tasks_changed 全表,PASS
+P2,background_tasks_changed 增删都推(结束推空列表),PASS
+P3,control_request stop_task 被接受(control_response success),PASS
+P4,stop_task 后收到终态 task_notification(status=stopped),PASS
+A1,会话 info 暴露 backgroundTasks 全表,PASS
+A2,每条带 task_id/task_type/description,PASS
+A3,查看输出能定位 CC 的 .output 文件,PASS
+A4,stop-task 接口返回 ok,PASS
+A5,停掉后 CC 推移除、数据自动收敛,PASS
+A6,被停的正是指定那条(零猜测实证),PASS
+A7,已停任务查看输出不崩、给可读结果,PASS
+U1,栏可见,PASS
+U2,基线非退化(非 0×0),PASS
+U3,位置在内容展示区下方,PASS
+U4,位置在发送区上方,PASS
+U5,与发送区同宽居中(左边缘对齐),PASS
+U6,每条任务各一行,PASS
+U7,类型标签按 task_type 映射,PASS
+U8,描述取自 CC 的 description,PASS
+U9,每行有「查看」「停止」,PASS
+U10,栏头显示条数,PASS
+U11,负对照:无后台任务时整条隐藏,PASS

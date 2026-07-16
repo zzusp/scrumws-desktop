@@ -3050,19 +3050,35 @@ let mb = null;   // { id, sse, transcript:[], liveText, perms:[], info, state, s
 // 逐字 / 权限卡 / 打断 / 状态行渲染进 #modalBody；会话状态并入右侧 renderTaskSide；composer 走 #modalReplyBox。
 
 // 只关前端 SSE，不 close 后端进程（离开详情 / 切任务时用；会话继续跑，再进来重连回放）
-function mbDetach() { mbStopStatusTimer(); if (mbFlushRaf) { cancelAnimationFrame(mbFlushRaf); mbFlushRaf = null; } if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } } mb = null; }
+function mbDetach() {
+  mbStopStatusTimer();
+  if (mbFlushRaf) { cancelAnimationFrame(mbFlushRaf); mbFlushRaf = null; }
+  if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } }
+  mb = null;
+  // 后台任务栏属于会话——离开详情/切任务必须清掉，否则残留在下一个任务上
+  const bg = $('modalBgTasks');
+  if (bg) { bg.style.display = 'none'; bg.innerHTML = ''; }
+}
 
 function loadSession(id) {
   if (mb && mb.id === id && mb.sse) return;   // 已在该会话，避免重复连
   mbDetach();
-  mb = { id, sse: null, transcript: [], liveText: '', perms: [], info: {}, state: 'starting', syncing: true, liveUsage: null, turnStartedAt: null, gerundSeed: 0 };
+  mb = { id, sse: null, transcript: [], liveText: '', perms: [], info: {}, state: 'starting', syncing: true, liveUsage: null, turnStartedAt: null, gerundSeed: 0, bgTasks: [], bgOutFor: null };
   $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">连接实时会话…</div>';
   mbSyncLiveHead();
   const es = new EventSource(`/api/session/stream?id=${encodeURIComponent(id)}`);
   mb.sse = es;
-  es.addEventListener('info', (e) => { try { mb.info = JSON.parse(e.data); mb.state = mb.info.state || mb.state; mbSyncLiveHead(); } catch { /* ignore */ } });
+  // info 里带后台任务当前全表：transcript 有上限（会 shift 丢头），万一回放里已无 background_tasks_changed
+  // 事件，仍能据此还原；回放中若有更新的该事件会覆盖它（回放尾 = 最新态）。
+  es.addEventListener('info', (e) => {
+    try {
+      mb.info = JSON.parse(e.data); mb.state = mb.info.state || mb.state;
+      if (Array.isArray(mb.info.backgroundTasks)) mb.bgTasks = mb.info.backgroundTasks;
+      mbSyncLiveHead();
+    } catch { /* ignore */ }
+  });
   es.addEventListener('synced', () => {
-    mb.syncing = false; mbRenderBody(); mbSyncLiveHead();
+    mb.syncing = false; mbRenderBody(); mbSyncLiveHead(); mbRenderBgTasks();
     updateReplyBoxAvailability(modalPollTaskKey);   // 装配 live composer（常开输入 + 打断 + mbSend）
     // 从 CLI 详情「发送消息」收养而来：历史回放完成后自动发出用户那条消息（mbSend 乐观回显 → 可见）
     if (pendingCliMessage) { const m = pendingCliMessage; pendingCliMessage = null; $('modalReplyText').value = m; mbSend(); }
@@ -3105,6 +3121,8 @@ function mbOnEvent(ev) {
     case 'result': mb.liveText = ''; mb.state = 'idle'; mb.turnStartedAt = null; if (mb.liveUsage) { mb.liveUsage.active = false; mb.liveUsage.thinking = false; } if (!mb.syncing) { mbRenderBody(); mbSyncLiveHead(); } return;
     case 'system':
       if (ev.subtype === 'init') { if (ev.session_id) mb.info.claudeSessionId = ev.session_id; mb.state = 'running'; if (!mb.syncing) mbSyncLiveHead(); }
+      // 后台任务全表：CC 增删都全量推（起任务推 [x]、任务结束推 []）→ 直接覆盖，不自行增删
+      else if (ev.subtype === 'background_tasks_changed') { mb.bgTasks = Array.isArray(ev.tasks) ? ev.tasks : []; if (!mb.syncing) mbRenderBgTasks(); }
       return;
     case 'control_request':
       if (ev.request && ev.request.subtype === 'can_use_tool') {
@@ -3117,6 +3135,73 @@ function mbOnEvent(ev) {
     default: return;
   }
 }
+
+// ---- 后台任务栏（消息流与发送区之间）----
+// 数据源：CC 的 system/background_tasks_changed 全量推送（见 session-manager）。不反读 jsonl、不扫进程——
+// 那两条路要么漏（subagent 没有独立进程、subagent 起的后台任务不进主 jsonl）、要么得靠猜。
+// task_type 取值见 CC 的 Task.ts；Monitor 与后台命令同为 local_bash（事件不带 kind，无法再细分），
+// 二者的 description 已足够区分，不强行猜。
+const MB_TASK_KIND = {
+  local_bash: '后台命令',
+  local_agent: 'subagent',
+  remote_agent: '云端会话',
+  in_process_teammate: '队友',
+  local_workflow: '工作流',
+  monitor_mcp: 'Monitor',
+  dream: 'dream',
+};
+
+function mbRenderBgTasks() {
+  const el = $('modalBgTasks');
+  if (!el) return;
+  const tasks = (mb?.bgTasks || []).filter((t) => t && t.task_id);
+  if (!tasks.length) { el.style.display = 'none'; el.innerHTML = ''; mb && (mb.bgOutFor = null); return; }
+  el.style.display = '';
+  const rows = tasks.map((t) => {
+    const kind = MB_TASK_KIND[t.task_type] || t.task_type || '任务';
+    const open = mb.bgOutFor === t.task_id;
+    return `<div class="bg-task-row">
+      <span class="bg-task-kind">${escapeHtml(kind)}</span>
+      <span class="bg-task-desc" title="${escapeAttr(t.description || t.task_id)}">${escapeHtml(t.description || t.task_id)}</span>
+      <button type="button" class="bg-task-act" onclick="mbToggleTaskOutput('${escapeAttr(t.task_id)}')">${open ? '收起' : '查看'}</button>
+      <button type="button" class="bg-task-act danger" onclick="mbStopTask('${escapeAttr(t.task_id)}')">停止</button>
+    </div>${open ? `<pre class="bg-task-out" id="mbTaskOut">加载中…</pre>` : ''}`;
+  }).join('');
+  el.innerHTML = `<div class="bg-tasks-inner">
+    <div class="bg-tasks-head"><b>后台任务 ${tasks.length}</b><span>主进程已让出，等它们完成</span></div>
+    ${rows}
+  </div>`;
+  if (mb.bgOutFor) mbLoadTaskOutput(mb.bgOutFor);
+}
+
+function mbToggleTaskOutput(taskId) {
+  if (!mb) return;
+  mb.bgOutFor = mb.bgOutFor === taskId ? null : taskId;
+  mbRenderBgTasks();
+}
+
+async function mbLoadTaskOutput(taskId) {
+  const pre = $('mbTaskOut');
+  if (!pre || !mb) return;
+  try {
+    const j = await api(`/api/session/task-output?id=${encodeURIComponent(mb.id)}&taskId=${encodeURIComponent(taskId)}`);
+    if (!j.ok) { pre.textContent = j.error || '读取失败'; return; }
+    pre.textContent = (j.truncated ? '…（只显示尾部）\n' : '') + (j.text || '（暂无输出）');
+    pre.scrollTop = pre.scrollHeight;
+  } catch (e) { pre.textContent = `读取失败：${e.message}`; }
+}
+
+// 停后台任务：走 CC 的 stop_task 控制请求（与 TaskStopTool 同一条 stopTask）。停掉后 CC 会推
+// background_tasks_changed（移除）→ 栏自动更新，这里不做乐观摘除。
+async function mbStopTask(taskId) {
+  if (!mb) return;
+  try {
+    const j = await api(`/api/session/stop-task?id=${encodeURIComponent(mb.id)}&taskId=${encodeURIComponent(taskId)}`, { method: 'POST' });
+    if (!j.ok) toast(`停止失败：${j.error}`);
+  } catch (e) { toast(`停止失败：${e.message}`); }
+}
+window.mbToggleTaskOutput = mbToggleTaskOutput;
+window.mbStopTask = mbStopTask;
 
 // 把 Mode B settled 事件转成 renderDetailTab 认识的 rounds 形状（复用工具/思考/token/每步计时渲染）。
 // stream-json 的 assistant 事件是增量（同 message.id 拆成 thinking/text/tool_use 各一条）——按 id 合并，
