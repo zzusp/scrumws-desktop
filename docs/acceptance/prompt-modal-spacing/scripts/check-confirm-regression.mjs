@@ -1,5 +1,6 @@
-// 回归：customPrompt 开关一轮后，共用 #confirmBody 的 customConfirm/customAlert 必须拿回 pre-wrap
-// （customPrompt 会给 body 挂 prompt-body 类关掉 pre-wrap，cleanup 不还原就会污染下一个 confirm）
+// 回归：pre-wrap 从 .confirm-body 下沉到 .confirm-text 之后
+//  - 往 #confirmBody 塞「缩进过的 HTML」不再渲染出空行（源头治理的直接证明）
+//  - customConfirm/customAlert 的动态纯文本 \n 仍靠 .confirm-text 断行（能力没丢）
 // 用法: node check-confirm-regression.mjs   （需 SCRUMWS_PORT=8931 的 verify server 在跑）
 import puppeteer from 'file:///D:/project/scrumws-desktop/node_modules/puppeteer-core/lib/puppeteer/puppeteer-core.js';
 
@@ -27,33 +28,85 @@ const check = (name, got, want) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  (got=${got} want=${want})`);
   if (!ok) fails.push(name);
 };
+const esc = async () => { await page.keyboard.press('Escape'); await sleep(150); };
 
-// 1) prompt 打开时 body 关掉 pre-wrap
-// 注意：evaluate 回调必须用块体、别 return customPrompt 的 Promise——puppeteer 会 await 它，而它只在用户交互后 resolve（会挂死）
+// 注意：evaluate 回调必须用块体、别 return customPrompt/customConfirm 的 Promise——
+// puppeteer 会 await 它，而它只在用户交互后 resolve（会挂死）
+
+// --- 源头：body 不再有 pre-wrap，缩进 HTML 不产生空行 ---
 await page.evaluate(() => { window.customPrompt({ title: '任务描述', message: '<span>备注</span>', initial: '' }); });
 await sleep(200);
-check('prompt 打开时 white-space=normal',
+check('confirmBody white-space=normal（基类就不带 pre-wrap）',
   await page.evaluate(() => getComputedStyle(document.getElementById('confirmBody')).whiteSpace), 'normal');
-
-// 2) Esc 关闭后 body 还原 confirm-body
-await page.keyboard.press('Escape');
-await sleep(200);
-check('prompt 关闭后 className 还原',
+check('customPrompt 不再改 className（无需 cleanup 还原）',
   await page.evaluate(() => document.getElementById('confirmBody').className), 'confirm-body');
+// customPrompt 用的仍是缩进过的模板字面量 —— 源头治好了它就该正常
+check('标题↓小字 < 20px（模板缩进不再渲染成空行）',
+  await page.evaluate(() => {
+    const t = document.getElementById('confirmTitle').getBoundingClientRect();
+    const m = document.querySelector('.prompt-msg').getBoundingClientRect();
+    return Math.round(m.top - t.bottom) < 20;
+  }), 'true');
+await esc();
 
-// 3) 之后开 customConfirm：pre-wrap 回来了，且纯文本换行仍然断行（两行 → 高度 > 单行）
+// --- 能力没丢：confirm 的动态纯文本 \n 仍断行 ---
 const confirmRes = await page.evaluate(async () => {
   window.customConfirm({ title: '确认', message: '第一行\n第二行' });
   await new Promise((r) => setTimeout(r, 200));
-  const b = document.getElementById('confirmBody');
-  return { ws: getComputedStyle(b).whiteSpace, height: Math.round(b.getBoundingClientRect().height) };
+  const txt = document.querySelector('#confirmBody .confirm-text');
+  return { ws: getComputedStyle(txt).whiteSpace, height: Math.round(txt.getBoundingClientRect().height) };
 });
-check('confirm 拿回 pre-wrap', confirmRes.ws, 'pre-wrap');
+check('confirm 的 .confirm-text 带 pre-wrap', confirmRes.ws, 'pre-wrap');
 check('confirm 纯文本 \\n 仍断成两行(高度>30)', confirmRes.height > 30, 'true');
-await page.keyboard.press('Escape');
-await sleep(150);
+await esc();
 
-// 4) 另两个 customPrompt 调用点（重命名 / rewind）同样紧凑：标题↓小字 应 < 20px
+// customAlert 同一条路径（错误弹窗常塞 escapeHtml(e.message)，可能带真 \n）
+const alertRes = await page.evaluate(async () => {
+  window.customAlert({ title: '操作失败', message: 'boom\nstack line 2' });
+  await new Promise((r) => setTimeout(r, 200));
+  const txt = document.querySelector('#confirmBody .confirm-text');
+  return { ws: getComputedStyle(txt).whiteSpace, height: Math.round(txt.getBoundingClientRect().height) };
+});
+check('alert 的 .confirm-text 带 pre-wrap', alertRes.ws, 'pre-wrap');
+check('alert 纯文本 \\n 仍断成两行(高度>30)', alertRes.height > 30, 'true');
+await esc();
+
+// --- 源头证明：往 body 塞缩进过的多行 HTML，不再多出空行 ---
+// 修复前 confirm-body 的 pre-wrap 会把每处 "\n      " 渲染成 ~42px 空白；修复后应与紧凑写法等高
+// 必须在 modal 可见时量：display:none 下 height 恒为 0，两边都 0 会假 PASS（下面 tight>0 就是防这个）
+const indentRes = await page.evaluate(async () => {
+  window.customConfirm({ title: '量缩进', message: 'x' });
+  await new Promise((r) => setTimeout(r, 200));
+  const b = document.getElementById('confirmBody');
+  const measure = (html) => { b.innerHTML = html; return Math.round(b.getBoundingClientRect().height); };
+  const tight = measure('<div>甲</div><div>乙</div>');
+  const indented = measure(`
+      <div>甲</div>
+      <div>乙</div>
+  `);
+  return { tight, indented };
+});
+check('缩进对照基线非 0（modal 可见，断言没退化成永真）', indentRes.tight > 0, 'true');
+check(`缩进 HTML 与紧凑 HTML 等高（缩进不再变空行，tight=${indentRes.tight}px）`, indentRes.indented, indentRes.tight);
+
+// 负对照：把 pre-wrap 加回 body（= 修复前的样子），上面那条断言必须 FAIL——
+// 否则它只是碰巧通过、根本抓不到这个 bug
+const negative = await page.evaluate(async () => {
+  const b = document.getElementById('confirmBody');
+  b.style.whiteSpace = 'pre-wrap';
+  const measure = (html) => { b.innerHTML = html; return Math.round(b.getBoundingClientRect().height); };
+  const tight = measure('<div>甲</div><div>乙</div>');
+  const indented = measure(`
+      <div>甲</div>
+      <div>乙</div>
+  `);
+  b.style.whiteSpace = '';
+  return { tight, indented, delta: indented - tight };
+});
+check(`负对照：pre-wrap 一加回来缩进就变空行（+${negative.delta}px，证明断言有效）`, negative.delta > 20, 'true');
+await esc();
+
+// --- 另两个 customPrompt 调用点 ---
 for (const [name, args] of [
   ['重命名任务', { title: '重命名任务', message: '<span>留空恢复默认</span>', initial: '某任务标题', maxlength: 200 }],
   ['rewind', { title: '改写并从这里重新执行（rewind）', message: '<span>同一会话内 rewind</span>', initial: '原消息内容' }],
@@ -66,11 +119,10 @@ for (const [name, args] of [
     return Math.round(m.top - t.bottom);
   }, args);
   check(`${name} 标题↓小字 < 20px`, gap < 20, 'true');
-  await page.keyboard.press('Escape');
-  await sleep(150);
+  await esc();
 }
 
-// 5) 长文本 autoGrow 仍生效（内容多撑高，封顶 320）
+// --- 长文本 autoGrow 仍生效 ---
 const grown = await page.evaluate(async () => {
   window.customPrompt({ title: '任务描述', message: '<span>备注</span>', initial: 'x\n'.repeat(40) });
   await new Promise((r) => setTimeout(r, 250));

@@ -1,9 +1,14 @@
-case,desc,round-1
-C1,编辑任务描述弹窗间距收紧（标题↓小字 53→10px、小字↓textarea 53→8px）,PASS
-C2,prompt 打开时 confirmBody white-space=normal,PASS
-C3,prompt 关闭后 className 还原成 confirm-body,PASS
-C4,之后开 customConfirm 拿回 pre-wrap,PASS
-C5,customConfirm 纯文本 \n 仍断成两行,PASS
-C6,重命名任务弹窗同样收紧,PASS
-C7,rewind 改写弹窗同样收紧,PASS
-C8,长文本 autoGrow 撑高且封顶 320px,PASS
+case,desc,round-1,round-2
+C1,编辑任务描述弹窗间距收紧（标题↓小字 53→10px、小字↓textarea 53→8px）,PASS,PASS
+C2,confirmBody white-space=normal,PASS,PASS
+C3,prompt 关闭后不污染下一个 confirm,PASS,PASS
+C4,customConfirm 的 message 容器带 pre-wrap,PASS,PASS
+C5,customConfirm 纯文本 \n 仍断成两行,PASS,PASS
+C6,重命名任务弹窗同样收紧,PASS,PASS
+C7,rewind 改写弹窗同样收紧,PASS,PASS
+C8,长文本 autoGrow 撑高且封顶 320px,PASS,PASS
+C9,customAlert 的 message 容器带 pre-wrap,-,PASS
+C10,customAlert 纯文本 \n 仍断成两行,-,PASS
+C11,源头：往 body 塞缩进 HTML 与紧凑 HTML 等高(43px),-,PASS
+C12,负对照：pre-wrap 加回 body 则 C11 差 +127px（断言有效）,-,PASS
+C13,customPrompt 不再改 className（无需 cleanup 还原）,-,PASS
