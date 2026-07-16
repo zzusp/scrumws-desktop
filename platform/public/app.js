@@ -1990,15 +1990,15 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
   units.forEach((u) => {
     if (u.kind === 'u') {
       // 分派（学 claude-code-session/server/lib/system-tags.ts 与 web/MessageBubble.tsx）：
-      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE / INJECTED_RETRY_RE / INTERRUPT_RE / SKILL_BODY_RE 命中 → 归 Claude Code
-      //      运行输出（左侧细line）：<local-command-*> + <system-reminder> + CC/runner 注入的工具重试消息 +
-      //      用户打断标记 + Skill 注入的技能正文（都非真人发送）
+      //   1. SYSTEM_TAG_RE / CC_SYNTHETIC_RE / INJECTED_RETRY_RE / INTERRUPT_RE / TASK_NOTIFICATION_RE /
+      //      SKILL_BODY_RE 命中 → 归 Claude Code 运行输出（左侧细line）：<local-command-*> + <system-reminder> +
+      //      CC/runner 注入的工具重试消息 + 用户打断标记 + 后台任务通知 + Skill 注入的技能正文（都非真人发送）
       //   2. CMD_HEAD_RE 命中 → 提取 <command-args> body 当用户真实 prompt；无 args → 整条跳过（/clear /model）
       //   3. 兜底 isMeta 字段 → 同上归运行输出（磁盘路径的 caveat/system-reminder/Skill 正文走这条）
       //   4. 否则 → 正常 user 气泡（右侧只放真人真实发送的消息）
       const text = (u.m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
       if (LOCAL_CMD_CAVEAT_RE.test(text)) return;   // 跑本地命令注入的 caveat 样板(+命令块) → 纯运行噪声，整条不显示
-      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text) || INJECTED_RETRY_RE.test(text) || INTERRUPT_RE.test(text) || SKILL_BODY_RE.test(text)) {
+      if (SYSTEM_TAG_RE.test(text) || CC_SYNTHETIC_RE.test(text) || INJECTED_RETRY_RE.test(text) || INTERRUPT_RE.test(text) || TASK_NOTIFICATION_RE.test(text) || SKILL_BODY_RE.test(text)) {
         blocks.push({ t: 'meta', m: u.m });
       } else if (CMD_HEAD_RE.test(text)) {
         const argsBody = pickCommandArgs(text);
@@ -2058,15 +2058,19 @@ function renderCcFlow(units, resultById, forceOpen, inflight) {
 // 命令 XML 由 renderCcFlow 前置分派处理（args body 变正常 user；无 args 命令直接跳过）。
 function renderMetaTurn(m) {
   const text = (m.content || []).map((c) => (c.type === 'text' ? String(c.text || '') : '')).join('\n');
+  // 后台任务通知：只留 <summary>（+ Monitor 的 <event>），并用后台维度的琥珀色——它不是异常，
+  // 与其余 meta（工具重试 / 打断 / system-reminder，珊瑚色 = 异常）区分开。
+  const notif = pickTaskNotification(text);
   // 剥 XML tag 只留内容：<local-command-stdout>Enabled plan mode</local-command-stdout> → Enabled plan mode
-  const stripped = text.replace(/<\/?(?:local-command-[a-z-]+|system-reminder|caveat)>/gi, '').trim();
+  const stripped = notif ?? text.replace(/<\/?(?:local-command-[a-z-]+|system-reminder|caveat)>/gi, '').trim();
   const trimmed = (stripped || text).replace(/\s+/g, ' ').trim();
   const short = trimmed.length > 300 ? trimmed.slice(0, 300) + '…' : trimmed;
   if (!short) return '';
+  const tone = notif ? 'var(--amber)' : 'var(--coralT)';
   return `
     <div class="cc-line cc-sysnote" title="${escapeAttr(fmtTime(m.at))}">
-      <span class="cc-dot err">⏺</span>
-      <div style="flex:1;min-width:0;font-size:12px;color:var(--coralT);line-height:1.6;white-space:pre-wrap;word-break:break-word">${escapeHtml(short)}</div>
+      <span class="cc-dot${notif ? '' : ' err'}"${notif ? ' style="color:var(--amber)"' : ''}>⏺</span>
+      <div style="flex:1;min-width:0;font-size:12px;color:${tone};line-height:1.6;white-space:pre-wrap;word-break:break-word">${escapeHtml(short)}</div>
     </div>`;
 }
 
@@ -2100,6 +2104,20 @@ const LOCAL_CMD_CAVEAT_RE = /^\s*(?:<local-command-caveat>\s*)?Caveat: The messa
 const CC_SYNTHETIC_RE = /^\s*Your tool call was malformed and could not be parsed\. Please retry\.\s*$/;
 const INJECTED_RETRY_RE = /把工具调用输出成了文本[\s\S]*请用结构化工具重新发起这次调用/;
 const INTERRUPT_RE = /^\s*\[Request interrupted by user(?: for tool use)?\]\s*$/;
+//   4. TASK_NOTIFICATION_RE：后台任务（后台命令 / Monitor / subagent）起止时 CC 注入的通知——CC 用 role:user
+//      注入它来唤醒让出的主进程续跑，故它形如用户消息但绝非用户所说。同样归运行输出。
+const TASK_NOTIFICATION_RE = /^\s*<task-notification>/;
+
+// task-notification 只留人话：<summary> 是给人看的那句（"Background command "X" completed (exit code 0)"），
+// <event> 是 Monitor 每条事件的正文（有则并显）；task-id / tool-use-id / output-file 是机器字段，
+// 对读对话的人是噪音。取不到 summary（形态变了）→ 返回 null，退回按原文显示，不静默吞消息。
+function pickTaskNotification(text) {
+  if (!TASK_NOTIFICATION_RE.test(text)) return null;
+  const summary = text.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim();
+  if (!summary) return null;
+  const event = text.match(/<event>([\s\S]*?)<\/event>/)?.[1]?.trim();
+  return event ? `${summary} — ${event}` : summary;
+}
 const SKILL_BODY_RE = /^\s*Base directory for this skill:\s*\S/;
 function pickCommandArgs(text) {
   if (!CMD_HEAD_RE.test(text)) return null;
