@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 // ---- Mode B：看板持有的交互式 claude 会话引擎（L2 地基 / S4）----
 // 基于已验证命令（docs/acceptance/board-interactive-session/round-1.md）：
@@ -51,6 +53,9 @@ class Session {
     this.transcript = [];            // 完整消息（user/assistant/result/system），有界
     this.truncated = 0;              // transcript 被截断丢弃的条数（不静默）
     this.pendingPermissions = new Map();   // request_id → 原始 can_use_tool 请求（S5 用）
+    // 当前在跑的后台任务全表 [{task_id, task_type, description}]——CC 经 system/background_tasks_changed
+    // 全量推送（实测增删都推：起任务推 [x]、任务结束推 []），直接覆盖即可，无需自行增删/兜底。
+    this.backgroundTasks = [];
     this.lastError = null;
     this.child = null;
     this._startWatchdog = null;      // init 看门狗计时器（收到 system/init 即清；超时未清则判死）
@@ -73,6 +78,7 @@ class Session {
       id: this.id, taskKey: this.taskKey, claudeSessionId: this.claudeSessionId, cwd: this.cwd, gitBranch: this.gitBranch, model: this.model, effort: this.effort,
       state: this.state, createdAt: this.createdAt, transcriptLen: this.transcript.length,
       truncated: this.truncated, pendingPermissions: this.pendingPermissions.size, lastError: this.lastError,
+      backgroundTasks: this.backgroundTasks,
     };
   }
 }
@@ -94,6 +100,10 @@ function handleLine(s, line) {
     const rid = ev.request?.request_id || ev.request_id;
     const sub = ev.request?.subtype || ev.request?.request?.subtype;
     if (rid && sub === 'can_use_tool') s.pendingPermissions.set(rid, ev);   // S5 应答
+  } else if (ev.type === 'system' && ev.subtype === 'background_tasks_changed') {
+    // 后台任务全表（后台命令 / Monitor / subagent 等，见 Task 的 task_type）。CC 全量推、增删都推
+    // → 直接覆盖。这是权威实时表，比反读 jsonl 准（jsonl 那套是给非 Mode B 会话兜底的，见 collect-cli）。
+    s.backgroundTasks = Array.isArray(ev.tasks) ? ev.tasks : [];
   }
   // S7：给 assistant/user 的 content block 补收到时刻 _ts（stream-json 事件不带 timestamp）。
   // assistant 的 tool_use 与 user 的 tool_result 各在自己事件到达时打戳 → 前端可算每步耗时 / 进行中跳秒。
@@ -248,6 +258,47 @@ export function interruptSession(id) {
   if (!s) return { ok: false, error: 'session not found' };
   const ok = writeStdin(s, { type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } });
   return ok ? { ok: true } : { ok: false, error: 'stdin 不可写' };
+}
+
+// 停单个后台任务：走 CC 的 SDK 控制通道，与 TaskStopTool（LLM 调的那个）共用同一个 stopTask()——
+// 按 task_id 查 CC 自己的任务表，不猜进程，且 subagent 这类没有独立进程的任务同样能停。
+// 停掉后 CC 会推 background_tasks_changed（移除）+ 终态 task_notification，前端不必自行摘除。
+export function stopTaskInSession(id, taskId) {
+  const s = sessions.get(id);
+  if (!s) return { ok: false, error: 'session not found' };
+  if (!taskId) return { ok: false, error: 'taskId required' };
+  const ok = writeStdin(s, { type: 'control_request', request_id: randomUUID(), request: { subtype: 'stop_task', task_id: taskId } });
+  return ok ? { ok: true } : { ok: false, error: 'stdin 不可写' };
+}
+
+// 后台任务的输出文件：CC 落在 <临时目录>/claude/<cwd 折叠>/<CC sessionId>/tasks/<taskId>.output
+// （盘符冒号与路径分隔符折成 '-'，同 paths.js 对 CC 项目目录的编码）。任务终态后 CC 会 evict 掉该文件，
+// 所以能读到的天然只有在跑的任务。
+export function taskOutputPath(s, taskId) {
+  if (!s?.cwd || !s.claudeSessionId) return null;
+  const folded = s.cwd.replace(/[:\\/]/g, '-');
+  return path.join(os.tmpdir(), 'claude', folded, s.claudeSessionId, 'tasks', `${taskId}.output`);
+}
+
+// 读后台任务输出（详情栏「查看」用）：只回尾部，避免长跑任务的巨大日志灌爆响应
+export function readTaskOutput(id, taskId, tailBytes = 64 * 1024) {
+  const s = sessions.get(id);
+  if (!s) return { ok: false, error: 'session not found' };
+  const p = taskOutputPath(s, taskId);
+  if (!p) return { ok: false, error: '会话尚未 init（无 sessionId），暂无法定位输出文件' };
+  let fd;
+  try {
+    fd = fs.openSync(p, 'r');
+    const { size } = fs.fstatSync(fd);
+    const start = Math.max(0, size - tailBytes);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    return { ok: true, path: p, size, truncated: start > 0, text: buf.toString('utf8') };
+  } catch (e) {
+    // 任务已结束 → CC evict 输出文件；对调用方是正常态，不是错误
+    if (e.code === 'ENOENT') return { ok: false, error: '输出文件不存在（任务可能已结束，CC 会清理输出）', gone: true };
+    return { ok: false, error: e.message };
+  } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* ignore */ } }
 }
 
 export function closeSession(id) {

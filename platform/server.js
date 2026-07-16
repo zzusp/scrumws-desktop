@@ -8,7 +8,7 @@ import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, move
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
-import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions } from './lib/session-manager.js';
+import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions, stopTaskInSession, readTaskOutput } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
 import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
@@ -249,6 +249,20 @@ const server = http.createServer(async (req, res) => {
       const id = searchParams.get('id');
       if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
       return sendJson(res, 200, closeSession(id));
+    }
+    // 停单个后台任务（详情「后台任务」栏）：走 CC 的 stop_task 控制请求，不猜进程
+    if (req.method === 'POST' && pathname === '/api/session/stop-task') {
+      const id = searchParams.get('id');
+      const taskId = searchParams.get('taskId');
+      if (!id || !taskId) return sendJson(res, 400, { ok: false, error: 'id + taskId required' });
+      return sendJson(res, 200, stopTaskInSession(id, taskId));
+    }
+    // 看后台任务输出（详情「后台任务」栏的「查看」）
+    if (pathname === '/api/session/task-output') {
+      const id = searchParams.get('id');
+      const taskId = searchParams.get('taskId');
+      if (!id || !taskId) return sendJson(res, 400, { ok: false, error: 'id + taskId required' });
+      return sendJson(res, 200, readTaskOutput(id, taskId));
     }
     if (pathname === '/api/session/list') return sendJson(res, 200, { ok: true, sessions: listSessions() });
     // S10 收养：把终端起的 CLI 会话续接成看板 Mode B 交互会话（--resume + 预置历史）。body {sessionId, model?}
