@@ -101,9 +101,12 @@ export function parseUsage(text) {
 }
 
 // spawn 官方 CLI 查用量。Windows 须 shell:true 执行 claude.cmd（CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd）。
+// --no-session-persistence：/usage 每次会新建一个 session jsonl（实测落 ~/.claude/projects 下、无 assistant/token
+// 故不污染用量统计，但会堆积空 session 文件 + 进 /resume 列表）。该 flag（仅 --print 生效）让本次查询不落盘，
+// 不留 session，无需事后清理。
 function fetchUsage() {
   return new Promise((resolve) => {
-    execFile(CLAUDE_BIN, ['-p', '/usage'], {
+    execFile(CLAUDE_BIN, ['-p', '/usage', '--no-session-persistence'], {
       timeout: USAGE_TIMEOUT_MS,
       windowsHide: true,
       maxBuffer: 1 << 20,
