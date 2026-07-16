@@ -1,5 +1,9 @@
 # round-1
 
+> ⚠️ **本轮的 BG-6 已被 round-2 证伪并作废**（`过 15min 死线 → 兜底剔除归 0 → PASS`）：workflow 实测能跑
+> 108.9min，15min 死线会把在跑的长工作流误杀，而本轮把这个错误行为写成了期望值 → 19/19 全绿也没拦住。
+> BG-1..6 已重写为 A1..A7，见 `round-2.md`。本文其余取证（签名互斥 / 摘要 / 渲染）仍有效。
+
 语料：`cli:66b52133` = `~/.claude/projects/D--project-scrumws-desktop--claude-worktrees-cloud-control-plane/66b52133-bae7-4f2c-bdcf-34fe03a01cc4.jsonl`
 （真实跑过 3 次 Workflow，三种入参形态各一）。全部断言跑在**真实落盘字节**上，不手搓 fixture。
 
