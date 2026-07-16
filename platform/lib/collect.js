@@ -324,7 +324,7 @@ function buildRuntime(buckets) {
       processing: buckets.processing.length,
     },
     usage: computeRuntimeUsage(buckets),
-    claudeUsage: snap.data,     // 账号级用量（经官方 CLI /usage）：{ ok, subscription, session, weekAll, weekFable } | null
+    claudeUsage: snap.data,     // 账号级用量（经官方 CLI /usage）：{ ok, subscription, session, weekAll } | null
     usagePoll: snap.poll,       // 定时拉取实况：{ intervalSec, lastRunAt, nextRunAt, lastOk, lastError }
     dailyUsage: getDailyUsage(platformSids),   // 近 30 天每天用量（token）：[{ date, input, output, cache, total, platform }] | null（首次扫描中）。柱状图取后 7 天(total+platform)，表格按 tab 取后 7/15/30 天
   };

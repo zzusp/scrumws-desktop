@@ -55,11 +55,30 @@ let pollTimer = null;                // setTimeout handle（非固定 setInterva
 let stopped = true;                  // 定时器是否已停（未 start / 一次性拉取时为 true）
 let poll = { lastRunAt: null, nextRunAt: null, lastOk: null, lastError: null };
 
+// 把 resets 人类可读串解析成 epoch ms（供前端算「X 后刷新」相对倒计时）。
+// 格式如 "Jul 16, 2:40pm (Asia/Shanghai)" / "Jul 20, 2am (Asia/Shanghai)"（无年份、12h 制、可省分钟）。
+// 机器时区即该时区（本机 Asia/Shanghai），按本地时间构造 Date。resets 恒在未来：解析成 >1 天前的过去 → 判跨年 +1。
+// 解析不了返回 null，前端回退直显原串。
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function parseResetAt(s) {
+  const m = String(s || '').match(/^([A-Za-z]{3})\s+(\d{1,2}),\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+  if (!m) return null;
+  const mi = MONTHS[m[1].toLowerCase()];
+  if (mi == null) return null;
+  let hr = Number(m[3]) % 12;
+  if (/pm/i.test(m[5])) hr += 12;
+  const min = m[4] ? Number(m[4]) : 0;
+  const now = new Date();
+  let d = new Date(now.getFullYear(), mi, Number(m[2]), hr, min, 0, 0);
+  if (d.getTime() < now.getTime() - 86400_000) d = new Date(now.getFullYear() + 1, mi, Number(m[2]), hr, min, 0, 0);
+  return d.getTime();
+}
+
 // 解析 `claude -p /usage` 的 stdout。三行格式（实测稳定）：
 //   Current session: 12% used · resets Jul 16, 2:40pm (Asia/Shanghai)
 //   Current week (all models): 2% used · resets Jul 20, 2am (Asia/Shanghai)
 //   Current week (Fable): 0% used
-// resets 是本地时区人类可读串，原样保留、前端直接展示（不解析成时间戳，避免 12h 制/时区解析脆性）。
+// 每窗口带 pct、原始 resets 文本、以及解析出的 resetsAt（epoch ms | null）。
 export function parseUsage(text) {
   const raw = String(text || '');
   const lines = raw.split('\n').map((l) => l.trim());
@@ -67,15 +86,18 @@ export function parseUsage(text) {
   const pick = (labelRe) => {
     for (const l of lines) {
       const m = l.match(labelRe);
-      if (m) return { pct: Number(m[1]), resets: (m[2] || '').trim() || null };
+      if (m) {
+        const resets = (m[2] || '').trim() || null;
+        return { pct: Number(m[1]), resets, resetsAt: parseResetAt(resets) };
+      }
     }
     return null;
   };
   const session = pick(/^Current session:\s*(\d+)%\s*used(?:\s*·\s*resets\s*(.+))?$/i);
   const weekAll = pick(/^Current week \(all models\):\s*(\d+)%\s*used(?:\s*·\s*resets\s*(.+))?$/i);
-  const weekFable = pick(/^Current week \(Fable\):\s*(\d+)%\s*used(?:\s*·\s*resets\s*(.+))?$/i);
+  // 「Current week (Fable)」按需求不展示，故不解析。
   if (!session && !weekAll) return { ok: false, error: 'parse-failed' };
-  return { ok: true, subscription, session, weekAll, weekFable };
+  return { ok: true, subscription, session, weekAll };
 }
 
 // spawn 官方 CLI 查用量。Windows 须 shell:true 执行 claude.cmd（CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd）。

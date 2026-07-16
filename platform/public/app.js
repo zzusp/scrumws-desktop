@@ -1485,28 +1485,41 @@ if (window.marked?.use) {
 }
 
 // ---- Claude Code 账号级用量渲染（数据经官方 CLI /usage 查得，见后端 claude-usage.js）----
-// 单条滚动窗横条：label + resets 文本 + 进度条 + N% used。缺 pct 不渲染。填充分档：≥80% 红、≥50% 琥珀、否则绿。
+// 距刷新剩余（resetsAt=epoch ms → 「1d 22h 后刷新 / 3h 20m 后刷新 / 12m 后刷新 / 即将刷新」）
+function fmtResetIn(resetsAt) {
+  const ms = new Date(resetsAt) - Date.now();
+  if (!isFinite(ms) || ms <= 0) return '即将刷新';
+  const totalMin = Math.floor(ms / 60000);
+  const d = Math.floor(totalMin / 1440);
+  const h = Math.floor((totalMin % 1440) / 60);
+  const m = totalMin % 60;
+  if (d > 0) return `${d}d ${h}h 后刷新`;
+  if (h > 0) return `${h}h ${m}m 后刷新`;
+  return `${m}m 后刷新`;
+}
+// 单条滚动窗横条：label + 距刷新剩余 + 进度条 + N% used。缺 pct 不渲染。填充分档：≥80% 红、≥50% 琥珀、否则绿。
 function ccUsageBarHtml(label, win) {
   if (!win || win.pct == null) return '';
   const pct = Math.max(0, Math.min(100, Number(win.pct)));
   const fillBase = pct >= 80 ? 'var(--destructive)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
   const fill = `color-mix(in oklab, ${fillBase} 62%, transparent)`;
+  const reset = win.resetsAt ? fmtResetIn(win.resetsAt) : (win.resets || '');   // 解析出时间戳走倒计时；否则回退原串
   return `
     <div class="cc-bar">
       <div class="cc-bar-left">
         <div class="cc-bar-label">${escapeHtml(label)}</div>
-        ${win.resets ? `<div class="cc-bar-reset">resets ${escapeHtml(win.resets)}</div>` : ''}
+        ${reset ? `<div class="cc-bar-reset">${escapeHtml(reset)}</div>` : ''}
       </div>
       <div class="cc-bar-track"><div class="cc-bar-fill" style="width:${pct}%;background:${fill}"></div></div>
       <div class="cc-bar-pct">${pct.toFixed(0)}% used</div>
     </div>`;
 }
-// 用量主体：会话 / 本周(all) / 本周(Fable) 三条；未就绪 / 非订阅 / 失败各自提示
+// 用量主体：5 小时（会话）/ 7 天（本周）两条；未就绪 / 非订阅 / 失败各自提示
 function ccUsageBody(cu) {
   if (!cu || cu.error === 'pending') return '<div class="cc-usage-note">用量加载中…（首次经 CLI 查约 10s）</div>';
   if (!cu.ok) return `<div class="cc-usage-note">用量不可用（${escapeHtml(cu.error || 'unknown')}）</div>`;
-  if (!cu.subscription) return '<div class="cc-usage-note">当前非订阅账号，无 session / 本周滚动窗用量</div>';
-  const bars = ccUsageBarHtml('会话', cu.session) + ccUsageBarHtml('本周', cu.weekAll) + ccUsageBarHtml('本周 Fable', cu.weekFable);
+  if (!cu.subscription) return '<div class="cc-usage-note">当前非订阅账号，无 5h / 7d 滚动窗用量</div>';
+  const bars = ccUsageBarHtml('5 小时', cu.session) + ccUsageBarHtml('7 天', cu.weekAll);
   return bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
 }
 // 运行时面板：账号用量（左，复用 ccUsageBarHtml）+ 每日柱状图（右）。数据来自 /api/state 的 runtime.claudeUsage + usagePoll。
