@@ -1739,7 +1739,7 @@ function renderTaskSide(taskKey) {
   }).reverse().join('');
   // 统一字段值：所有任务「任务信息」按同一字段集展示，共有字段（cwd/git/最近活动）一律取自详情 round
   // （readWorkerLog 对 CLI/分身同构产出）+ t.cli/t.cwd 兜底，不按来源分叉；
-  // 权限模式/后台agent/jsonl大小是 CLI 会话独有真实数据，按 t.cli 存在性显（分身无 → 不显/—）。
+  // 权限模式/后台任务/jsonl大小是 CLI 会话独有真实数据，按 t.cli 存在性显（分身无 → 不显/—）。
   const rtCwds = [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
   const rtCwd = rtCwds[rtCwds.length - 1] || null;
   const cwdVal = rtCwd || t.cli?.cwd || t.cwd || '—';
@@ -1749,7 +1749,7 @@ function renderTaskSide(taskKey) {
   const worktreeDirVal = t.worktree ? (t.worktreeDir || rtCwd || '（首轮起会话时新建）') : null;
   const gitVal = lastOk?.gitBranch || t.cli?.gitBranch || '—';
   const permMode = (t.cli?.mode && t.cli.mode !== 'normal') ? t.cli.mode : null;   // CLI 非 normal 权限模式才显
-  const bgAgent = Number(t.backgroundAgentCount) || 0;   // 统一后台维度：>0 = 主进程让出后仍有后台 agent 在跑
+  const bgTasks = Number(t.backgroundTaskCount) || 0;   // 统一后台维度：>0 = 主进程让出后仍有后台任务在跑（subagent / 后台命令 / Monitor）
   const jsonlVal = t.cli?.jsonlBytes ? (t.cli.jsonlBytes / 1024 / 1024).toFixed(2) + ' MB' : '—';
   const lastActive = t.lease?.heartbeatAt || meta.lastRoundAt || t.resolvedAt || '—';
   const sideTitle = t.title || t.taskKey;
@@ -1770,7 +1770,7 @@ function renderTaskSide(taskKey) {
       ${t.scheduledAt ? kv('定时执行', `<span style="color:var(--amber)">${escapeHtml(t.scheduledAt)}</span>`) : ''}
       ${t.worktree ? kv('worktree 分支', escapeHtml(t.worktreeBranch || (t.baseBranch ? `基于 ${t.baseBranch}` : '开启'))) : ''}
       ${permMode ? kv('权限模式', escapeHtml(permMode)) : ''}
-      ${bgAgent > 0 ? kv('后台 agent', `<span style="color:var(--amber)">${bgAgent} 个运行中（主进程已让出，等后台完成）</span>`) : ''}
+      ${bgTasks > 0 ? kv('后台任务', `<span style="color:var(--amber)">${bgTasks} 个运行中（主进程已让出，等后台完成）</span>`) : ''}
       ${/* turns / jsonl 大小 暂不在此展示（数据保留于 meta.numTurns / jsonlVal，待定放置位置）*/''}
       ${kv('创建', escapeHtml(t.createdAt || '—'))}
       ${kv('最近活动', escapeHtml(lastActive))}

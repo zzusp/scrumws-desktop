@@ -8,7 +8,7 @@ import { CHECKER, checkerIntervalSec } from './jobs/checker-meta.js';
 import * as scheduler from './scheduler.js';
 import { readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
-import { collectCliSessions, readAttachedSessions, backgroundAgentCountBySid } from './collect-cli.js';
+import { collectCliSessions, readAttachedSessions, backgroundTaskCountBySid } from './collect-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { listSessions } from './session-manager.js';
 import { modelContextLimits, usageSnapshot } from './claude-usage.js';
@@ -51,18 +51,18 @@ function taskUpdatedMs(t) {
 }
 
 // 后台维度派生（runner/cli 统一语义）：主 agent 一轮收敛写 awaiting-human，但若会话进程仍活着且该
-// CC session 还有后台 subagent 在跑 → 整体仍是 processing——主进程只是让出等后台完成（CC 自动注入
-// <task-notification> 唤醒续跑），任务未结束。
+// CC session 还有后台任务在跑（后台 subagent / 后台命令 / Monitor）→ 整体仍是 processing——主进程只是
+// 让出等后台完成（CC 自动注入 <task-notification> 唤醒续跑），任务未结束。
 // sessionAlive 判据必须含 CC 注册表活进程，不能只认看板 Mode B：task-runner 的 claude -p --resume
 // 会话登记在 ~/.claude/sessions（att），看板重启后其 mbSessionId 丢失，只认 Mode B 会漏判成 awaiting。
-// 会话进程死则后台 subagent 必随之结束（是该进程子进程），sessionAlive 短路避免用陈旧的未配平 launched 误判。
+// 会话进程死则后台任务必随之结束（是该进程子进程），sessionAlive 短路避免用陈旧的未配平 launched 误判。
 // 仅对"疑似空闲的活会话"读一次 jsonl 探测：其他状态无需（processing 已在忙 / 终态无后台）。
 export function deriveBackgroundState(state, sessionAlive, sessionId) {
   if (state !== 'awaiting-human' || !sessionAlive || !sessionId) {
-    return { backgroundAgentCount: 0, displayState: state };
+    return { backgroundTaskCount: 0, displayState: state };
   }
-  const backgroundAgentCount = backgroundAgentCountBySid(sessionId);
-  return { backgroundAgentCount, displayState: backgroundAgentCount > 0 ? 'processing' : state };
+  const backgroundTaskCount = backgroundTaskCountBySid(sessionId);
+  return { backgroundTaskCount, displayState: backgroundTaskCount > 0 ? 'processing' : state };
 }
 
 // ---------- 采集单个任务包 ----------
@@ -118,8 +118,8 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
   // 会话活性：看板 Mode B 活会话 ∪ CC 注册表(~/.claude/sessions)里有活进程持有该 sessionId
   // （task-runner 的 claude -p --resume 也登记在 att，看板重启后 mbSessionId 丢失仍据此判活）
   const sessionAlive = !!mbSessionId || (meta?.sessionId && attachedSids ? attachedSids.has(meta.sessionId) : false);
-  // 后台维度（统一：与 cli 任务同字段 backgroundAgentCount）
-  const { backgroundAgentCount, displayState } = deriveBackgroundState(effectiveState, sessionAlive, meta?.sessionId);
+  // 后台维度（统一：与 cli 任务同字段 backgroundTaskCount）
+  const { backgroundTaskCount, displayState } = deriveBackgroundState(effectiveState, sessionAlive, meta?.sessionId);
 
   return {
     taskKey,
@@ -138,7 +138,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
     source,
     kind,
     state: displayState,
-    backgroundAgentCount,
+    backgroundTaskCount,
     outcome: state?.outcome || null,
     enteredAt,
     resolvedAt,

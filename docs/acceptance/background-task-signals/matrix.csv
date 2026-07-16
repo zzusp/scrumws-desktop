@@ -1,0 +1,30 @@
+case,desc,round-1
+C01,后台 subagent 在跑要计入,PASS
+C02,后台命令(Bash/PowerShell) 在跑要计入,PASS
+C03,Monitor 在跑要计入,PASS
+C04,三类并发计数=3,PASS
+C05,完成通知 user/string 载体配平,PASS
+C06,完成通知 queue-operation 载体配平(旧实现漏读),PASS
+C07,完成通知 attachment 载体配平(旧实现漏读),PASS
+C08,failed 为终态,PASS
+C09,stopped 为终态(resume 对账补发),PASS
+C10,killed 为终态,PASS
+C11,Monitor 事件通知(无 tool-use-id/status) 不误配平,PASS
+C12,后台命令"疑似阻塞"提醒(无 status) 不误配平,PASS
+C13,Monitor 被 TaskStop 停 → 配平,PASS
+C14,后台命令被 TaskStop 停 → 配平,PASS
+C15,persistent Monitor 被 TaskStop 停 → 配平,PASS
+C16,TaskStop 停别的任务 → 不误配平,PASS
+C17,前台命令 stdout 含后台回执字样 → 不误计,PASS
+C18,subagent 启动 16min 未配平 → 死线剔除,PASS
+C19,subagent 启动 14min 未配平 → 仍计,PASS
+C20,Monitor timeout=1h 启动 30min → 仍计(统一阈值会误剔),PASS
+C21,Monitor timeout=5min 启动 7min → 自带死线剔除,PASS
+C22,persistent Monitor 启动 16min → 落统一阈值剔除,PASS
+C23,空 jsonl → 0,PASS
+C24,jsonl 不存在 → 0 不抛,PASS
+R2,全库 1662 个 jsonl 反误报(唯一命中经核实为真阳性),PASS
+R3,新旧口径 A/B 真实第三方会话(旧=2 误报 / 新=0 真值),PASS
+R4,看板端到端 A/B/A(awaiting→processing→awaiting),PASS
+R5,卡片字段贯通 47/47 新字段 0 旧字段,PASS
+R6,本会话真实后台任务实跑 2→0 三条配平路径,PASS
