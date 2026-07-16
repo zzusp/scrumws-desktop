@@ -183,14 +183,15 @@ function renderRuntime(rt) {
         <div class="rt-sess-label">活跃会话</div>
         <div class="rt-sess-sub">板内 ${s.board ?? 0} · 终端 ${s.cli ?? 0}</div>
       </div>
-    </div>`;
+    </div>
+    ${ccAccountUsageBarsHtml(rt.claudeUsage, rt.usagePoll)}`;
   // ---- 用量汇总：CC 全局每日 token 表格（7/15/30 天切换）----
   dailyUsageData = Array.isArray(rt.dailyUsage) ? rt.dailyUsage : null;
   renderUsageTable();
-  // ---- 账号级用量卡（左 session/本周滚动窗 · 右 Chart.js 柱状图：7 天全局 vs scrumws）----
+  // ---- 每日用量趋势卡（左柱状图 · 右 7 天用量总 token 汇总，独立成卡）----
   const ccGrid = $('ccUsageGrid');
   if (ccGrid) {
-    ccGrid.innerHTML = ccAccountUsageHtml(rt.claudeUsage, rt.usagePoll);
+    ccGrid.innerHTML = ccDailyUsageCardHtml(rt.dailyUsage);
     renderDailyChart(rt.dailyUsage);
   }
 }
@@ -1522,15 +1523,28 @@ function ccUsageBody(cu) {
   const bars = ccUsageBarHtml('5 小时', cu.session) + ccUsageBarHtml('7 天', cu.weekAll);
   return bars || '<div class="cc-usage-note">暂无滚动窗用量</div>';
 }
-// 运行时面板：账号用量（左，复用 ccUsageBarHtml）+ 每日柱状图（右）。数据来自 /api/state 的 runtime.claudeUsage + usagePoll。
-function ccAccountUsageHtml(cu, pollInfo) {
+// 运行时卡片内的账号用量条（session 5h / 本周 7d 滚动窗，复用 ccUsageBarHtml）+ 刷新脚注。
+// 数据来自 /api/state 的 runtime.claudeUsage + usagePoll。
+function ccAccountUsageBarsHtml(cu, pollInfo) {
   const poll = pollInfo || {};
   const intervalMin = poll.intervalSec ? Math.round(poll.intervalSec / 60) : 10;
   const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
   const lastTxt = poll.lastRunAt ? hhmm(poll.lastRunAt) : '—';
   const foot = `<div class="cc-usage-note" style="margin-top:10px">上次刷新 ${lastTxt} · 基准约 ${intervalMin} 分钟、随机抖动拉取${poll.lastOk === false ? ' · <span style="color:var(--coral)">上次拉取失败</span>' : ''}</div>`;
-  const left = `<div class="cc-usage" style="flex:1 1 0;min-width:240px">${ccUsageBody(cu)}${foot}</div>`;
-  const right = `<div class="du-wrap"><div class="du-title">7 天用量（总 token） · 全局 vs scrumws</div><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
+  return `<div class="cc-usage" style="margin-top:16px">${ccUsageBody(cu)}${foot}</div>`;
+}
+
+// 每日用量趋势卡：左半每日柱状图（近 7 天，全局 vs scrumws），右半 7 天用量（总 token）汇总，两栏等宽。
+function ccDailyUsageCardHtml(daily) {
+  const days = Array.isArray(daily) ? daily.slice(-7) : [];
+  const sum = days.reduce((a, d) => ({ total: a.total + d.total, platform: a.platform + d.platform }), { total: 0, platform: 0 });
+  const left = `<div class="du-wrap"><div class="du-title">每日用量趋势 · 全局 vs scrumws</div><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
+  const right = `<div class="du-stat-wrap">
+    <div class="du-title">7 天用量（总 token）</div>
+    <div class="stat-val">${compactTokens(sum.total)}</div>
+    <div class="stat-label">全局 · 近 7 天合计</div>
+    <div class="stat-sub">scrumws ${compactTokens(sum.platform)} token</div>
+  </div>`;
   return `<div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">${left}${right}</div>`;
 }
 

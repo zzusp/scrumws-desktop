@@ -653,8 +653,9 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .stat-label{font-size:11px;color:var(--mut);margin-top:6px;font-weight:500}
 .stat-accent{width:22px;height:3px;border-radius:999px;margin-top:10px;opacity:.85}
 .stat-sub{font-size:11px;color:var(--dim);margin-top:12px;font-family:var(--mono);line-height:1.6}
-/* 账号用量卡右侧：7 天用量柱状图（Chart.js canvas，左右两栏均分）*/
+/* 每日用量趋势卡：左侧柱状图 + 右侧 7 天用量（总 token）汇总，左右两栏均分 */
 .du-wrap{flex:1 1 0;min-width:280px}
+.du-stat-wrap{flex:1 1 0;min-width:200px}
 .du-title{font-size:12px;color:var(--ink2);font-weight:600;margin-bottom:12px}
 .du-canvas-box{position:relative;height:172px}
 /* 用量汇总：7/15/30 天切换 tab + CC 全局每日 token 表格 */
@@ -849,14 +850,14 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <section class="card" style="margin-bottom:var(--gap)">
             <div class="sec-head">
               <h2>运行时</h2>
-              <span class="sec-sub">本机 Claude Code 执行环境 · 在线状态与活跃会话</span>
+              <span class="sec-sub">本机 Claude Code 执行环境 · 在线状态与活跃会话 · 账号 5h / 7d 滚动窗用量</span>
             </div>
             <div id="runtimeCard"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
           <section class="card" style="margin-bottom:var(--gap)">
             <div class="sec-head">
               <h2>每日用量趋势</h2>
-              <span class="sec-sub">Claude Code 每日 token 用量柱状图（扫本机所有项目 session）· 全局 vs scrumws · 近 7 天</span>
+              <span class="sec-sub">左：每日 token 柱状图（全局 vs scrumws）· 右：7 天用量（总 token）汇总</span>
             </div>
             <div id="ccUsageGrid"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
