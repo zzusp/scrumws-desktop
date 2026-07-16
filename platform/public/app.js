@@ -674,13 +674,14 @@ function customPrompt({ title, message = '', initial = '', placeholder = '', max
     const ok = $('confirmOk');
     const cancel = $('confirmCancel');
     $('confirmTitle').textContent = title || '输入';
-    $('confirmBody').innerHTML = `
-      ${message ? `<div style="margin-bottom:10px;line-height:1.6">${message}</div>` : ''}
-      <textarea id="confirmPromptInput" class="prompt-input" rows="2" maxlength="${maxlength}" placeholder="${escapeAttr(placeholder)}">${escapeHtml(initial)}</textarea>
-      <div style="display:flex;align-items:center;margin-top:7px;font-size:10.5px;color:var(--dim);font-family:var(--mono)">
-        <span>Ctrl+Enter 保存 · Esc 取消</span>
-        <span id="promptCount" style="margin-left:auto;font-variant-numeric:tabular-nums"></span>
-      </div>`;
+    const body = $('confirmBody');
+    // prompt-body 关掉 confirm-body 的 pre-wrap，join('') 保证元素间不留空白文本节点——两者缺一都会渲染出空行
+    body.className = 'confirm-body prompt-body';
+    body.innerHTML = [
+      message ? `<div class="prompt-msg">${message}</div>` : '',
+      `<textarea id="confirmPromptInput" class="prompt-input" rows="2" maxlength="${maxlength}" placeholder="${escapeAttr(placeholder)}">${escapeHtml(initial)}</textarea>`,
+      '<div class="prompt-hint"><span>Ctrl+Enter 保存 · Esc 取消</span><span id="promptCount" class="prompt-count"></span></div>',
+    ].join('');
     if (card) card.style.maxWidth = '520px';
     ok.textContent = '保存';
     ok.className = 'btn btn-primary';
@@ -697,6 +698,7 @@ function customPrompt({ title, message = '', initial = '', placeholder = '', max
     const cleanup = () => {
       modal.style.display = 'none';
       if (card) card.style.maxWidth = '';
+      body.className = 'confirm-body';   // 恢复，下次 customConfirm 的纯文本 message 还要靠 pre-wrap 断行
       ok.onclick = null; cancel.onclick = null; modal.onclick = null;
       document.removeEventListener('keydown', keyHandler, true);
     };

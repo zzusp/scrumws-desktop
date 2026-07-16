@@ -1,0 +1,9 @@
+case,desc,round-1
+C1,编辑任务描述弹窗间距收紧（标题↓小字 53→10px、小字↓textarea 53→8px）,PASS
+C2,prompt 打开时 confirmBody white-space=normal,PASS
+C3,prompt 关闭后 className 还原成 confirm-body,PASS
+C4,之后开 customConfirm 拿回 pre-wrap,PASS
+C5,customConfirm 纯文本 \n 仍断成两行,PASS
+C6,重命名任务弹窗同样收紧,PASS
+C7,rewind 改写弹窗同样收紧,PASS
+C8,长文本 autoGrow 撑高且封顶 320px,PASS
