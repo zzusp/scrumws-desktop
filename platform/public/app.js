@@ -1246,9 +1246,8 @@ function updateReplyBoxAvailability(taskKey) {
   }
 
   if (canReply) {
-    stateTag.className = 'tag tag-jade';
-    stateTag.textContent = '可继续对话';
-    hint.innerHTML = '同 session <b>--resume</b>，cache_read 命中省 token';
+    // 隐掉状态头（「可继续对话 / 同 session --resume，cache_read 命中省 token」提示）——直接常开输入即可，无需这条说明
+    if (stateTag.parentElement) stateTag.parentElement.style.display = 'none';
     replyBody.style.display = 'flex';   // composer 是 flex-direction:column
     text.disabled = false; send.disabled = false;
     text.value = '';
