@@ -151,6 +151,65 @@ const main = async () => {
   const ck = (r.json?.keys || []).find((k) => k.id === chatKey.key.id);
   record('E1-lastused', !!ck && !!ck.lastUsedAt, `lastUsedAt 已刷新 → ${ck?.lastUsedAt}`);
 
+  // ---- F. 心跳 ----
+  r = await req('POST', '/api/external/heartbeat', { token: chatKey.plaintext });
+  const hbNoAuth = await req('POST', '/api/external/heartbeat');
+  record('F1-heartbeat', r.status === 200 && r.json?.ok === true && hbNoAuth.status === 401,
+    `心跳 200 / 无鉴权 401 → ${r.status}/${hbNoAuth.status}`);
+
+  // ---- P. per-key 策略白名单 ----
+  r = await req('POST', '/api/apikeys/create', {
+    body: {
+      label: '策略钥', source: 'policy',
+      allowedModels: ['claude-opus-4-8', 'claude-sonnet-5'],
+      allowedEfforts: ['xhigh'],
+      allowedCwds: [DATA_ROOT],
+    },
+  });
+  const polKey = r.json;
+  record('P1-create-policy-key', r.status === 200 && polKey?.ok
+    && polKey.key.allowedModels.length === 2 && polKey.key.allowedEfforts[0] === 'xhigh' && polKey.key.allowedCwds.length === 1,
+    `建带策略密钥 → ${r.status} models=${polKey?.key?.allowedModels?.join('/')} efforts=${polKey?.key?.allowedEfforts} cwds=${polKey?.key?.allowedCwds?.length}`);
+
+  r = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'p2', allowedModels: ['gpt-4o'] } });
+  record('P2-bad-model-rejected', r.status === 400 && /allowedModels/.test(r.json?.error || ''), `非白名单模型拒绝 → ${r.status} ${r.json?.error}`);
+
+  r = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'p3', allowedCwds: ['relative/path'] } });
+  record('P3-relative-cwd-rejected', r.status === 400 && /绝对路径/.test(r.json?.error || ''), `相对路径拒绝 → ${r.status}`);
+
+  // 省略 model/effort/cwd → 取白名单首项为默认
+  r = await req('POST', '/api/external/task/create', {
+    body: { title: '策略默认', prompt: 'p', externalKey: 'pol-1' }, token: polKey.plaintext,
+  });
+  let tj = {};
+  if (r.status === 200 && DATA_ROOT) {
+    try { tj = JSON.parse(fs.readFileSync(path.join(taskDirOf(r.json.taskKey), 'task.json'), 'utf8')); } catch { }
+  }
+  record('P4-policy-defaults', r.status === 200 && tj.model === 'claude-opus-4-8' && tj.effort === 'xhigh'
+    && String(tj.cwd || '').toLowerCase() === path.resolve(DATA_ROOT).toLowerCase(),
+    `省略字段取白名单首项 → model=${tj.model} effort=${tj.effort} cwd=${tj.cwd}`);
+
+  // 白名单内显式值放行（cwd 用允许目录的子目录）
+  const subDir = path.join(DATA_ROOT, 'runtime');
+  r = await req('POST', '/api/external/task/create', {
+    body: { title: '策略子目录', prompt: 'p', model: 'claude-sonnet-5', effort: 'xhigh', cwd: subDir, externalKey: 'pol-2' }, token: polKey.plaintext,
+  });
+  record('P5-in-policy-ok', r.status === 200, `白名单内值 + 子目录 cwd 放行 → ${r.status} ${r.json?.taskKey || r.json?.error}`);
+
+  // 越界一律 400
+  const outModel = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p', model: 'claude-haiku-4-5-20251001' }, token: polKey.plaintext });
+  const outEffort = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p', effort: 'low' }, token: polKey.plaintext });
+  const outCwd = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p', cwd: 'C:\\Windows' }, token: polKey.plaintext });
+  record('P6-out-of-policy-400', outModel.status === 400 && outEffort.status === 400 && outCwd.status === 400
+    && /不在该密钥允许范围/.test(outModel.json?.error + outEffort.json?.error + outCwd.json?.error),
+    `越界 model/effort/cwd → ${outModel.status}/${outEffort.status}/${outCwd.status}`);
+
+  // 无策略的旧密钥不受限（chat key 传任意白名单模型 + 任意存在目录）
+  r = await req('POST', '/api/external/task/create', {
+    body: { title: '无策略不受限', prompt: 'p', model: 'claude-haiku-4-5-20251001', effort: 'low', externalKey: 'pol-3' }, token: chatKey.plaintext,
+  });
+  record('P7-no-policy-unrestricted', r.status === 200, `无策略密钥不受限 → ${r.status}`);
+
   const fails = results.filter((x) => !x.pass);
   console.log(`\n== ${results.length - fails.length}/${results.length} PASS ==`);
   process.exit(fails.length ? 1 : 0);

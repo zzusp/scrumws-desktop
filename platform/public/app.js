@@ -2367,14 +2367,14 @@ async function refreshApiKeys() {
     return;
   }
   box.innerHTML = `<div class="ak-table-wrap"><table class="ak-table">
-    <thead><tr><th>密钥</th><th>来源</th><th>备注</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
+    <thead><tr><th>密钥</th><th>来源</th><th>备注</th><th>限制</th><th>最近活跃</th><th>状态</th><th></th></tr></thead>
     <tbody>${keys.map((k) => `
       <tr>
-        <td class="mono" title="仅前缀，明文不可再取">${escapeHtml(k.prefix)}…</td>
+        <td class="mono" title="仅前缀，明文不可再取 · 创建于 ${escapeAttr(k.createdAt || '—')}">${escapeHtml(k.prefix)}…</td>
         <td class="mono">${escapeHtml(k.source)}</td>
         <td>${escapeHtml(k.label)}</td>
-        <td class="mono">${escapeHtml(k.createdAt || '—')}</td>
-        <td class="mono">${escapeHtml(k.lastUsedAt || '—')}</td>
+        <td style="font-size:11.5px" title="${escapeAttr(akPolicyTitle(k))}">${akPolicyCell(k)}</td>
+        <td class="mono">${akLivenessCell(k)}</td>
         <td>${k.disabled ? '<span class="tag tag-amber">已禁用</span>' : '<span class="tag tag-jade">启用</span>'}</td>
         <td style="white-space:nowrap;text-align:right">
           <button class="btn" data-ak-toggle="${escapeAttr(k.id)}" data-ak-to="${k.disabled ? '0' : '1'}">${k.disabled ? '启用' : '禁用'}</button>
@@ -2382,6 +2382,30 @@ async function refreshApiKeys() {
         </td>
       </tr>`).join('')}
     </tbody></table></div>`;
+}
+
+// 策略列：紧凑摘要（详情进 title tooltip）；三项都空 = 不限
+function akPolicyCell(k) {
+  const parts = [];
+  if (k.allowedModels?.length) parts.push(`模型 ${k.allowedModels.length === 1 ? escapeHtml(k.allowedModels[0].replace(/^claude-/, '')) : k.allowedModels.length + ' 个'}`);
+  if (k.allowedEfforts?.length) parts.push(`effort ${k.allowedEfforts.length === 1 ? escapeHtml(k.allowedEfforts[0]) : k.allowedEfforts.length + ' 档'}`);
+  if (k.allowedCwds?.length) parts.push(`目录 ${k.allowedCwds.length} 个`);
+  return parts.length ? parts.join(' · ') : '<span style="color:var(--dim)">不限</span>';
+}
+function akPolicyTitle(k) {
+  const lines = [];
+  lines.push(`可用模型：${k.allowedModels?.length ? k.allowedModels.join(', ') : '不限'}`);
+  lines.push(`可用 effort：${k.allowedEfforts?.length ? k.allowedEfforts.join(', ') : '不限'}`);
+  lines.push(`可访问目录：${k.allowedCwds?.length ? k.allowedCwds.join('；') : '不限'}`);
+  return lines.join('\n');
+}
+// 活跃列：lastUsedAt（含 heartbeat 刷新）5 分钟内 → 绿点在线；否则灰点 + 时间
+function akLivenessCell(k) {
+  if (!k.lastUsedAt) return '<span style="color:var(--dim)">—</span>';
+  const t = new Date(String(k.lastUsedAt).replace(' ', 'T'));
+  const fresh = !isNaN(t) && Date.now() - t.getTime() < 5 * 60 * 1000;
+  const dot = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px;background:${fresh ? 'var(--jade, #2e9e6b)' : 'var(--dim)'}"></span>`;
+  return `${dot}${escapeHtml(k.lastUsedAt)}`;
 }
 
 function renderApiKeyPlaintext(created) {
@@ -2414,16 +2438,21 @@ function initApiKeysPage() {
     err.style.display = 'none';
     const label = $('akLabelInput').value.trim();
     const source = $('akSourceInput').value.trim();
+    const allowedModels = [...document.querySelectorAll('#akModelsBox input:checked')].map((x) => x.value);
+    const allowedEfforts = [...document.querySelectorAll('#akEffortsBox input:checked')].map((x) => x.value);
+    const allowedCwds = $('akCwdsInput').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     createBtn.disabled = true;
     try {
       const r = await api('/api/apikeys/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, source }),
+        body: JSON.stringify({ label, source, allowedModels, allowedEfforts, allowedCwds }),
       });
       if (!r.ok) { err.textContent = r.error || '生成失败'; err.style.display = ''; return; }
       $('akLabelInput').value = '';
       $('akSourceInput').value = '';
+      $('akCwdsInput').value = '';
+      document.querySelectorAll('#akModelsBox input:checked, #akEffortsBox input:checked').forEach((x) => { x.checked = false; });
       renderApiKeyPlaintext(r);
       await refreshApiKeys();
     } catch (e) { err.textContent = e.message; err.style.display = ''; }

@@ -27,7 +27,9 @@
 | G4 | 「API 密钥」菜单页 | index.html + app.js | done |
 | G5 | 文档同步 | docs/api/task-ingest.md 增外部 API 契约 | done |
 | G6 | 隔离环境实跑验证（matrix 全绿）+ PR | matrix.csv / round-N.md / PR | done（30/30 全绿，PR #59 OPEN） |
-| G7 | baibu-agent 派发器对接（chat-watch / issue-watch） | 两个 .mjs 改造 + scrumws-ingest.json 配置 + 实跑验证 | done（8 场景全绿；chat-watch 已恢复调度，issue-watch 维持切换前的 enabled:false 待用户启用） |
+| G7 | baibu-agent 派发器对接（chat-watch / issue-watch） | 两个 .mjs 改造 + scrumws-ingest.json 配置 + 实跑验证 | done（8 场景全绿；round-2 增量：chat→queued、issue→plan、opus-4.8/xhigh、心跳） |
+| G7b | per-key 策略 + 心跳（round-2 增量需求） | api-keys/external-ingest/UI/心跳端点 + 派发器打点 | done（32/32 + UI 5/5 + 派发器 e2e 全绿） |
+| G8 | 旧看板退役：计划任务直调派发器 + 移除 baibu-dashboard | 注册脚本 + loop 脚本 + schtask 落地 + 实跑验证 | pending |
 
 ## sub goal 进展
 
@@ -37,3 +39,5 @@
 - 2026-07-17 G7 开工：先取 ground truth（旧看板 8788 是否在跑 / chat-watch 调度状态 / 真实桌面端 8799 跑的是哪份代码），再定切换时序。
 - 2026-07-17 G7 done：chat-watch / issue-watch 改为 POST 桌面端外部 API（检测判据不变；chat 链带 pending 补投投递保证、issue 链带 legacy seed 防跨系统重复）；隔离环境 8 场景全绿（issue：dry-run/派发/去重/缺席，chat：派发/幂等/宕机捕获/恢复补投）；生产密钥已铸入 ~/.scrumws/runtime/api-keys.json、真实配置 D:\baibu-agent\runtime\scrumws-ingest.json 指向 8799；chat-watch 已恢复 15s 调度（新代码实时 tick 正常）。证据与切换记录：D:\baibu-agent\docs\acceptance\scrumws-ingest-cutover\。
 - **待用户动作**：① 合并 PR #59 并让桌面端跑上新代码（重启桌面 app；在此之前 chat 链新 cc: 安全堆在 pending、不丢不重）；② 决定是否启用 issue-watch（`POST http://127.0.0.1:8788/api/dispatcher/start?id=issue-watch` 或旧看板 UI，切换前它就是停的）。
+- 2026-07-17 用户增量决策（round-2 落实，全绿）：① 两链默认 model=claude-opus-4-8 + effort=xhigh、cwd=D:\baibu-agent；**chat 直进 queued 自动执行**（cc: 是直接指令）、**issue 保持 plan 确认**；② 密钥支持 per-key 策略白名单（可用模型/effort/可访问目录，空=不限、省略取首项、越界 400）——两把生产钥已补策略（仅 opus-4.8/xhigh/D:\baibu-agent）；③ 来源活跃观测采用**心跳**而非长连接（发起端 fork-per-tick 无宿主持连）：`POST /api/external/heartbeat` 每 tick 打点，「API 密钥」页 lastUsedAt<5min 亮绿点。
+- 2026-07-17 用户决策：**旧看板（8788）整体退役**——派发调度改 Windows 计划任务直调 `dashboard/lib/jobs/run-job.js`（dashboard 目录保留作库），删 `baibu-dashboard` 计划任务、停 8788 进程（G8）。

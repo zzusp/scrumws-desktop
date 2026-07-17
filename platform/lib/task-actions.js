@@ -19,16 +19,16 @@ function genSlug() {
   return `${ts}-${rand}`;
 }
 
-// 允许的 model 白名单（Q4：用户可选）
-const ALLOWED_MODELS = new Set([
+// 允许的 model 白名单（Q4：用户可选）；export 供 api-keys.js 校验密钥的 allowedModels 子集
+export const ALLOWED_MODELS = new Set([
   'claude-opus-4-7',
   'claude-opus-4-8',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
   'claude-fable-5',
 ]);
-// claude --effort 合法档位（与 session-manager 同集）
-const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+// claude --effort 合法档位（与 session-manager 同集）；export 理由同上
+export const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 // 规范化「附加本地文件」路径数组：字符串、trim、去空、去重、限量；不校验文件系统存在性
 //（选时由 Electron dialog 保证存在，执行时若已删由 claude Read 自行报错——比 plan 保存时强校验更鲁棒）

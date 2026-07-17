@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { P } from './paths.js';
+import { ALLOWED_MODELS, ALLOWED_EFFORTS } from './task-actions.js';
 
 // 外部任务 API 的密钥件（swak_ = ScrumWS Api Key）。铸造/存储模式对齐 cloud/src/auth.js：
 // 随机 32B base64url、明文只在创建响应里回一次、落盘只存 sha256。每个 key 绑定一个 source——
@@ -31,13 +32,40 @@ function nowStr() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+// 去重 + trim 的字符串数组归一（策略白名单入参用）
+function normStrArr(v, max = 20) {
+  if (!Array.isArray(v)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of v) {
+    const s = String(raw || '').trim();
+    if (!s || s.length > 500 || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 // 创建 key：label = 人读备注；source = 该 key 建任务的来源标签（校验规则与 createTask.source 一致）。
+// 可选策略白名单（空 = 不限；由 external-ingest 在建任务时执行）：
+//   allowedModels / allowedEfforts —— 必须是全局白名单子集；请求省略该字段时取首项为默认
+//   allowedCwds —— 允许的工作目录（绝对路径；请求 cwd 须等于某项或在其之下，省略取首项）
 // 返回 {ok, key(存盘条目), plaintext}；plaintext 只此一次，之后任何端点不再可取。
-export function createApiKey({ label, source }) {
+export function createApiKey({ label, source, allowedModels, allowedEfforts, allowedCwds }) {
   const lab = String(label || '').trim().slice(0, 100);
   const src = String(source || '').trim();
   if (!lab) return { ok: false, error: 'label required' };
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
+  const models = normStrArr(allowedModels);
+  for (const m of models) if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `allowedModels 含非白名单模型：${m}（可用：${Array.from(ALLOWED_MODELS).join(', ')}）` };
+  const efforts = normStrArr(allowedEfforts);
+  for (const e of efforts) if (!ALLOWED_EFFORTS.has(e)) return { ok: false, error: `allowedEfforts 含非法档位：${e}（可用：${Array.from(ALLOWED_EFFORTS).join(', ')}）` };
+  const cwds = [];
+  for (const c of normStrArr(allowedCwds)) {
+    if (!path.isAbsolute(c)) return { ok: false, error: `allowedCwds 须为绝对路径：${c}` };
+    cwds.push(path.resolve(c));
+  }
   const plaintext = `swak_${crypto.randomBytes(32).toString('base64url')}`;
   const entry = {
     id: crypto.randomBytes(6).toString('hex'),
@@ -49,6 +77,9 @@ export function createApiKey({ label, source }) {
     disabled: false,
     lastUsedAt: null,
   };
+  if (models.length) entry.allowedModels = models;
+  if (efforts.length) entry.allowedEfforts = efforts;
+  if (cwds.length) entry.allowedCwds = cwds;
   const keys = readKeys();
   keys.push(entry);
   writeKeys(keys);
@@ -57,7 +88,13 @@ export function createApiKey({ label, source }) {
 
 // 列表/响应视图：永不外带 hash
 function publicView(k) {
-  return { id: k.id, label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt, disabled: !!k.disabled, lastUsedAt: k.lastUsedAt || null };
+  return {
+    id: k.id, label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt,
+    disabled: !!k.disabled, lastUsedAt: k.lastUsedAt || null,
+    allowedModels: Array.isArray(k.allowedModels) ? k.allowedModels : [],
+    allowedEfforts: Array.isArray(k.allowedEfforts) ? k.allowedEfforts : [],
+    allowedCwds: Array.isArray(k.allowedCwds) ? k.allowedCwds : [],
+  };
 }
 
 export function listApiKeys() {

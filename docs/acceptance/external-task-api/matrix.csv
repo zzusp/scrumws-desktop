@@ -1,31 +1,39 @@
-case,desc,round-1
-A1,GET /api/apikeys 初始空列表,PASS
-A2,创建密钥（swak_ 明文一次性返回、prefix 对齐、source 绑定）,PASS
-A3,创建第二把密钥（issue）,PASS
-A4,非法 source 拒绝 400,PASS
-A5,空 label 拒绝 400,PASS
-A6,列表不泄漏 hash/完整明文,PASS
-B1,外部建任务无 Authorization → 401,PASS
-B2,伪造密钥 → 401,PASS
-B3,有效密钥建任务：默认 plan、source 强制取密钥绑定值（体内 source 忽略）,PASS
-B4,磁盘任务包断言：task.json source/externalKey + state.json plan,PASS
-B5,同 source 同 externalKey 幂等：existed=true 且 taskKey 不变,PASS
-B6,幂等键按 source 分命名空间：不同密钥同键各建各的,PASS
-B7,缺 title 走 createTask 校验 400,PASS
-B8,externalKey >200 字符拒绝 400,PASS
-C1,按 taskKey 查状态（含 externalKey 回显）,PASS
-C2,按 externalKey 查状态（台账解析）,PASS
-C3,跨 source 查他人任务 → 404,PASS
-C4,未登记 externalKey → 404,PASS
-C5,查状态无鉴权 → 401,PASS
-D1,禁用密钥后 → 401,PASS
-D2,重新启用后恢复可用,PASS
-D3,任务删除后同 externalKey 重建（台账掉旧建新）,PASS
-D4,删除密钥后 → 401,PASS
-E1,lastUsedAt 使用后刷新,PASS
-S1,外部建的 plan 任务出现在 /api/state lifecycle.plan（看板集成）,PASS
-U1,#/apikeys 路由：视图可见（rect 非退化）+ board 负对照 + 导航高亮 + 面包屑,PASS
-U2,生成密钥：一次性明文框（swak_）+ curl 示例渲染,PASS
-U3,列表行渲染（备注/来源/状态/操作按钮齐全）,PASS
-U4,行内禁用 → 状态变「已禁用」,PASS
-U5,删除：customConfirm 弹窗 → 确认 → 行移除,PASS
+case,desc,round-1,round-2
+A1,GET /api/apikeys 初始空列表,PASS,PASS
+A2,创建密钥（swak_ 明文一次性返回、prefix 对齐、source 绑定）,PASS,PASS
+A3,创建第二把密钥（issue）,PASS,PASS
+A4,非法 source 拒绝 400,PASS,PASS
+A5,空 label 拒绝 400,PASS,PASS
+A6,列表不泄漏 hash/完整明文,PASS,PASS
+B1,外部建任务无 Authorization → 401,PASS,PASS
+B2,伪造密钥 → 401,PASS,PASS
+B3,有效密钥建任务：默认 plan、source 强制取密钥绑定值（体内 source 忽略）,PASS,PASS
+B4,磁盘任务包断言：task.json source/externalKey + state.json plan,PASS,PASS
+B5,同 source 同 externalKey 幂等：existed=true 且 taskKey 不变,PASS,PASS
+B6,幂等键按 source 分命名空间：不同密钥同键各建各的,PASS,PASS
+B7,缺 title 走 createTask 校验 400,PASS,PASS
+B8,externalKey >200 字符拒绝 400,PASS,PASS
+C1,按 taskKey 查状态（含 externalKey 回显）,PASS,PASS
+C2,按 externalKey 查状态（台账解析）,PASS,PASS
+C3,跨 source 查他人任务 → 404,PASS,PASS
+C4,未登记 externalKey → 404,PASS,PASS
+C5,查状态无鉴权 → 401,PASS,PASS
+D1,禁用密钥后 → 401,PASS,PASS
+D2,重新启用后恢复可用,PASS,PASS
+D3,任务删除后同 externalKey 重建（台账掉旧建新）,PASS,PASS
+D4,删除密钥后 → 401,PASS,PASS
+E1,lastUsedAt 使用后刷新,PASS,PASS
+S1,外部建的 plan 任务出现在 /api/state lifecycle.plan（看板集成）,PASS,-
+F1,心跳 200 / 无鉴权 401,-,PASS
+P1,建带策略密钥（allowedModels/Efforts/Cwds 外显）,-,PASS
+P2,allowedModels 含非白名单模型拒绝 400,-,PASS
+P3,allowedCwds 相对路径拒绝 400,-,PASS
+P4,请求省略 model/effort/cwd → 取白名单首项（磁盘断言）,-,PASS
+P5,白名单内显式值 + 子目录 cwd 放行,-,PASS
+P6,越界 model/effort/cwd 一律 400,-,PASS
+P7,无策略旧密钥不受限,-,PASS
+U1,#/apikeys 路由：视图可见（rect 非退化）+ board 负对照 + 导航高亮 + 面包屑,PASS,PASS
+U2,生成密钥：一次性明文框（swak_）+ curl 示例渲染,PASS,PASS
+U3,列表行渲染（备注/来源/状态/操作按钮齐全）,PASS,PASS
+U4,行内禁用 → 状态变「已禁用」,PASS,PASS
+U5,删除：customConfirm 弹窗 → 确认 → 行移除,PASS,PASS

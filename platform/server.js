@@ -503,6 +503,13 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    // 来源心跳：发起端每 tick 打一下即可让「API 密钥」页显示该来源活跃状态（verifyApiKey 已刷 lastUsedAt，
+    // 端点本身无副作用）。不用长连接：发起端多为短命定时进程（fork per tick），无宿主可持连。
+    if (req.method === 'POST' && pathname === '/api/external/heartbeat') {
+      const auth = verifyApiKey(req.headers.authorization);
+      if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+      return sendJson(res, 200, { ok: true });
+    }
     if (pathname === '/api/external/task/status') {
       const auth = verifyApiKey(req.headers.authorization);
       if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
