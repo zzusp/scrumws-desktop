@@ -4,6 +4,7 @@ import { P } from '../paths.js';
 import { parse } from '../timeutil.js';
 import { taskRev } from './rev.js';
 import { readSynced, writeSynced } from './synced.js';
+import { readCloudLinks } from './links.js';
 import { cloudRequest } from './http.js';
 
 const UPSERT_BATCH = 50;          // 契约 §6.9：50 条/批（prompt 最长 100000 字符，兜住 body 体积）
@@ -83,9 +84,13 @@ export function buildUpload(card) {
  * @returns {Promise<{pushed:number, needFull:string[], markedMissing:number, errors:string[]}>}
  */
 export async function reconcileOnce(target, snapshot, opts = {}) {
-  const cards = flattenCards(snapshot);
+  // 决策 14：只对账「云端下发」的任务（有 cloud link 的）。本地手敲 / CLI / API / 手机中继建的活
+  // 在这里就被摘掉，绝不进 cur/pending/digest —— 既不上行，digest 也不把它们报给云端（不进集合的
+  // 任务云端会标 local_missing，等于顺带把历史误传的本地卡清出看板）。P2 未落地 = links 空 = 上行空集。
+  const linked = readCloudLinks();
+  const cards = flattenCards(snapshot).filter((c) => c?.taskKey && linked.has(c.taskKey));
   const cur = new Map();
-  for (const c of cards) if (c?.taskKey) cur.set(c.taskKey, taskRev(c));
+  for (const c of cards) cur.set(c.taskKey, taskRev(c));
   const prev = readSynced();
   const errors = [];
   let needFull = [];
