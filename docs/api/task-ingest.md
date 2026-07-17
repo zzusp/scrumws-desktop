@@ -88,61 +88,9 @@ curl -s -X POST http://127.0.0.1:8799/api/task/create \
 
 ## 外部 API（带鉴权 · 推荐外部系统使用）
 
-`/api/task/create` 无鉴权、来源标签由请求方自报，适合本机自用；**外部系统（钉钉派发器、issue 检查器、其他机器人）建议走外部通道** `/api/external/*`：
+`/api/task/create` 无鉴权、来源标签由请求方自报，适合本机自用；**外部系统（钉钉派发器、issue 检查器、其他机器人）走外部通道 `/api/external/*`**——带 swak_ 密钥鉴权、per-key 策略白名单（模型/effort/目录/直执权限）、externalKey 幂等去重、whoami 自省与来源心跳。
 
-- **鉴权**：`Authorization: Bearer swak_…`。密钥在桌面端「API 密钥」菜单页生成，可禁用/删除；明文留存本机（`runtime/api-keys.json`，仅本机管理面可见），列表行内「复制」即可取回原文。
-- **来源可信**：每把密钥绑定一个 `source`，该密钥建的任务一律记为此来源（请求体里的 `source` 忽略），查询也只能查本来源的任务。
-- **per-key 策略白名单**（创建密钥时**三项都必选**——全不选 = 没有权限，无法创建）：`allowedModels` / `allowedEfforts`（须为全局白名单子集）、`allowedCwds`（绝对路径列表；任务 `cwd` 须等于某项或在其之下，Windows 大小写不敏感）。请求省略对应字段时取白名单**首项**为该密钥默认；请求越界一律 `400 …不在该密钥允许范围…`；旧格式无策略字段的密钥建任务一律 `400 该密钥未配置…（策略必选=无权限）`，须重新生成。
-- **默认 plan 桶 + 直接执行权限**：外部推入的任务缺省 `plan:true`（人工在看板确认后才执行）。显式传 `plan:false` 直进 `queued` 自动执行**需要密钥开启「允许直接执行」（`allowQueued`，默认关）**——未开启的密钥传 `plan:false` 一律 `400 该密钥不允许直接排队执行…`。
-- **密钥可编辑 / 可复制**：「API 密钥」页行内「编辑」改备注/来源/策略/直执权限（密钥本体与使用记录不变，`POST /api/apikeys/update`）；「复制」把**原密钥明文**复制进剪贴板。明文留存前创建的旧版密钥无法取回（只存了 sha256），按钮置灰，可编辑配置或删除重建。
-- **幂等去重**：可带 `externalKey`（≤200 字符，来源侧唯一事件 id，如钉钉消息时间戳、issue 编号）。同 source 同 `externalKey` 重复调用不重复建任务，返回原 `taskKey` + `existed:true`（台账存 `runtime/external-ingest.json`；对应任务被删除后同键会重建）。
-- **来源心跳**：`POST /api/external/heartbeat`（仅带鉴权头，无 body）→ `200 {"ok":true}`。发起端每 tick 打一下即可让「API 密钥」页显示该来源活跃（lastUsedAt 5 分钟内亮绿点）。无副作用；不用长连接——发起端多为短命定时进程，无宿主可持连，活跃度以心跳新鲜度判定更准。
-
-### 发起
-
-```
-POST http://127.0.0.1:<SCRUMWS_PORT>/api/external/task/create
-Authorization: Bearer swak_…
-Content-Type: application/json
-```
-
-Body 字段同 `/api/task/create`，差异：**无 `source`**（取密钥绑定值）、`plan` 缺省 `true`、增加可选 `externalKey`。
-
-成功（HTTP 200）：
-```json
-{ "ok": true, "taskKey": "chat:20260717103012-482", "state": "plan", "spawned": false, "existed": false }
-```
-- 幂等命中：`{ "ok": true, "existed": true, "taskKey": "<原任务>", "state": "<当前状态>" }`，不新建。
-
-失败：`401 {"ok":false,"error":"unauthorized"}`（缺头 / 密钥错 / 已禁用 / 已删除）；`400` 同 `/api/task/create` 错误表，另有 `externalKey 超长（≤200 字符）`。
-
-### 查询
-
-```
-GET http://127.0.0.1:<SCRUMWS_PORT>/api/external/task/status?taskKey=…      # 或
-GET http://127.0.0.1:<SCRUMWS_PORT>/api/external/task/status?externalKey=…
-Authorization: Bearer swak_…
-```
-
-成功（HTTP 200）：
-```json
-{ "ok": true, "taskKey": "chat:20260717103012-482", "source": "chat", "title": "…",
-  "state": "plan", "outcome": null, "createdAt": "2026-07-17 10:30:12", "resolvedAt": null, "externalKey": "…" }
-```
-`state` 含归档任务（查得到）；跨来源 / 不存在 / externalKey 未登记一律 `404 {"ok":false,"error":"task not found"}`（不泄露其它来源任务存在性）。
-
-### curl 示例
-
-```bash
-# 发起（幂等）：同一条钉钉消息重复推不重复建任务
-curl -s -X POST http://127.0.0.1:8799/api/external/task/create \
-  -H 'Authorization: Bearer swak_xxxxxxxx' -H 'Content-Type: application/json' \
-  -d '{"title":"群里的活","prompt":"…","externalKey":"chat-cidXXX-1737012345678"}'
-
-# 查询
-curl -s -H 'Authorization: Bearer swak_xxxxxxxx' \
-  'http://127.0.0.1:8799/api/external/task/status?externalKey=chat-cidXXX-1737012345678'
-```
+**完整契约与接入步骤见专门的指导文档：[`external-api-guide.md`](external-api-guide.md)**（单一事实源，本文不再重复端点明细）。
 
 ---
 

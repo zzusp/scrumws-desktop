@@ -172,6 +172,19 @@ const main = async () => {
   record('F1-heartbeat', r.status === 200 && r.json?.ok === true && hbNoAuth.status === 401,
     `心跳 200 / 无鉴权 401 → ${r.status}/${hbNoAuth.status}`);
 
+  // ---- W. 持钥方自省（whoami）----
+  r = await req('GET', '/api/external/whoami', { token: chatKey.plaintext });
+  const wk = r.json?.key || {};
+  record('W1-whoami', r.status === 200 && wk.source === 'chat' && wk.prefix === chatKey.key.prefix
+    && JSON.stringify(wk.allowedModels) === JSON.stringify(FULL_POLICY.allowedModels)
+    && JSON.stringify(wk.allowedEfforts) === JSON.stringify(FULL_POLICY.allowedEfforts)
+    && wk.allowedCwds.length === 1 && wk.allowQueued === true
+    && !('plaintext' in wk) && !('id' in wk) && !('hash' in wk),
+    `自省返回权限范围（source/models/efforts/cwds/allowQueued）且不带 id/plaintext/hash → ${r.status}`);
+
+  const wNoAuth = await req('GET', '/api/external/whoami');
+  record('W2-whoami-401', wNoAuth.status === 401, `无鉴权自省 → ${wNoAuth.status}`);
+
   // ---- P. per-key 策略白名单 ----
   r = await req('POST', '/api/apikeys/create', {
     body: {
