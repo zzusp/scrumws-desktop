@@ -86,6 +86,63 @@ curl -s -X POST http://127.0.0.1:8799/api/task/create \
 
 ---
 
+## 外部 API（带鉴权 · 推荐外部系统使用）
+
+`/api/task/create` 无鉴权、来源标签由请求方自报，适合本机自用；**外部系统（钉钉派发器、issue 检查器、其他机器人）建议走外部通道** `/api/external/*`：
+
+- **鉴权**：`Authorization: Bearer swak_…`。密钥在桌面端「API 密钥」菜单页生成（明文只显示一次），可禁用/删除。
+- **来源可信**：每把密钥绑定一个 `source`，该密钥建的任务一律记为此来源（请求体里的 `source` 忽略），查询也只能查本来源的任务。
+- **默认 plan 桶**：外部推入的任务缺省 `plan:true`（人工在看板确认后才执行）；显式传 `plan:false` 才落 `queued` 自动执行。
+- **幂等去重**：可带 `externalKey`（≤200 字符，来源侧唯一事件 id，如钉钉消息时间戳、issue 编号）。同 source 同 `externalKey` 重复调用不重复建任务，返回原 `taskKey` + `existed:true`（台账存 `runtime/external-ingest.json`；对应任务被删除后同键会重建）。
+
+### 发起
+
+```
+POST http://127.0.0.1:<SCRUMWS_PORT>/api/external/task/create
+Authorization: Bearer swak_…
+Content-Type: application/json
+```
+
+Body 字段同 `/api/task/create`，差异：**无 `source`**（取密钥绑定值）、`plan` 缺省 `true`、增加可选 `externalKey`。
+
+成功（HTTP 200）：
+```json
+{ "ok": true, "taskKey": "chat:20260717103012-482", "state": "plan", "spawned": false, "existed": false }
+```
+- 幂等命中：`{ "ok": true, "existed": true, "taskKey": "<原任务>", "state": "<当前状态>" }`，不新建。
+
+失败：`401 {"ok":false,"error":"unauthorized"}`（缺头 / 密钥错 / 已禁用 / 已删除）；`400` 同 `/api/task/create` 错误表，另有 `externalKey 超长（≤200 字符）`。
+
+### 查询
+
+```
+GET http://127.0.0.1:<SCRUMWS_PORT>/api/external/task/status?taskKey=…      # 或
+GET http://127.0.0.1:<SCRUMWS_PORT>/api/external/task/status?externalKey=…
+Authorization: Bearer swak_…
+```
+
+成功（HTTP 200）：
+```json
+{ "ok": true, "taskKey": "chat:20260717103012-482", "source": "chat", "title": "…",
+  "state": "plan", "outcome": null, "createdAt": "2026-07-17 10:30:12", "resolvedAt": null, "externalKey": "…" }
+```
+`state` 含归档任务（查得到）；跨来源 / 不存在 / externalKey 未登记一律 `404 {"ok":false,"error":"task not found"}`（不泄露其它来源任务存在性）。
+
+### curl 示例
+
+```bash
+# 发起（幂等）：同一条钉钉消息重复推不重复建任务
+curl -s -X POST http://127.0.0.1:8799/api/external/task/create \
+  -H 'Authorization: Bearer swak_xxxxxxxx' -H 'Content-Type: application/json' \
+  -d '{"title":"群里的活","prompt":"…","externalKey":"chat-cidXXX-1737012345678"}'
+
+# 查询
+curl -s -H 'Authorization: Bearer swak_xxxxxxxx' \
+  'http://127.0.0.1:8799/api/external/task/status?externalKey=chat-cidXXX-1737012345678'
+```
+
+---
+
 ## CLI
 
 ```

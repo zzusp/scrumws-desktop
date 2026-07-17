@@ -708,6 +708,16 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .du-tr-empty td{color:var(--dim)}
 .du-table tfoot td{border-top:2px solid var(--hair);border-bottom:none;font-weight:700;color:var(--ink);padding-top:10px}
 .du-table tfoot td:first-child{color:var(--mut);font-family:inherit;font-weight:600}
+
+/* ---------- API 密钥页：密钥列表表格（左对齐文本表，区别于 du-table 的数字表）---------- */
+.ak-table-wrap{overflow-x:auto}
+.ak-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.ak-table th{text-align:left;font-size:10px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0 14px 9px;border-bottom:1px solid var(--hair)}
+.ak-table td{text-align:left;padding:8px 14px;color:var(--ink2);border-bottom:1px solid color-mix(in oklab,var(--hair) 55%,transparent);vertical-align:middle}
+.ak-table td.mono{font-family:var(--mono);font-size:11.5px;white-space:nowrap}
+.ak-plain{display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px 12px;background:var(--amberS);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab, var(--warning) 30%, transparent);border-radius:var(--r-md)}
+.ak-plain code{font-family:var(--mono);font-size:11.5px;word-break:break-all;color:var(--ink)}
 </style>
 </head>
 <body>
@@ -754,6 +764,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
       <a href="#/dashboard" data-nav="dashboard">
         <svg class="ic" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
         <span class="sb-label">数据看板</span>
+      </a>
+      <a href="#/apikeys" data-nav="apikeys">
+        <svg class="ic" viewBox="0 0 24 24"><path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777Zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        <span class="sb-label">API 密钥</span>
       </a>
       <a href="#/settings" data-nav="settings">
         <svg class="ic" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -921,6 +935,36 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <div style="font-size:24px;margin-bottom:8px">📊</div>
               数据看板 · 暂无内容<br>后续想到要展示的运营洞察再补
             </div>
+          </section>
+        </div>
+
+        <!-- ============ 页面 3c：API 密钥（外部任务通道 /api/external/* 的鉴权凭据管理）============ -->
+        <div id="view-apikeys" class="view" style="display:none">
+          <section class="card" style="max-width:840px;margin-bottom:var(--gap)">
+            <div class="sec-head">
+              <h2>API 密钥</h2>
+              <span class="sec-sub">外部系统经 <code>POST /api/external/task/create</code> 发起、<code>GET /api/external/task/status</code> 查询任务的鉴权凭据 · 每个密钥绑定一个来源（source）：该密钥建的任务一律记为此来源、<b>默认落 plan 桶</b>（看板确认后执行）· 支持 externalKey 幂等去重 · 契约见 docs/api/task-ingest.md</span>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div class="field" style="flex:2;min-width:220px">
+                <span class="f-label">备注（这把钥匙给谁用）</span>
+                <input id="akLabelInput" class="field-input" autocomplete="off" placeholder="如：钉钉群消息派发器">
+              </div>
+              <div class="field" style="flex:1;min-width:160px">
+                <span class="f-label">来源 source（任务来源标签）</span>
+                <input id="akSourceInput" class="field-input mono" autocomplete="off" placeholder="如：chat / issue">
+              </div>
+              <button class="btn" id="akCreateBtn" style="margin-bottom:1px">生成密钥</button>
+            </div>
+            <div id="akCreateErr" class="form-err"></div>
+            <div id="akPlainBox" style="display:none"></div>
+          </section>
+          <section class="card" style="max-width:840px">
+            <div class="sec-head">
+              <h2>已有密钥</h2>
+              <span class="sec-sub">明文只在生成时展示一次，此处仅显示前缀 · 禁用/删除立即生效（在用的发起端会开始收 401）</span>
+            </div>
+            <div id="akListBox"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
         </div>
 
@@ -1288,6 +1332,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
     var name = h.indexOf('#/runtime') === 0 ? '运行时'
       : h.indexOf('#/dashboard') === 0 ? '数据看板'
       : h.indexOf('#/archive') === 0 ? '任务归档'
+      : h.indexOf('#/apikeys') === 0 ? 'API 密钥'
       : h.indexOf('#/settings') === 0 ? '设置'
       : '任务看板';
     return [{ label: 'ScrumWS', href: '#/board' }, { label: name }];

@@ -420,7 +420,9 @@ export function taskCwds() {
 // cwd（可选）：claude 工作目录，校验存在且是目录后写进 task.json.cwd。effort（可选）：reasoning 档位。
 // scheduledAt（可选）：定时执行时刻（本地串），到点由调度器把 plan 提升为执行；给了则强制 plan。
 // worktree/baseBranch（可选）：git 项目下隔离 worktree 运行 + 签出基分支。dynamicWorkflow（可选）：动态工作流开关。
-export function createTask({ source, title, prompt, model, description, plan, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }) {
+// externalKey（可选）：外部通道（/api/external/task/create）的幂等键，原样写入 task.json 供追溯；
+// 幂等判定在 external-ingest.js 台账，本函数不做去重。
+export function createTask({ source, title, prompt, model, description, plan, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments, externalKey }) {
   const src = String(source || 'manual').trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
   const t = String(title || '').trim();
@@ -480,6 +482,8 @@ export function createTask({ source, title, prompt, model, description, plan, cw
     if (dynFlow != null) taskJson.dynamicWorkflow = dynFlow;
     if (attachList.length) taskJson.attachments = attachList;   // 附加本地文件：绝对路径数组，startTask 拼进首轮 prompt
     if (desc) taskJson.description = desc;
+    const extKey = String(externalKey || '').trim();
+    if (extKey) taskJson.externalKey = extKey;
     fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(taskJson, null, 2), 'utf8');
     // state.json = plan（先计划，用户确认后执行）或 queued（即将自动起会话）
     fs.writeFileSync(path.join(taskDir, 'state.json'), JSON.stringify({
