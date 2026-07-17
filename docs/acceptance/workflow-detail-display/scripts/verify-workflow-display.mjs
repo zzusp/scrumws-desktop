@@ -72,53 +72,83 @@ const [L1, L2, L3] = wfLaunches;
 const MIN = 60 * 1000;
 const tmp = path.join(os.tmpdir(), `wf-verify-${process.pid}.jsonl`);
 
-// ---- A. 后台任务计数 ----
-// workflow 的死线锚点是 transcriptDir 的最后活动时刻（见 collect-cli lastActivityMs），它是**实时文件系统
-// 状态**——直接拿真语料做时间旅行不可复现（那个 dir 现在还在被真会话写）。故这里用真实启动行做骨架、
-// 只重写 timestamp 与 transcriptDir 两个字段，把 dir 指向自建临时目录、mtime 由测试设定 → 判据可控可复现。
-// 结构仍是 CC 真实落盘的那一行，不是手搓的假 JSON。
-const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-dirs-'));
-let seq = 0;
-// 造一个「最后活动在 idleMin 分钟前」的 transcriptDir；idleMin=null → 目录不存在（取不到活动时刻）
-const makeDir = (idleMin, now) => {
-  const d = path.join(stage, `wf-${++seq}`);
-  if (idleMin === null) return d;                       // 故意不建 → readdir 抛 → lastActivityMs=0
-  fs.mkdirSync(d, { recursive: true });
-  const f = path.join(d, 'agent-x.jsonl');
-  fs.writeFileSync(f, '{}', 'utf8');
-  const t = new Date(now - idleMin * MIN);
-  fs.utimesSync(f, t, t);
-  return d;
+// ---- A. 后台任务计数：只由「终态通知 / TaskStop / 自带硬死线」收敛，不按时长猜死活 ----
+// 四类后台任务的启动行都取自**全库真实语料**（下面 realLaunch 按签名捞第一条真行），只重写 timestamp，
+// 其余字段原样 → 结构是 CC 真实落盘的，不是手搓 JSON。
+// 覆盖重点：启动很久却仍在跑的任务必须计入（现行 15min 死线误杀 bgcmd 17% / workflow 36% / subagent 4%）。
+const CORPUS = path.join(os.homedir(), '.claude/projects');
+const findLaunch = (pred) => {
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { const r = walk(p); if (r) return r; continue; }
+      if (!e.name.endsWith('.jsonl')) continue;
+      let s; try { s = fs.readFileSync(p, 'utf8'); } catch { continue; }
+      if (!/isAsync|backgroundTaskId|timeoutMs|local_workflow/.test(s)) continue;
+      for (const l of s.split(/\r?\n/)) {
+        if (!l) continue; let o; try { o = JSON.parse(l); } catch { continue; }
+        if (o.toolUseResult && typeof o.toolUseResult === 'object' && Array.isArray(o.message?.content)
+          && o.message.content.some((b) => b?.type === 'tool_result' && b.tool_use_id) && pred(o.toolUseResult)) return o;
+      }
+    }
+    return null;
+  };
+  return walk(CORPUS);
 };
-// 用 L1 的真实启动行改写 timestamp / transcriptDir；再按需附上它的终态通知行
-const scenario = ({ launchedMinAgo, idleMin, now, withTerminalNotif = false }) => {
-  const o = JSON.parse(keep.find((l) => JSON.parse(l).toolUseResult?.taskType === 'local_workflow'));
-  o.timestamp = new Date(now - launchedMinAgo * MIN).toISOString();
-  o.toolUseResult.transcriptDir = makeDir(idleMin, now);
-  const lines = [JSON.stringify(o)];
-  if (withTerminalNotif) {
-    const id = (o.message.content.find((b) => b.type === 'tool_result') || {}).tool_use_id;
-    lines.push(JSON.stringify({ type: 'user', timestamp: new Date(now - 1 * MIN).toISOString(),
-      message: { role: 'user', content: `<task-notification><task-id>x</task-id><tool-use-id>${id}</tool-use-id><status>completed</status></task-notification>` } }));
-  }
-  fs.writeFileSync(tmp, lines.join('\n'), 'utf8');
-  return countRunningBackgroundTasks(tmp, now);
+const REAL = {
+  subagent: findLaunch((r) => r.isAsync === true),
+  bgcmd: findLaunch((r) => !!r.backgroundTaskId),
+  workflow: findLaunch((r) => r.taskType === 'local_workflow'),
+  monitorOnce: findLaunch((r) => r.taskId && typeof r.timeoutMs === 'number' && r.persistent === false),
+  monitorPersist: findLaunch((r) => r.taskId && typeof r.timeoutMs === 'number' && r.persistent === true),
 };
+for (const [k, v] of Object.entries(REAL)) if (!v) console.log(`  （全库无 ${k} 样本，相关用例跳过）`);
 
 const NOW = Date.now();
-console.log('\n[A] countRunningBackgroundTasks 认 Workflow（死线锚点 = transcriptDir 最后活动）');
-ok('A1 刚启动 1min、dir 刚写过 → 计入 1',
-  scenario({ launchedMinAgo: 1, idleMin: 0, now: NOW }) === 1, '应为 1');
-ok('A2 启动 98min 前、dir 1min 前仍在写 → 计入 1（长工作流不误杀）',
-  scenario({ launchedMinAgo: 98, idleMin: 1, now: NOW }) === 1, '应为 1 —— 这条正是现场 cli:66b52133 的形态');
-ok('A3 启动 98min 前、dir 静默 30min → 剔除归 0（会话崩溃后自然收敛）',
-  scenario({ launchedMinAgo: 98, idleMin: 30, now: NOW }) === 0, '应为 0');
-ok('A4 dir 取不到（字段坏 / 目录没了）→ 退回按启动时刻比死线，98min 前 → 0',
-  scenario({ launchedMinAgo: 98, idleMin: null, now: NOW }) === 0, '应为 0');
-ok('A5 dir 取不到但刚启动 1min → 仍计入 1（不因取不到就误杀）',
-  scenario({ launchedMinAgo: 1, idleMin: null, now: NOW }) === 1, '应为 1');
-ok('A6 终态通知已到 → 归 0（配平优先，哪怕 dir 还在被写）',
-  scenario({ launchedMinAgo: 98, idleMin: 0, now: NOW, withTerminalNotif: true }) === 0, '应为 0');
+// 用某类真实启动行造场景：launchedMinAgo=启动至今；end=终态通知 / TaskStop 回执 / 无
+const scenario = (kind, { launchedMinAgo, end = null }) => {
+  const src = REAL[kind];
+  if (!src) return null;
+  const o = JSON.parse(JSON.stringify(src));
+  o.timestamp = new Date(NOW - launchedMinAgo * MIN).toISOString();
+  const r = o.toolUseResult;
+  const id = o.message.content.find((b) => b?.type === 'tool_result').tool_use_id;
+  const key = r.taskId || r.backgroundTaskId || r.agentId || null;
+  const lines = [JSON.stringify(o)];
+  if (end === 'notif') {
+    lines.push(JSON.stringify({ type: 'user', timestamp: new Date(NOW - 1 * MIN).toISOString(),
+      message: { role: 'user', content: `<task-notification><task-id>${key}</task-id><tool-use-id>${id}</tool-use-id><status>completed</status></task-notification>` } }));
+  } else if (end === 'taskstop') {
+    lines.push(JSON.stringify({ type: 'user', timestamp: new Date(NOW - 1 * MIN).toISOString(),
+      toolUseResult: { message: 'stopped', task_id: key, task_type: 'x', command: 'x' },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_stopx', content: 'ok' }] } }));
+  }
+  fs.writeFileSync(tmp, lines.join('\n'), 'utf8');
+  return countRunningBackgroundTasks(tmp, NOW);
+};
+
+console.log('\n[A] countRunningBackgroundTasks：在跑就算，不按「启动至今」猜死活');
+ok('A1 subagent 启动 36min 前、无终态通知 → 计入 1（现场 cli:66b52133 的形态）',
+  scenario('subagent', { launchedMinAgo: 36 }) === 1, '应为 1');
+ok('A2 workflow 启动 109min 前、无终态通知 → 计入 1',
+  scenario('workflow', { launchedMinAgo: 109 }) === 1, '应为 1');
+ok('A3 后台命令启动 18h 前、无终态通知 → 计入 1（全库最长实测 1085min）',
+  scenario('bgcmd', { launchedMinAgo: 18 * 60 }) === 1, '应为 1');
+ok('A4 收到终态通知 → 归 0',
+  scenario('subagent', { launchedMinAgo: 36, end: 'notif' }) === 0, '应为 0');
+ok('A5 TaskStop 回执 → 归 0（TaskStop 不发终态通知，只能读它自己的回执）',
+  scenario('workflow', { launchedMinAgo: 109, end: 'taskstop' }) === 0, '应为 0');
+if (REAL.monitorOnce) {
+  const ttlMin = REAL.monitorOnce.toolUseResult.timeoutMs / MIN;
+  ok(`A6 非 persistent Monitor 过自带硬死线(${ttlMin}min)+宽限 → 归 0（CC 到点真杀进程）`,
+    scenario('monitorOnce', { launchedMinAgo: ttlMin + 10 }) === 0, '应为 0');
+  ok('A7 非 persistent Monitor 未到自带死线 → 计入 1',
+    scenario('monitorOnce', { launchedMinAgo: 0 }) === 1, '应为 1');
+}
+if (REAL.monitorPersist) {
+  ok('A8 persistent Monitor 启动 40h 前、无终态 → 计入 1（它本就跑到 TaskStop / 会话结束）',
+    scenario('monitorPersist', { launchedMinAgo: 40 * 60 }) === 1, '应为 1');
+}
 
 // ---- B. 消息流 ⏺ 行的入参摘要 ----
 // 整份 app.js 丢进 vm 跑（被测的就是仓库里那份源码，不切片、不复制粘贴）。它是浏览器脚本，顶层会摸

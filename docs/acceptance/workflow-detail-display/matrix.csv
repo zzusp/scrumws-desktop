@@ -1,37 +1,54 @@
-case,描述,round-1,round-2
-BG-1,L1 Workflow 启动后 1min → 侧栏后台任务计入 1,PASS,-
-BG-2,L1 启动前一刻 → 0（不凭空冒出）,PASS,-
-BG-3,L2 启动后 1min → 计入 1（L1 已过 15min 死线剔除）,PASS,-
-BG-4,L2 收到终态 failed 通知后 → 配平归 0,PASS,-
-BG-5,L3 启动后 1min → 计入 1,PASS,-
-BG-6,【作废】L3 过 15min 死线 → 兜底剔除归 0,PASS(假绿),VOID
-BG-7,负对照：撤回 collect-cli 改动后 BG-1/3/5 全 FAIL（实得 0）,PASS,-
-BG-8,全库 6 个含 workflow 会话共 16 次启动：15 次在跑的全部由 0 变可见,PASS,-
-BG-9,全库唯一 1 次「启动即终态（+0.0s failed）」改动前后计数一致 → 不误计,PASS,-
-BG-10,全库回归：各会话 backgroundTaskCount 在会话末刻改动前后逐一未变,PASS,-
-A1,刚启动 1min、transcriptDir 刚写过 → 计入 1,-,PASS
-A2,启动 98min 前、dir 1min 前仍在写 → 计入 1（长工作流不误杀；现场形态）,-,PASS
-A3,启动 98min 前、dir 静默 30min → 剔除归 0（崩溃后自然收敛）,-,PASS
-A4,dir 取不到（字段坏/目录没了）+ 启动 98min 前 → 退回按启动时刻比 → 0,-,PASS
-A5,dir 取不到但刚启动 1min → 仍计入 1（不因取不到就误杀）,-,PASS
-A6,终态通知已到 → 归 0（配平优先，哪怕 dir 还在被写）,-,PASS
-A7,负对照：撤回 lastActivityMs 后 A2 FAIL（长工作流被误杀）,-,PASS
-ARG-1,首发 {script} → ⏺ 行取 meta.name（cloud-p0p1）而非脚本源码,PASS,PASS
-ARG-2,首发 {script} → 带上 meta.description,PASS,PASS
-ARG-3,迭代 {scriptPath} → 从文件名还原名、剥掉 -wf_ 后缀与 .js,PASS,PASS
-ARG-4,续跑 {scriptPath+resumeFromRunId} → 标出「续跑 <runId>」,PASS,PASS
-ARG-5,负对照：改动前摘要确为脚本源码 JSON 串,PASS,PASS
-ARG-6,摘要长度受控 ≤90 且不夹带源码,PASS,PASS
-GRP-1,Workflow 与别的工具连续成组 → 汇总句出 launched 1 workflow,-,PASS
-GRP-2,两个 Workflow 成组 → 复数 launched 2 workflows,-,PASS
-RENDER-1,离线真 CSS 渲染：三种入参形态 ⏺ 行均可读,PASS,-
-RENDER-2,入参展开区出可读多行 JS 源码（非 JSON 转义单行）,PASS,-
-RENDER-3,渲染 HTML 无未转义脚本注入,PASS,-
-E2E-1,沙箱重放「workflow 在跑」：后端 backgroundTaskCount=1,-,PASS
-E2E-2,沙箱：侧栏显示「后台任务 1 个运行中（主进程已让出，等后台完成）」,-,PASS
-E2E-3,沙箱：消息流出 3 条 Workflow ⏺ 行且都带工作流名,-,PASS
-E2E-4,沙箱：⏺ 行不再是脚本源码 JSON,-,PASS
-LIVE-1,真实在跑任务 cli:66b52133：侧栏与后端 backgroundTaskCount 一致,-,PASS
-LIVE-2,真实任务详情页渲染出 3 条 Workflow ⏺ 行（真浏览器 DOM 取证）,-,PASS
-LIVE-3,真实任务：⏺ 行显示 cloud-p0p1、续跑标 runId、无脚本源码,-,PASS
-LIVE-4,真实任务：Workflow 单独成组时平铺不折叠（⏺ 行直接可见）,-,PASS
+case,描述,round-1,round-2,round-3
+BG-1,L1 Workflow 启动后 1min → 侧栏后台任务计入 1,PASS,-,-
+BG-2,L1 启动前一刻 → 0（不凭空冒出）,PASS,-,-
+BG-3,L2 启动后 1min → 计入 1（L1 已过 15min 死线剔除）,PASS,-,-
+BG-4,L2 收到终态 failed 通知后 → 配平归 0,PASS,-,-
+BG-5,L3 启动后 1min → 计入 1,PASS,-,-
+BG-6,【作废】L3 过 15min 死线 → 兜底剔除归 0,PASS(假绿),VOID,-
+BG-7,负对照：撤回 collect-cli 改动后 BG-1/3/5 全 FAIL（实得 0）,PASS,-,-
+BG-8,全库 6 个含 workflow 会话共 16 次启动：15 次在跑的全部由 0 变可见,PASS,-,-
+BG-9,全库唯一 1 次「启动即终态（+0.0s failed）」改动前后计数一致 → 不误计,PASS,-,-
+BG-10,全库回归：各会话 backgroundTaskCount 在会话末刻改动前后逐一未变,PASS,-,-
+【作废】A1,刚启动 1min、transcriptDir 刚写过 → 计入 1,-,PASS,VOID
+【作废】A2,启动 98min 前、dir 1min 前仍在写 → 计入 1（长工作流不误杀；现场形态）,-,PASS,VOID
+【作废】A3,启动 98min 前、dir 静默 30min → 剔除归 0（崩溃后自然收敛）,-,PASS,VOID
+【作废】A4,dir 取不到（字段坏/目录没了）+ 启动 98min 前 → 退回按启动时刻比 → 0,-,PASS,VOID
+【作废】A5,dir 取不到但刚启动 1min → 仍计入 1（不因取不到就误杀）,-,PASS,VOID
+【作废】A6,终态通知已到 → 归 0（配平优先，哪怕 dir 还在被写）,-,PASS,VOID
+【作废】A7,负对照：撤回 lastActivityMs 后 A2 FAIL（长工作流被误杀）,-,PASS,VOID
+ARG-1,首发 {script} → ⏺ 行取 meta.name（cloud-p0p1）而非脚本源码,PASS,PASS,-
+ARG-2,首发 {script} → 带上 meta.description,PASS,PASS,-
+ARG-3,迭代 {scriptPath} → 从文件名还原名、剥掉 -wf_ 后缀与 .js,PASS,PASS,-
+ARG-4,续跑 {scriptPath+resumeFromRunId} → 标出「续跑 <runId>」,PASS,PASS,-
+ARG-5,负对照：改动前摘要确为脚本源码 JSON 串,PASS,PASS,-
+ARG-6,摘要长度受控 ≤90 且不夹带源码,PASS,PASS,-
+GRP-1,Workflow 与别的工具连续成组 → 汇总句出 launched 1 workflow,-,PASS,-
+GRP-2,两个 Workflow 成组 → 复数 launched 2 workflows,-,PASS,-
+RENDER-1,离线真 CSS 渲染：三种入参形态 ⏺ 行均可读,PASS,-,-
+RENDER-2,入参展开区出可读多行 JS 源码（非 JSON 转义单行）,PASS,-,-
+RENDER-3,渲染 HTML 无未转义脚本注入,PASS,-,-
+E2E-1,沙箱重放「workflow 在跑」：后端 backgroundTaskCount=1,-,PASS,-
+E2E-2,沙箱：侧栏显示「后台任务 1 个运行中（主进程已让出，等后台完成）」,-,PASS,-
+E2E-3,沙箱：消息流出 3 条 Workflow ⏺ 行且都带工作流名,-,PASS,-
+E2E-4,沙箱：⏺ 行不再是脚本源码 JSON,-,PASS,-
+LIVE-1,真实在跑任务 cli:66b52133：侧栏与后端 backgroundTaskCount 一致,-,PASS,-
+LIVE-2,真实任务详情页渲染出 3 条 Workflow ⏺ 行（真浏览器 DOM 取证）,-,PASS,-
+LIVE-3,真实任务：⏺ 行显示 cloud-p0p1、续跑标 runId、无脚本源码,-,PASS,-
+LIVE-4,真实任务：Workflow 单独成组时平铺不折叠（⏺ 行直接可见）,-,PASS,-
+C1,subagent 启动 36min 前无终态 → 计入 1（现场 cli:66b52133 的形态）,-,-,PASS
+C2,workflow 启动 109min 前无终态 → 计入 1,-,-,PASS
+C3,后台命令启动 18h 前无终态 → 计入 1（全库最长实测 1085min）,-,-,PASS
+C4,收到终态通知 → 归 0,-,-,PASS
+C5,TaskStop 回执 → 归 0,-,-,PASS
+C6,非 persistent Monitor 过自带硬死线+宽限 → 归 0（CC 到点真杀）,-,-,PASS
+C7,非 persistent Monitor 未到自带死线 → 计入 1,-,-,PASS
+C8,persistent Monitor 启动 40h 前无终态 → 计入 1,-,-,PASS
+S1,沙箱①活会话 + 未配平后台任务 → 后端计入,-,-,PASS
+S2,沙箱①侧栏显示「后台任务 N 个运行中」,-,-,PASS
+S3,沙箱①消息流 3 条 Workflow ⏺ 行且带工作流名,-,-,PASS
+S4,沙箱①⏺ 行不再是脚本源码 JSON,-,-,PASS
+S5,沙箱②死会话（真进程真杀+注册表残留）→ 计数归 0,-,-,PASS
+S6,沙箱②死会话 → 侧栏不显示该行,-,-,PASS
+R1,负对照：撤回本轮改动后现场实得 0（本轮实得 1）,-,-,PASS
+R2,全量回归：真看板 51 个任务仅 cli:66b52133 由 0→1，其余未变,-,-,PASS
+R3,真浏览器真实详情页：侧栏与后端一致 + 3 条 Workflow ⏺ 行,-,-,PASS

@@ -13,7 +13,9 @@ import { detectWorktreeBase } from './git.js';
 
 // CC 会话 jsonl 根：默认 ~/.claude/projects；SCRUMWS_CC_PROJECTS 可覆盖（沙箱验证隔离用，对齐 SCRUMWS_* 约定）
 const CC_PROJECTS = process.env.SCRUMWS_CC_PROJECTS || path.join(os.homedir(), '.claude', 'projects');
-const CC_SESSIONS = path.join(os.homedir(), '.claude', 'sessions');
+// 同上，SCRUMWS_CC_SESSIONS 可覆盖。sessionAlive 现在是「未配平的 launched 是否陈旧」的唯一防线
+// （见 countRunningBackgroundTasks 上方注释），沙箱里必须能造活/死会话才验得了它。
+const CC_SESSIONS = process.env.SCRUMWS_CC_SESSIONS || path.join(os.homedir(), '.claude', 'sessions');
 
 // CC 活进程注册表：~/.claude/sessions/<pid>.json = {pid, sessionId, cwd, status: idle|busy, kind}
 // 进程死后文件可能残留 → process.kill(pid,0) 判活兜底（EPERM 也算活）
@@ -172,17 +174,26 @@ function extractTailInfo(tailLines) {
   return { last, lastTurn, lastAssistant, lastUser, lastMode, lastEnv };
 }
 
-// 后台任务启动后超过死线仍未被终态 <task-notification> 配平 → 视为已结束、兜底剔除。
-// 会话崩溃 / 通知真丢时不能把看板永久钉在"N 个后台任务运行中"；真卡死超此阈值的极少，
-// 宁可少报不永久误报。Monitor 另有自带硬死线（见 bgLaunchTtlMs），比此统一阈值精确。
-const BG_STALE_MS = 15 * 60 * 1000;
+// 【为什么没有"启动 N 分钟就当它结束"的兜底】
+// 曾有个 BG_STALE_MS=15min：启动超时仍未被终态通知配平 → 兜底剔除，理由是"防会话崩 / 通知丢时永久误报，
+// 真卡死超此阈值的极少"。实测两头都不成立，已删：
+//   · "超 15min 的极少"是错的 —— 全库真实时长：bgcmd 17%(141/844) / workflow 36%(10/28) / subagent 4%
+//     超 15min，最长的后台命令跑了 18 小时。死线把**在跑**的任务判成已结束，恰好误杀最该显示的那些。
+//   · "防通知丢"也基本落空 —— 全库真·通知丢失（会话之后还活跃 >30min 却始终无终态）：subagent 0%、
+//     workflow 0%、bgcmd 1.3%(6/471)。为 1.3% 的误报去换 17~36% 的漏报，不划算。
+//     （历史：该兜底是 PR#37 加的，当时真根因是"终态通知有三种落盘载体、旧代码只认 user"→ 配不平；
+//      三载体已在 taskNotificationText 修好，兜底就成了只剩副作用的遗留。）
+// 现在的判据回到语义本身：**后台任务是会话进程的子进程，进程活着才可能有在跑的后台任务**——
+// 由调用方用 pid 实测的 sessionAlive 短路（collectOneCli / collect.js deriveBackgroundState 同语义），
+// 会话一死即精确归 0，不需要拿时长猜。Monitor 的自带硬死线仍然认（CC 到点真杀进程），见 bgLaunchTtlMs。
 const BG_TTL_GRACE_MS = 60 * 1000;   // 自带死线的宽限：到点杀进程 + 落通知有延迟
 
 // 终态 status：只有它们代表后台任务真结束。stopped = CC 在会话 resume 时对上轮遗留后台命令的对账补发。
 const TERMINAL_STATUS = new Set(['completed', 'failed', 'killed', 'stopped']);
 
 // 读 CC 原生落盘的 toolUseResult（tool_result 行的兄弟字段，CC 侧写入）：该 tool_result 是否"起了一个
-// 后台任务"。命中返回该任务自带的硬死线 ttl(ms)，0 = 无声明死线（落 BG_STALE_MS）；null = 不是后台启动。
+// 后台任务"。命中返回该任务自带的硬死线 ttl(ms)，0 = 无自带死线（只由终态通知 / TaskStop / 会话结束收敛）；
+// null = 不是后台启动。
 // 四类后台任务的结构化签名互斥（实测全库 1682 个 jsonl，键签名两两不重叠）：
 //   Agent 后台 subagent                → isAsync:true（status=async_launched）
 //   Bash/PowerShell run_in_background  → backgroundTaskId（含超预算自动转后台；前台命令无此键）
@@ -197,34 +208,13 @@ function bgLaunchTtlMs(r) {
   if (r.isAsync === true) return 0;
   if (r.backgroundTaskId) return 0;
   // Workflow：整条工作流（编排若干 subagent）在后台跑，无自带死线。它的 subagent 落在自己的
-  // transcriptDir、不进主 jsonl，故整条工作流按一个后台任务计。死线锚点另算，见 lastActivityMs。
+  // transcriptDir、不进主 jsonl，故整条工作流按一个后台任务计。
   if (r.taskType === 'local_workflow') return 0;
   // Monitor 的 timeoutMs 是 CC 的硬死线（到点必杀进程），persistent 则跑到 TaskStop / 会话结束
   if (r.taskId && typeof r.timeoutMs === 'number' && typeof r.persistent === 'boolean') {
     return r.persistent ? 0 : r.timeoutMs;
   }
   return null;
-}
-
-// Workflow 的「最后活动时刻」= transcriptDir 里最新文件的 mtime（0 = 取不到）。
-// 为什么 workflow 不能像 subagent / 后台命令那样用「启动至今」比 BG_STALE_MS：workflow 编排多个 subagent、
-// 实测单次跑 3～31min，还盯完过一条跑满 108.9min 才收尾的 —— 15min 死线会在它干到第 15 分钟时抹掉它、
-// 之后 90 多分钟一直错报"没有后台任务"，而这恰是最该显示的那种。它又没有心跳可用：主 jsonl 从启动到终态只有一条记录（实测在跑的 w302v3gbz
-// 全文件仅 1 次命中），tasks/<taskId>.output 恒 0 字节且 mtime 停在启动时刻 —— 两者都判不了活。
-// CC 在 toolUseResult 给了 transcriptDir（该工作流的 subagent 全落那），拿它当锚点即可把判据从
-// "跑了多久"换成"多久没动静"：长工作流不误杀，会话崩了也照样在 15min 静默后自然收敛。
-// 只看目录里文件的 mtime，不看目录自身：NTFS 的目录 mtime 只在增删条目时更新，文件内容追加不刷新。
-function lastActivityMs(dir) {
-  let newest = 0;
-  try {
-    for (const name of fs.readdirSync(dir)) {
-      try {
-        const m = fs.statSync(path.join(dir, name)).mtimeMs;
-        if (m > newest) newest = m;
-      } catch { }
-    }
-  } catch { return 0; }
-  return newest;
 }
 
 // <task-notification> 的三种落盘载体（实测全库终态通知：queue-operation 506 / attachment 298 / user 195
@@ -269,7 +259,7 @@ export function countRunningBackgroundTasks(jsonlPath, now = Date.now()) {
     }
     const r = o.toolUseResult;
     // TaskStop 主动停掉的后台任务不发终态通知（leak TaskStopTool.ts 的 call() 只 stopTask、无 enqueue），
-    // 只能读 TaskStop 自己的成功回执 { message, task_id, task_type, command } 配平——否则会一直挂到死线。
+    // 只能读 TaskStop 自己的成功回执 { message, task_id, task_type, command } 配平。
     // persistent Monitor 只能靠 TaskStop 结束，不认这条就必然误报。
     if (r?.task_id && r.task_type) { stopped.add(r.task_id); continue; }
     // 启动：tool_result 行的 toolUseResult 命中后台签名；行时间戳 = 后台任务启动时刻
@@ -277,19 +267,17 @@ export function countRunningBackgroundTasks(jsonlPath, now = Date.now()) {
     if (ttl === null || !Array.isArray(o.message?.content)) continue;
     const at = Date.parse(o.timestamp) || 0;
     const key = r.taskId || r.backgroundTaskId || r.agentId || null;   // TaskStop 按此 id 寻址
-    // workflow 判活锚点（见 lastActivityMs）；其余三类无此需求，dir=null 时仍按启动时刻比死线
-    const dir = r.taskType === 'local_workflow' ? (r.transcriptDir || null) : null;
     for (const b of o.message.content) {
-      if (b?.type === 'tool_result' && b.tool_use_id) launched.set(b.tool_use_id, { at, ttl, key, dir });
+      if (b?.type === 'tool_result' && b.tool_use_id) launched.set(b.tool_use_id, { at, ttl, key });
     }
   }
   let n = 0;
-  for (const [id, { at, ttl, key, dir }] of launched) {
+  for (const [id, { at, ttl, key }] of launched) {
     if (done.has(id) || (key && stopped.has(key))) continue;
-    // 死线锚点：一般后台任务按启动时刻；workflow 按它最后一次有动静的时刻（长工作流不误杀，见 lastActivityMs）
-    const anchor = dir ? Math.max(at, lastActivityMs(dir)) : at;
-    // 锚点已久仍未配平 → 会话崩溃 / 通知丢失（见 BG_STALE_MS），兜底剔除避免永久误报
-    if (anchor && now > anchor + (ttl > 0 ? ttl + BG_TTL_GRACE_MS : BG_STALE_MS)) continue;
+    // 只认自带硬死线（当前仅非 persistent 的 Monitor）：CC 到点必杀进程 → 过点必已结束。
+    // 其余无自带死线的（subagent / 后台命令 / workflow / persistent Monitor）不按时长猜死活，
+    // 由调用方 sessionAlive 短路兜底 —— 详见文件上方「为什么没有'启动 N 分钟就当它结束'的兜底」。
+    if (ttl > 0 && at && now > at + ttl + BG_TTL_GRACE_MS) continue;
     n++;
   }
   return n;
@@ -386,8 +374,11 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   const boardState = board ? (board.bySid.get(sid) || board.byTask.get(`cli:${sid.slice(0, 8)}`) || null) : null;
   // 后台任务计数（统一维度，见 countRunningBackgroundTasks）。会话进程活着才算数——后台任务是该
   // 进程的子进程，进程死则后台必随之结束，历史 jsonl 里未配平的 launched 便是陈旧值。
-  const backgroundTaskCount = countRunningBackgroundTasks(jsonlPath);
+  // att 经 pid 实测（pidAlive，注册表文件会残留），故这条短路是精确的，不是估的；与 runner 路的
+  // deriveBackgroundState（collect.js）同语义。它也是唯一的陈旧值防线：countRunningBackgroundTasks
+  // 内已不再按"启动至今"猜死活（那会误杀在跑的长任务，见该函数上方注释）。
   const sessionAlive = !!(boardState || att || replyRunnerPid);
+  const backgroundTaskCount = sessionAlive ? countRunningBackgroundTasks(jsonlPath) : 0;
   let state;
   if (sidEntry.archivedAt) state = 'archived';
   else if (doneAt) state = 'done';
