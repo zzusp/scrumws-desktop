@@ -14,6 +14,8 @@ import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer
 import * as scheduler from './lib/scheduler.js';
 import { startConnector, connectorStatus, enroll, unenroll } from './lib/cloud/connector.js';
 import { ensureMachineUid } from './lib/cloud/identity.js';
+import { createApiKey, listApiKeys, setApiKeyDisabled, deleteApiKey, verifyApiKey } from './lib/api-keys.js';
+import { createExternalTask, externalTaskStatus } from './lib/external-ingest.js';
 import { P } from './lib/paths.js';
 
 const HOST = '127.0.0.1'; // owner 本机自查，不对外
@@ -446,6 +448,67 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;
+    }
+    // ---- API 密钥管理（「API 密钥」页；同其余本机管理端点，只听 127.0.0.1 不另设鉴权）----
+    // 列表永不回明文/hash；明文只在 create 响应里出现一次
+    if (pathname === '/api/apikeys' && req.method !== 'POST') {
+      return sendJson(res, 200, { ok: true, keys: listApiKeys() });
+    }
+    if (req.method === 'POST' && pathname === '/api/apikeys/create') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = createApiKey(payload || {});
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/api/apikeys/toggle') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = setApiKeyDisabled(payload?.id, payload?.disabled);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/api/apikeys/delete') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = deleteApiKey(payload?.id);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    // ---- 外部任务通道（Authorization: Bearer swak_…；key 见「API 密钥」页）----
+    // 与 /api/task/create 的差异：source 强制取 key 绑定值、缺省落 plan 桶、externalKey 幂等去重。
+    // 契约见 docs/api/task-ingest.md「外部 API」章。
+    if (req.method === 'POST' && pathname === '/api/external/task/create') {
+      const auth = verifyApiKey(req.headers.authorization);
+      if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 32 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = createExternalTask(auth.key, payload || {});
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (pathname === '/api/external/task/status') {
+      const auth = verifyApiKey(req.headers.authorization);
+      if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+      const r = externalTaskStatus(auth.key, { taskKey: searchParams.get('taskKey'), externalKey: searchParams.get('externalKey') });
+      if (!r.ok) return sendJson(res, r.code || 400, { ok: false, error: r.error });
+      return sendJson(res, 200, r);
     }
     // 手动中断任务（processing/queued → awaiting-human + outcome=cancelled + kill pid）
     if (req.method === 'POST' && pathname === '/api/task/cancel') {

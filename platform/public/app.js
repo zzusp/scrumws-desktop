@@ -1059,7 +1059,7 @@ function findTaskKeyBySession(sid) {
 
 // ---- hash 路由：#/board · #/archive · #/dashboard · #/settings · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
 // 详情页已归一：#/session/<id>（历史链接）重定向到其归属任务的 #/task/<taskKey>。
-const ROUTE_VIEWS = ['board', 'archive', 'runtime', 'dashboard', 'settings', 'task'];
+const ROUTE_VIEWS = ['board', 'archive', 'runtime', 'dashboard', 'apikeys', 'settings', 'task'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
@@ -1078,6 +1078,7 @@ function router() {
   } else if (h.startsWith('#/archive')) view = 'archive';
   else if (h.startsWith('#/runtime')) view = 'runtime';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
+  else if (h.startsWith('#/apikeys')) view = 'apikeys';
   else if (h.startsWith('#/settings')) view = 'settings';
 
   const fullBleed = view === 'task';   // 满宽满高布局（pageWrap 外）
@@ -1099,6 +1100,7 @@ function router() {
   }
   if (view === 'task' && taskKey) loadTaskDetail(taskKey);
   if (view === 'settings') refreshCloudStatus();
+  if (view === 'apikeys') refreshApiKeys();
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', router);
@@ -2351,6 +2353,115 @@ function syncMaxRunnersInput() {
     finally { btn.disabled = false; }
   });
 }
+
+// ---- API 密钥页（#/apikeys）：外部任务通道 /api/external/* 的鉴权凭据管理 ----
+// 明文只在 create 响应里出现一次：渲染进一次性提示框（复制按钮 + curl 示例），刷新/切页即不可再取。
+async function refreshApiKeys() {
+  const box = $('akListBox');
+  if (!box) return;
+  let r;
+  try { r = await api('/api/apikeys'); } catch { box.innerHTML = '<div style="color:var(--coral);font-size:12.5px">加载失败（后端未响应）</div>'; return; }
+  const keys = r.keys || [];
+  if (!keys.length) {
+    box.innerHTML = '<div style="color:var(--dim);font-size:12.5px">还没有密钥 · 用上方表单生成第一把</div>';
+    return;
+  }
+  box.innerHTML = `<div class="ak-table-wrap"><table class="ak-table">
+    <thead><tr><th>密钥</th><th>来源</th><th>备注</th><th>创建时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead>
+    <tbody>${keys.map((k) => `
+      <tr>
+        <td class="mono" title="仅前缀，明文不可再取">${escapeHtml(k.prefix)}…</td>
+        <td class="mono">${escapeHtml(k.source)}</td>
+        <td>${escapeHtml(k.label)}</td>
+        <td class="mono">${escapeHtml(k.createdAt || '—')}</td>
+        <td class="mono">${escapeHtml(k.lastUsedAt || '—')}</td>
+        <td>${k.disabled ? '<span class="tag tag-amber">已禁用</span>' : '<span class="tag tag-jade">启用</span>'}</td>
+        <td style="white-space:nowrap;text-align:right">
+          <button class="btn" data-ak-toggle="${escapeAttr(k.id)}" data-ak-to="${k.disabled ? '0' : '1'}">${k.disabled ? '启用' : '禁用'}</button>
+          <button class="btn btn-danger" data-ak-del="${escapeAttr(k.id)}" data-ak-name="${escapeAttr(`${k.prefix}…（${k.label}）`)}">删除</button>
+        </td>
+      </tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+function renderApiKeyPlaintext(created) {
+  const box = $('akPlainBox');
+  if (!box) return;
+  const curl = [
+    `curl -s -X POST http://127.0.0.1:${location.port || 8799}/api/external/task/create \\`,
+    `  -H 'Authorization: Bearer ${created.plaintext}' -H 'Content-Type: application/json' \\`,
+    `  -d '{"title":"标题","prompt":"给 claude 的指令","externalKey":"来源侧唯一事件id"}'`,
+  ].join('\n');
+  box.style.display = '';
+  box.innerHTML = `
+    <div class="ak-plain">
+      <span style="font-size:11.5px;color:var(--amber);white-space:nowrap;font-weight:600">明文只显示这一次</span>
+      <code id="akPlainText">${escapeHtml(created.plaintext)}</code>
+      <button class="btn" id="akCopyBtn" style="margin-left:auto;white-space:nowrap">复制</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--mut)">来源 <code>${escapeHtml(created.key.source)}</code> · 发起端调用示例（externalKey 为幂等键，同键不重复建任务）：</div>
+    <pre style="margin-top:6px;padding:10px 12px;background:var(--card);border:1px solid var(--hair);border-radius:var(--r-md);overflow-x:auto;font-family:var(--mono);font-size:11px;line-height:1.6">${escapeHtml(curl)}</pre>`;
+  $('akCopyBtn').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(created.plaintext); $('akCopyBtn').textContent = '已复制'; } catch { /* 剪贴板不可用则手动选中复制 */ }
+  });
+}
+
+function initApiKeysPage() {
+  const createBtn = $('akCreateBtn');
+  if (!createBtn) return;
+  createBtn.addEventListener('click', async () => {
+    const err = $('akCreateErr');
+    err.style.display = 'none';
+    const label = $('akLabelInput').value.trim();
+    const source = $('akSourceInput').value.trim();
+    createBtn.disabled = true;
+    try {
+      const r = await api('/api/apikeys/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, source }),
+      });
+      if (!r.ok) { err.textContent = r.error || '生成失败'; err.style.display = ''; return; }
+      $('akLabelInput').value = '';
+      $('akSourceInput').value = '';
+      renderApiKeyPlaintext(r);
+      await refreshApiKeys();
+    } catch (e) { err.textContent = e.message; err.style.display = ''; }
+    finally { createBtn.disabled = false; }
+  });
+  // 列表操作走事件委托：refreshApiKeys 整块重渲染，行内按钮不逐个绑
+  $('akListBox').addEventListener('click', async (e) => {
+    const toggleBtn = e.target.closest('[data-ak-toggle]');
+    const delBtn = e.target.closest('[data-ak-del]');
+    if (toggleBtn) {
+      const r = await api('/api/apikeys/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: toggleBtn.dataset.akToggle, disabled: toggleBtn.dataset.akTo === '1' }),
+      });
+      if (!r.ok) customAlert({ title: '操作失败', message: escapeHtml(r.error) });
+      await refreshApiKeys();
+      return;
+    }
+    if (delBtn) {
+      const ok = await customConfirm({
+        title: '删除密钥',
+        message: `删除 <code>${escapeHtml(delBtn.dataset.akName)}</code>。<br><b>不可恢复</b>，在用它的发起端会立即开始收 401。<br>已建的任务不受影响。`,
+        confirmText: '删除',
+        tone: 'danger',
+      });
+      if (!ok) return;
+      const r = await api('/api/apikeys/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: delBtn.dataset.akDel }),
+      });
+      if (!r.ok) customAlert({ title: '删除失败', message: escapeHtml(r.error) });
+      await refreshApiKeys();
+    }
+  });
+}
+initApiKeysPage();
 
 // ---- 设置页「云端」区块 ----
 // 三个输入缺一不可：注册密钥答「这台机器有资格加入这个云端吗」（实例级、一把管全体），配对码答
