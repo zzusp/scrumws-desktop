@@ -36,7 +36,7 @@ CI 会校验 tag 版本 == package.json 版本、抽 `CHANGELOG.md` 对应段落
 
 配置优先级：env（`SCRUMWS_PORT` / `SCRUMWS_DATA_ROOT` / `SCRUMWS_SCHEDULER=1`）> `%APPDATA%\scrumws-desktop\config.json` > 默认值。
 进程内调度器只跑守护 **Runner Checker**（收孤儿任务）；`runtime/scheduler.lock` 跨进程互斥，多实例只有一个真调度。
-任务执行 = **Mode B 交互会话引擎**（`session-manager` 直起 claude stream-json，跨平台）：新建任务进 queued 即自动起会话（详见 `docs/api/task-ingest.md`）。
+任务执行 = **Mode B 交互会话引擎**（`session-manager` 直起 claude stream-json，跨平台）：queued 任务即自动起会话（执行语义详见 [`docs/api/external-api-guide.md`](docs/api/external-api-guide.md)「提交之后会发生什么」章）。
 
 ## 外部接入（API 密钥）
 

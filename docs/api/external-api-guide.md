@@ -6,7 +6,7 @@
 > - **任务新增必须鉴权**：程序化新增任务的唯一入口就是本文的 `POST /api/external/task/create`（密钥鉴权）。旧的无鉴权端点 `/api/task/create` 已同源收口、仅限看板页面自用——程序化调用一律 `403`。
 > - 桌面端服务只 bind `127.0.0.1`（不对外）。接入方须与 ScrumWS 跑在**同一台机器**（或自行在本机架反代/隧道）。
 > - 端口取环境变量 `SCRUMWS_PORT`，缺省 `8799`。下文示例均用 `http://127.0.0.1:8799`。
-> - 不想手写 HTTP？本仓自带瘦客户端 CLI：`node platform/cli.js create --key swak_… --title … --prompt …`（走同一端点同一语义，选项见 [`task-ingest.md`](task-ingest.md)）。
+> - 不想手写 HTTP？本仓自带瘦客户端 CLI：`node platform/cli.js create --key swak_… --title … --prompt …`（走同一端点同一语义，见下文「CLI 瘦客户端」章）。
 
 ---
 
@@ -118,6 +118,14 @@ Body（JSON，≤32 KB）：
 
 仅带鉴权头、无 body → `200 {"ok":true}`。定时进程**每 tick 打一下**，「API 密钥」页即显示该来源活跃（5 分钟内亮绿点）。失败静默即可（桌面端没起 = 显示离线，本来就是正确状态）。
 
+## 提交之后会发生什么（执行语义）
+
+端点写任务包（`runtime/runner-state/<source>__<slug>/` 下的 `task.json` + `state.json`），然后：
+
+- `plan`（缺省）→ 任务落 **plan 桶**等用户在看板点「确认执行」才起会话。
+- `queued`（`plan:false`，需密钥开「允许直接执行」）→ **立即起绑定该任务的 Mode B 交互会话执行**：state=`processing`，`task.prompt` 作首条消息发给 claude；一轮 `result` 收敛 → `awaiting-human`（会话进程常驻，可从看板详情继续多轮）；服务重启等中断 → Runner Checker 收成 `awaiting-human` 带 `resumeSessionId`，看板回复即 `--resume` 续。
+- 补充：`runner-config.json` 的 `planSources` 含某来源时，该来源任务**总是**先落 plan（即使传了 `plan:false`）。
+
 ## 错误对照表
 
 | HTTP | `error` | 含义 / 调用方处理 |
@@ -130,7 +138,10 @@ Body（JSON，≤32 KB）：
 | 400 | `该密钥未配置…（策略必选=无权限）…` | 明文留存前的旧版密钥 → 重新生成 |
 | 400 | `externalKey 超长（≤200 字符）` | 幂等键过长 |
 | 404 | `task not found` | 查询目标不存在 / 不属于本来源 |
+| 403 | `本端点仅限看板页面使用…` | 程序化调用打到了看板内部端点 `/api/task/create` → 改走本文密钥通道 |
 | 连接拒绝 | — | 桌面端未运行 → 稍后重试（见下） |
+
+> 任务建好了但一直不跑？`state=plan` 属预期（待看板确认）；`state=queued` 且返回带 `startError` 是起会话失败（如 claude 不可用），修好后在看板「重新发起」。
 
 ## 可靠性建议
 
@@ -166,13 +177,42 @@ const r = await fetch(`${BASE}/api/external/task/create`, {
 }).then(r => r.json());
 ```
 
+## CLI 瘦客户端
+
+```
+node platform/cli.js create [选项]
+```
+（本仓库内也可 `npm run task -- create [选项]`；若 `npm link` 过则为 `scrumws-task create [选项]`。走本文同一端点、同一语义。）
+
+| 选项 | 说明 |
+|---|---|
+| `--key <k>` | API 密钥 `swak_…`（缺省读环境变量 `SCRUMWS_API_KEY`） |
+| `--title <t>` | 标题（必填） |
+| `--prompt <p>` | 指令正文（必填）；传 `-` 则从 **stdin** 读（长文本用） |
+| `--model <m>` | 模型（须在密钥可用模型内；缺省取密钥白名单首项） |
+| `--effort <e>` | 推理档位（须在密钥可用 effort 内；缺省取首项） |
+| `--cwd <dir>` | 工作目录绝对路径（须在密钥可访问目录内；缺省取首项） |
+| `--desc <备注>` | 纯备注（不进 prompt） |
+| `--external-key <id>` | 幂等键（来源侧唯一事件 id，同键重复提交不重复建任务） |
+| `--queued` | 直进 `queued` 立即自动执行（**需密钥开「允许直接执行」**）；缺省落 `plan` 待看板确认 |
+| `--json` | 整体 JSON body 从 **stdin** 读（覆盖上述字段；鉴权仍用 `--key` / env） |
+| `--port <n>` | 目标端口（缺省 `SCRUMWS_PORT` 或 `8799`） |
+| `-h`, `--help` | 帮助 |
+
+**退出码**：`0` = 已提交；`1` = 失败（缺密钥 / 连不上服务 / 参数错 / 后端拒绝）。
+
+```powershell
+$env:SCRUMWS_API_KEY = 'swak_xxxx'   # 或每次 --key swak_xxxx
+
+# 缺省落 plan（看板确认后执行）
+node platform/cli.js create --title "登录报错" --prompt "修复 #123 的登录 500" --external-key issue-123
+
+# 长指令走 stdin + 直接执行（需密钥开「允许直接执行」）
+echo "很长的多行指令…" | node platform/cli.js create --title "群里的活" --prompt - --queued
+```
+
 ## 参考实现
 
 - 钉钉群消息派发器：`D:\baibu-agent\runtime\dispatchers\chat-watch.mjs`（水位检测 + 幂等 + pending 补投 + 心跳，plan:false 直执）
 - Issue 检查器：`D:\baibu-agent\runtime\dispatchers\issue-watch.mjs`（指纹去重 + 幂等 + 心跳，默认 plan 确认）
 - 公共 HTTP 件：`D:\baibu-agent\runtime\dispatchers\scrumws-ingest.mjs`
-
-## 相关文档
-
-- 本机自用（无鉴权）通道与 CLI：[`task-ingest.md`](task-ingest.md)
-- 任务提交后的执行语义（Mode B 会话 / 状态机）：[`task-ingest.md`](task-ingest.md)「提交之后会发生什么」章
