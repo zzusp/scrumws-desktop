@@ -460,7 +460,11 @@ connector 每 15s（复用 collectState() 的结果，见下）:
 
 **性能**：`collectState()` 是全量重扫 + 重读每个任务包，还要反读 jsonl 数子 agent（`collect-cli.js:195`），不便宜。但**前端本来就在轮询它**。所以 connector **不得自己触发扫描**——要在 `collect.js` 上加一层进程内缓存 + 广播，UI 和 connector 共享同一次扫描结果。这是本设计对现有代码唯一的侵入性改动。
 
-`origin='local'` 的任务同样上行（spec 从上报里导入）——这样云端看板能看到所有人所有活，包括本地手敲的。这正是"查看执行情况"的主体。
+~~`origin='local'` 的任务同样上行（spec 从上报里导入）——这样云端看板能看到所有人所有活，包括本地手敲的。~~
+> **决策 14 推翻（已落地）**：本地任务**不再全量上云**。对账在源头按 **cloud link** 过滤——只有「云端下发」的任务（`$DATA_ROOT/runtime/cloud/links/<intentId>.json` 存在，见 §6.4 step e）才进 upsert/digest；本地手敲 / CLI / API / 手机中继建的活不出机器。云端是**派活平台**，不是监控大盘；主人要看自己机器的全部任务走 `/m/` 实时中继（`cloud-mobile-console.md`，不读云库）。
+> - 落点：`platform/lib/cloud/links.js`（读 link 集合）+ `reconcile.js` 顶部 `flattenCards(...).filter(linked)`。按「有没有 link」这条独立事实分支，不按 source（不变式 2）。
+> - 顺带清账：被过滤掉的历史本地卡不进 digest 集合 → 云端标 `mirror='local_missing'`，自然从看板收纳。
+> - **P2 下行未落地前 links 目录为空 = 上行空集**（决策 14 承认的目标终态：「云端在下行落地前是空的」）。link 文件由 P2「下发消费」流程写，本过滤只读、前向兼容。
 
 ### 6.4 下行：意图（新建任务）与命令
 
