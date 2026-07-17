@@ -114,19 +114,31 @@ docker run --rm postgres:17-alpine psql "$DATABASE_URL" -c "\dt"
 一条龙：`cloud/deploy-on-server.sh`（build → up → 健康检查 → 清理悬空镜像）。**在开发机跑这三条**：
 
 ```bash
-# 1) 打 bundle（务必排除 node_modules 与 .env）
+# 1) 打 bundle —— 用 git archive 而非 tar 工作树，见下方 ⚠ CRLF 坑。
+#    git archive 出提交态内容（永远 LF），且天然排除 node_modules / gitignore 的 .env，无需 --exclude。
 cd <repo>
-tar -czf /tmp/scrumws-cloud-deploy.tar.gz --exclude=node_modules --exclude=.env -C cloud .
+git archive --format=tar.gz -o /tmp/scrumws-cloud-deploy.tar.gz origin/master:cloud
+git show origin/master:cloud/deploy-on-server.sh > /tmp/deploy-on-server.sh   # 脚本也走 git（LF）
 
 # 2) 传 bundle + 部署脚本（脚本单独传，避免「先 rsync 才能拿到新脚本」的鸡生蛋——抄 claude-center）
 scp -P 22 /tmp/scrumws-cloud-deploy.tar.gz ubuntu@115.159.161.47:/tmp/
-scp -P 22 cloud/deploy-on-server.sh        ubuntu@115.159.161.47:/tmp/
+scp -P 22 /tmp/deploy-on-server.sh         ubuntu@115.159.161.47:/tmp/
 
 # 3) 执行
-ssh -p 22 ubuntu@115.159.161.47 'bash /tmp/deploy-on-server.sh 0.1.0 /tmp/scrumws-cloud-deploy.tar.gz'
+ssh -p 22 ubuntu@115.159.161.47 'bash /tmp/deploy-on-server.sh 0.1.3 /tmp/scrumws-cloud-deploy.tar.gz'
 ```
 
-Windows 上没有 sshpass，用 PuTTY 的 `pscp` / `plink -pw`。**注意**：Git Bash 的 `/tmp` 是 MSYS 虚拟路径，`pscp` 这类原生 Windows 程序不认，要给真实路径；`tar` 则相反，`C:/...` 会被当成远程主机名，要用 `/c/...` 形式。
+> ⚠ **CRLF 坑（栽过）**：`tar -C cloud .` 从 **Windows 工作树**打包会把源码打成 CRLF（若 `.gitattributes`/autocrlf 让工作树是 CRLF），服务器 bash 在 `deploy-on-server.sh` 的 `set -Eeuo pipefail\r` 上报 `pipefail: invalid option name` 直接死（死在 rsync 之前，旧容器不受影响，但白跑一趟）。**`git archive` 出提交态（LF）根治**，Linux/Mac 上也一样用它更稳。
+
+**Windows 开发机**（没有 sshpass，用 PuTTY `pscp`/`plink`）：
+- 凭据在**主检出根** `server_info.txt`（gitignore，**不随 git worktree 带**——在 worktree 里读会拿到空密码 → `password not accepted`；用绝对路径读主检出的）。用户 = `ubuntu`（root 密码被拒）。
+- 首次 host key 确认走 `-hostkey SHA256:...` 非交互（`echo y | plink` 喂不进去会**卡死**）。取指纹：`ssh-keygen -lf <(ssh-keyscan -t ed25519 115.159.161.47)`。
+- 路径：`pscp` 是原生 Windows 程序，本地文件要给**真实路径**（`C:\...`，可 `cygpath -w` 转）；远程路径照常 `/tmp/...`。（`git archive -o` 输出到 `/tmp/...` 是 MSYS 路径，pscp 传的时候改用其真实路径。）
+- **脚本回执不可信**：`plink "...script..." | tail` 拿到的 `$?` 是 `tail` 的、不是脚本的。把输出重定向到服务器文件再回看拿真实退出码：
+  ```
+  plink ... "bash /tmp/deploy-on-server.sh 0.1.3 /tmp/scrumws-cloud-deploy.tar.gz > /tmp/deploy.log 2>&1; echo REAL_EXIT=$?"
+  plink ... "cat /tmp/deploy.log"
+  ```
 
 脚本会自检：缺 bundle / 缺 `.env` / 版本号格式不对都直接退出。健康检查 60s 不过就打印容器日志并退出非零。
 
