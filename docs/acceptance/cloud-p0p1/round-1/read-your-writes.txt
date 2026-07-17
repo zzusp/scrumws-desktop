@@ -1,0 +1,12 @@
+任务 manual:20260716100200-003
+原标题 = "接入云端 connector"
+
+POST /api/task/rename → HTTP 200
+紧接着 GET /api/state（距上次扫描 17ms，在 3s TTL 窗口内）
+  回拉标题 = "RENAMED-BY-USER"
+  期望     = "RENAMED-BY-USER"
+  ✅ PASS：写后立刻可读（invalidateState 在 POST 的 res 'finish' 上生效）
+  连续 mutation：写 "第二次改名-AAA" → 回拉 "第二次改名-AAA"  ✅
+  连续 mutation：写 "第三次改名-BBB" → 回拉 "第三次改名-BBB"  ✅
+
+已还原标题 → "接入云端 connector"

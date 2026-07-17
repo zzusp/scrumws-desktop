@@ -1,0 +1,19 @@
+PASS  ① 不带注册密钥 → 拒绝（契约 §6.5 第 0 步：形状问题 → 400）
+      → HTTP 400（期望 400）  {"error":{"code":"BAD_REQUEST","message":"body must have required property 'registrationKey'"}}
+      └ 该配对码随后配好 rk 仍可用 → HTTP 201（201 = 缺 rk 那次没消费掉它）
+PASS  ② 带错注册密钥 → 401
+      → HTTP 401（期望 401）  {"error":{"code":"UNAUTHORIZED","message":"注册密钥或配对码无效／已过期，请向管理员确认后重新生成配对码"}}
+      （已撤销一把新 rk：prefix=swrk_BxRZ revoke→HTTP 200）
+PASS  ③ 带已撤销的注册密钥 → 401
+      → HTTP 401（期望 401）  {"error":{"code":"UNAUTHORIZED","message":"注册密钥或配对码无效／已过期，请向管理员确认后重新生成配对码"}}
+      └ 与②「带错 rk」响应体逐字节相同：true
+PASS  ④ rk 正确但配对码错 → 401
+      → HTTP 401（期望 401）  {"error":{"code":"UNAUTHORIZED","message":"注册密钥或配对码无效／已过期，请向管理员确认后重新生成配对码"}}
+      └ 与②「带错 rk」响应体逐字节相同：true  ← 这条是 §6.5 的核心：不可区分
+
+===== 汇总 =====
+PASS  ① 不带注册密钥 → 拒绝（契约 §6.5 第 0 步：形状问题 → 400）
+PASS  ② 带错注册密钥 → 401
+PASS  ③ 带已撤销的注册密钥 → 401
+PASS  ④ rk 正确但配对码错 → 401
+PASS  ④b rk错 与 code错 响应不可区分

@@ -1,0 +1,33 @@
+{
+  "shots": [
+    {
+      "name": "01-login.png",
+      "note": "登录页（由真实 cloud/src/server.js 托管）",
+      "bytes": 23198
+    },
+    {
+      "name": "02-board.png",
+      "note": "云端看板（5 桶：plan/queued/processing/awaiting-human/done）",
+      "bytes": 59450
+    },
+    {
+      "name": "03-machines.png",
+      "note": "机器列表（在线/离线、claude 版本、负载、taskCounts）",
+      "bytes": 40060
+    },
+    {
+      "name": "04-task-detail.png",
+      "note": "任务详情（点开卡片「重构看板卡片排序」）",
+      "bytes": 73379
+    },
+    {
+      "name": "05-task-detail-usage.png",
+      "note": "任务详情·有用量（「接入云端 connector」：rounds/turns/成本/usage 末轮快照）",
+      "bytes": 78821
+    }
+  ],
+  "errors": [
+    "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ]
+}

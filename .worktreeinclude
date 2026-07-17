@@ -1,0 +1,4 @@
+# 建 worktree 时自动拷贝「匹配且被 gitignore」的文件（.gitignore 语法）。
+# 云端服务需要 DATABASE_URL，而 .env 已入 .gitignore，不写在这里就不会带进 worktree。
+# 切勿把 node_modules 写进来：workspace 链会指回主检出的源码，导致编译到错误的分支。
+.env

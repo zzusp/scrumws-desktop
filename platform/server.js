@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { collectState } from './lib/collect.js';
+import { getState, invalidateState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
 import { writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask, rewindTaskMessage } from './lib/task-actions.js';
@@ -12,6 +12,8 @@ import { createSession, sendUserMessage, respondPermission, interruptSession, cl
 import { readAttachedSessions } from './lib/collect-cli.js';
 import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
+import { startConnector, connectorStatus, enroll, unenroll } from './lib/cloud/connector.js';
+import { ensureMachineUid } from './lib/cloud/identity.js';
 import { P } from './lib/paths.js';
 
 const HOST = '127.0.0.1'; // owner 本机自查，不对外
@@ -175,8 +177,15 @@ function startSessionStream(req, res, id) {
 
 const server = http.createServer(async (req, res) => {
   const { pathname, searchParams } = new URL(req.url, 'http://x');
+  // 写请求改完磁盘（任务包 / 配置）后作废状态缓存：前端每个 mutation 都紧跟一次 refreshState()，
+  // 不作废就会命中 3s 缓存、拿到 mutation 之前的快照（read-your-writes 破坏）。
+  // 挂 'finish' 而不是各 handler 里逐个调：响应发出时磁盘写必已完成（handler 都是 await 动作后才
+  // sendJson），一个挂钩覆盖全部写端点，新增端点不会漏。
+  if (req.method === 'POST') res.on('finish', invalidateState);
   try {
-    if (pathname === '/api/state') return sendJson(res, 200, await collectState());
+    // 缓存 + single-flight：3s 内的并发请求（多标签页 / modal 关闭补拉）合并成一次扫描；
+    // UI 最快也只有 5s 一轮，故永不被降级，对外行为不变
+    if (pathname === '/api/state') return sendJson(res, 200, await getState({ maxAgeMs: 3000 }));
     // Claude Code 账号级用量（详情页卡片 + 运行时面板）：session / 本周滚动窗；经官方 CLI `/usage` 查、模块内缓存
     if (pathname === '/api/claude-usage') return sendJson(res, 200, await getClaudeUsage());
     // 模型上下文窗口上限（详情页上下文用量环形的分母）：读设置页配置的 model→max_input_tokens 映射，不打 API
@@ -609,6 +618,37 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    // ---- 云端控制面（设置页「云端」区块）：本地只做出站上报，云端拿不到 8799 的入站访问 ----
+    // 连线状态：⚠ 响应体里没有 registrationKey——入场券用完即弃，压根不在进程里
+    if (pathname === '/api/cloud/status') return sendJson(res, 200, connectorStatus());
+    // 连接云端：body {cloudUrl, registrationKey, code}。只收这三个显式字段，不收 joinToken
+    // （拆包在浏览器做，畸形 token 根本到不了这里）。这是唯一碰 rk 的本地路径：转发给云端后即出作用域，
+    // 不写盘、不记日志、不进 lastError。
+    if (req.method === 'POST' && pathname === '/api/cloud/enroll') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 8 * 1024) req.destroy(); });
+      req.on('end', async () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const str = (v) => (typeof v === 'string' ? v.trim() : '');
+        const cloudUrl = str(payload?.cloudUrl);
+        const registrationKey = str(payload?.registrationKey);
+        const code = str(payload?.code);
+        // 只报「缺哪个」，绝不回显值（rk 是密钥）
+        if (!cloudUrl || !registrationKey || !code) {
+          return sendJson(res, 400, { ok: false, error: '云端 URL / 注册密钥 / 配对码 三者均必填' });
+        }
+        try {
+          const r = await enroll({ cloudUrl, registrationKey, code });
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch (e) {
+          sendJson(res, 400, { ok: false, error: `连接云端失败：${e.message}` });
+        }
+      });
+      return;
+    }
+    // 断开：停 connector + 清云端绑定（保留 machineUid，重连仍是同一台机器）
+    if (req.method === 'POST' && pathname === '/api/cloud/unenroll') return sendJson(res, 200, unenroll());
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'unknown api' });
     return serveStatic(req, res);
   } catch (e) {
@@ -618,14 +658,17 @@ const server = http.createServer(async (req, res) => {
 
 // 桌面端宿主（electron/server-host.js）或 standalone 入口调用；错误（含 EADDRINUSE）交给调用方决定退出/弹窗
 export function start() {
+  // 机器身份首启即生成并持久化，与 enroll 无关（改机器名不该变成新机器）
+  ensureMachineUid();
   return new Promise((resolve, reject) => {
     server.on('error', reject);
     server.listen(PORT, HOST, () => {
       console.log(`claude 活儿总览（分身 + 本机 CLI）→ http://${HOST}:${PORT}`);
       // 调度器在端口拿到后再启动：撞端口的第二实例不会碰 scheduler.lock
       const mode = scheduler.start();
-      // 账号用量定时拉取只在主（持锁）实例启：副实例「只看不调度」，不重复 spawn claude
-      if (mode === 'running') startUsageTimer();
+      // 账号用量定时拉取、云端上报都只在主（持锁）实例启：副实例「只看不调度」，
+      // 不重复 spawn claude、也不重复上报（同一台机器两个实例上报会互相打架）
+      if (mode === 'running') { startUsageTimer(); startConnector(); }
       resolve({ host: HOST, port: PORT, server });
     });
   });

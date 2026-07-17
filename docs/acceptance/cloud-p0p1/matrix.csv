@@ -1,0 +1,43 @@
+case,分类,说明,round-1,round-2,备注
+C01,云端,服务起 8790 + GET /api/health → {ok:true},PASS,PASS,round-1.md §1
+C02,云端·blocker,GET / 由真实 server.js 托管 index.html / app.js,PASS,PASS,修复 cloud/src/server.js:43；round-2 新增的 ui.js 亦 200（静态根自动覆盖，未改服务端）
+C03,云端,bootstrap --check 零副作用 + 建首用户/workspace/swuk_,PASS,PASS,明文只打印一次
+C04,云端,POST /api/auth/login → 会话 cookie；GET /api/auth/me → 200,PASS,PASS,round-2 走真实登录页 UI
+C05,云端,POST /api/registration-keys → swrk_（48 字符，明文只此一次）,PASS,PASS,round-1 prefix=swrk__zc7；round-2 改由管理页 UI 触发
+C06,云端,POST /api/machines/enrollment-codes → 8 位码 TTL 600s,PASS,PASS,round-2 改由管理页 UI 触发
+C07,负例,不带注册密钥 enroll → 拒绝,PASS,—,本轮未跑（不涉及）；实测 400 BAD_REQUEST，见 round-1.md §9 未收敛-1
+C08,负例,带错注册密钥 enroll → 401,PASS,—,本轮未跑（不涉及）
+C09,负例,带已撤销注册密钥 enroll → 401,PASS,—,本轮未跑（不涉及）
+C10,负例,rk 对但配对码错 → 401 且与「rk 错」响应逐字节相同,PASS,—,本轮未跑（不涉及）
+C11,负例,撤销 rk 后：新机器 401 进不来 / 已在线机器不受影响仍心跳,PASS,—,本轮未跑；UI 撤销文案已把该语义写进 modal
+C12,本地,沙箱看板起 + 5 个 state 任务包,PASS,—,round-2 只起看板（8797 / .sandbox/p1-ui）不造任务包
+C13,本地,POST /api/cloud/enroll → 机器令牌 + identity.json 落盘,PASS,PASS,round-2 由桌面端设置页 UI 贴 join token 触发 machineId=e458f445…
+C14,本地·红线,注册密钥不落盘 / 不进日志 / 不进 /api/cloud/status,PASS,PASS,round-2 复核 /api/cloud/status 全文搜 rk 明文零命中
+C15,云端,心跳 → GET /api/machines 看到 online + hostname + claude 版本 + 负载,PASS,PASS,claude=2.1.211 load=0/5
+C16,对账,GET /api/tasks 看到 5 个任务且 state 与本地逐张一致,PASS,—,本轮未跑（不涉及）
+C17,对账,改本地 state.json → 云端新 state + history 追加 + 时区正确,PASS,—,本轮未跑（不涉及）
+C18,对账,删本地 plan 任务 → 全量 digest → mirror=local_missing,PASS,—,本轮未跑（不涉及）
+C19,云端,停本地 >90s → sweeper 标 offline 且任务真相一个字节没变,PASS,—,本轮未跑（不涉及）
+C20,前端,截图：登录 / 看板 / 机器列表 / 任务详情 ×2（走真实 8790）,PASS,—,round-1/shots/；round-2 另拍 9 张见 round-2/
+C21,本地·blocker,read-your-writes：mutation 后立刻回拉 /api/state 读到新值,PASS,—,本轮未跑（不涉及）
+C22,云端·major,归档任务不混入 done 列 + 看板与机器页计数自洽,PASS,—,本轮未跑（不涉及）
+C23,本地·major,connector 闸门：副实例 enroll 不双份上报,PASS,—,本轮未跑（不涉及）
+C24,量化,§9b.1 collect.js 缓存：扫描次数 / P50 / TTL 依据 / 是否看过期数据,PASS,—,本轮未跑（不涉及）
+C25,红线,根 package.json 保持零运行时依赖（只 electron/electron-builder）,PASS,PASS,round-2 未加任何依赖：ui.js 是原生 JS；cloud deps 仍 fastify+pg+@fastify/static
+C26,隔离,验收全程跑一次性库 scrumws_p1_verify，真实 scrumws 库未被写,PASS,PASS,收尾 DROP；真实库 {au:1 m:6 t:6} 与 round-1 逐字相同、本轮 label 零命中
+C27a,隔离,只按 PID 定点收自己起的进程（不按名/路径杀）,PASS,PASS,round-2 只 Stop-Process 24664/5980；杀前逐个核对命令行均为我起的 node
+C27b,隔离,用户 8799 桌面 app 全程可用,PASS,观察,round-2 收尾时 8799 不在监听；证据指向用户自己关的（当晚自行重启 4 次 最后 pid=34916 是 electron 我从未按名杀）但无法 100% 自证 → 不写 PASS，见 round-2.md §7
+C28,管理页,侧边栏「机器纳管」入口 + #/enroll 路由可达,—,PASS,round-2.md §3①
+C29,注册密钥·红线,生成（带 label）→ 明文当场展示 + 「只此一次」复制引导,—,PASS,48 字符 swrk_；库里只剩 sha256（64 位十六进制）
+C30,注册密钥,列出：prefix + label + 创建人 + 创建时间 + 最后使用 + 状态,—,PASS,响应体无明文无 hash；lastUsedAt 在 enroll 后前进
+C31,注册密钥,撤销：自研 modal 二次确认（danger 档）+ Esc 可取消,—,PASS,文案讲清「不影响已在线机器」
+C32,配对码,生成 8 位 + TTL 10min + 倒计时 + 过期即作废 token,—,PASS,实测 H8X7TTH8 · 9:52 后过期
+C33,join token·红线,就地拼装 swjt_+base64url(utf8(JSON{v:1 url rk code})),—,PASS,服务端不参与；与桌面端 parseJoinToken 逐字对拍（含中文/特殊字节/畸形串反证）
+C34,join token,一键复制 → 真进 Windows 系统剪贴板,—,PASS,有头实跑 PowerShell Get-Clipboard 读回 153 字节逐字相同
+C35,红线,明文不进 localStorage / sessionStorage / URL / cookie / 日志,—,PASS,页内实搜零命中 + 源码 grep 零命中
+C36,端到端,join token 贴桌面端 8797 → 三项自动填好 → 点连接 → enroll 成功,—,PASS,url/rk/code 逐字还原
+C37,端到端,云端机器列表 → 这台机器 online,—,PASS,百部 online lastSeenAt 前进
+C38,负例·红线,刷新后拼 join token → 明确提示 + 手动路径 + 不产半成品,—,PASS,round-2/05-negative-no-rk-plaintext.png
+C39,自研组件,cloud/public 零原生组件（<select> / alert / confirm / prompt）,—,PASS,静态剥注释断言 + 运行时探针双证；顺带改造掉既有 2 处 <select>
+C40,自研组件,下拉：键盘 ↑↓/Enter/Esc/Tab + ARIA + 点外关闭 + 浮层盖出容器,—,PASS,role=listbox / aria-expanded / position:fixed 挂 body
+C41,主题,亮暗双主题 token 生效（含下拉浮层暗色不露系统白底）,—,PASS,暗色浮层 oklch(0.21 0.006 285.9)；round-2/02-dropdown-open-dark.png

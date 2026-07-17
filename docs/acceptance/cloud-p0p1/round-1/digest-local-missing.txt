@@ -1,0 +1,17 @@
+[0s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[15s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[30s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[45s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[61s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[76s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[91s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[106s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[121s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[136s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[151s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[166s] mirror=live  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+[181s] mirror=local_missing  state=plan  syncedAt=2026-07-16T15:45:49.316Z
+
+✅ 全量 digest 已把它标 local_missing
+   state 仍 = plan （未被改动 —— 云端永不写执行真相）
+   行未删：任务历史仍可查
