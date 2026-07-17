@@ -939,64 +939,15 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         </div>
 
         <!-- ============ 页面 3c：API 密钥（外部任务通道 /api/external/* 的鉴权凭据管理）============ -->
+        <!-- 交互：列表为主体，「＋ 生成密钥」/ 行内「编辑」都开同一个弹窗（akModal，表单在弹窗里），对齐「新建任务」习惯 -->
         <div id="view-apikeys" class="view" style="display:none">
-          <section class="card" style="max-width:840px;margin-bottom:var(--gap)">
-            <div class="sec-head">
+          <section class="card" style="max-width:960px">
+            <div class="sec-head" style="position:relative;padding-right:110px">
               <h2>API 密钥</h2>
-              <span class="sec-sub">外部系统经 <code>POST /api/external/task/create</code> 发起、<code>GET /api/external/task/status</code> 查询任务的鉴权凭据 · 每个密钥绑定一个来源（source）：该密钥建的任务一律记为此来源、<b>默认落 plan 桶</b>（看板确认后执行）· 支持 externalKey 幂等去重 · 契约见 docs/api/task-ingest.md</span>
+              <span class="sec-sub">外部系统经 <code>POST /api/external/task/create</code> 发起、<code>GET /api/external/task/status</code> 查询任务的鉴权凭据 · 每个密钥绑定一个来源（source）与策略白名单 · 默认落 plan 桶（「直执」钥才可 plan:false 直接执行）· 列表仅显示前缀，「复制」取回原文 · 禁用/删除立即生效 · 契约见 docs/api/task-ingest.md</span>
+              <button class="btn" id="akNewBtn" style="position:absolute;right:0;top:0">＋ 生成密钥</button>
             </div>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-              <div class="field" style="flex:2;min-width:220px">
-                <span class="f-label">备注（这把钥匙给谁用）</span>
-                <input id="akLabelInput" class="field-input" autocomplete="off" placeholder="如：钉钉群消息派发器">
-              </div>
-              <div class="field" style="flex:1;min-width:160px">
-                <span class="f-label">来源 source（任务来源标签）</span>
-                <input id="akSourceInput" class="field-input mono" autocomplete="off" placeholder="如：chat / issue">
-              </div>
-              <button class="btn" id="akCreateBtn" style="margin-bottom:1px">生成密钥</button>
-            </div>
-            <!-- 策略白名单（三项都必选，全不选 = 没有权限不能建钥）；请求省略对应字段时取第一个勾选项 / 第一行为该密钥默认 -->
-            <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:12px">
-              <div class="field" style="min-width:260px">
-                <span class="f-label">可用模型（必选；第一个勾选项为默认）</span>
-                <div id="akModelsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
-                  <label><input type="checkbox" value="claude-opus-4-8"> Opus 4.8</label>
-                  <label><input type="checkbox" value="claude-fable-5"> Fable 5</label>
-                  <label><input type="checkbox" value="claude-opus-4-7"> Opus 4.7</label>
-                  <label><input type="checkbox" value="claude-sonnet-5"> Sonnet 5</label>
-                  <label><input type="checkbox" value="claude-haiku-4-5-20251001"> Haiku 4.5</label>
-                </div>
-              </div>
-              <div class="field" style="min-width:160px">
-                <span class="f-label">可用 effort（必选；第一个勾选项为默认）</span>
-                <div id="akEffortsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
-                  <label><input type="checkbox" value="low"> Low</label>
-                  <label><input type="checkbox" value="medium"> Medium</label>
-                  <label><input type="checkbox" value="high"> High</label>
-                  <label><input type="checkbox" value="xhigh"> xHigh</label>
-                  <label><input type="checkbox" value="max"> Max</label>
-                </div>
-              </div>
-              <div class="field" style="flex:1;min-width:260px">
-                <span class="f-label">可访问目录（必填，每行一个绝对路径；任务 cwd 须等于某行或在其之下，省略时取第一行）</span>
-                <textarea id="akCwdsInput" class="field-input mono" rows="4" spellcheck="false" placeholder="D:\baibu-agent"></textarea>
-                <span class="f-label" style="margin-top:8px">执行权限</span>
-                <label style="font-size:12px;color:var(--ink2)"><input type="checkbox" id="akAllowQueued"> 允许直接执行（<code>plan:false</code> 直进 queued 不经看板确认；默认关 = 只能建 plan 任务）</label>
-              </div>
-            </div>
-            <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
-              <span id="akEditHint" style="display:none;font-size:11.5px;color:var(--amber)">正在编辑密钥 <code id="akEditHintKey"></code>（密钥本体不变，只改配置）</span>
-              <button class="btn" id="akCancelEditBtn" style="display:none">取消编辑</button>
-            </div>
-            <div id="akCreateErr" class="form-err"></div>
             <div id="akPlainBox" style="display:none"></div>
-          </section>
-          <section class="card" style="max-width:840px">
-            <div class="sec-head">
-              <h2>已有密钥</h2>
-              <span class="sec-sub">列表仅显示前缀，「复制」取回原密钥明文（明文留存本机，仅本机管理面可取）· 禁用/删除立即生效（在用的发起端会开始收 401）</span>
-            </div>
             <div id="akListBox"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
         </div>
@@ -1178,6 +1129,64 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 </div>
 
   <!-- ===== 新建任务 Modal（点遮罩不关闭，仅 × / 取消关闭）===== -->
+  <!-- API 密钥 新增/编辑弹窗（同一表单两用：标题与确定键文案由 app.js 按模式切换） -->
+  <div id="akModal" class="overlay" style="display:none">
+    <div class="modal-card" style="max-width:680px;max-height:88vh">
+      <div class="modal-head">
+        <h2 id="akModalTitle">生成密钥</h2>
+        <span class="modal-x" id="akModalX">×</span>
+      </div>
+      <div class="modal-hint" id="akModalHint">策略三项必选（全不选 = 没有权限）· 请求省略对应字段时取第一个勾选项 / 第一行为该密钥默认</div>
+      <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0;scrollbar-gutter:stable">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label class="field" style="flex:2;min-width:220px">
+            <span class="f-label">备注（这把钥匙给谁用）</span>
+            <input id="akLabelInput" class="field-input" autocomplete="off" placeholder="如：钉钉群消息派发器">
+          </label>
+          <label class="field" style="flex:1;min-width:160px">
+            <span class="f-label">来源 source（任务来源标签）</span>
+            <input id="akSourceInput" class="field-input mono" autocomplete="off" placeholder="如：chat / issue">
+          </label>
+        </div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+          <div class="field" style="min-width:200px">
+            <span class="f-label">可用模型（必选；第一个勾选项为默认）</span>
+            <div id="akModelsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
+              <label><input type="checkbox" value="claude-opus-4-8"> Opus 4.8</label>
+              <label><input type="checkbox" value="claude-fable-5"> Fable 5</label>
+              <label><input type="checkbox" value="claude-opus-4-7"> Opus 4.7</label>
+              <label><input type="checkbox" value="claude-sonnet-5"> Sonnet 5</label>
+              <label><input type="checkbox" value="claude-haiku-4-5-20251001"> Haiku 4.5</label>
+            </div>
+          </div>
+          <div class="field" style="min-width:140px">
+            <span class="f-label">可用 effort（必选；第一个勾选项为默认）</span>
+            <div id="akEffortsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
+              <label><input type="checkbox" value="low"> Low</label>
+              <label><input type="checkbox" value="medium"> Medium</label>
+              <label><input type="checkbox" value="high"> High</label>
+              <label><input type="checkbox" value="xhigh"> xHigh</label>
+              <label><input type="checkbox" value="max"> Max</label>
+            </div>
+          </div>
+        </div>
+        <label class="field">
+          <span class="f-label">可访问目录（必填，每行一个绝对路径；任务 cwd 须等于某行或在其之下，省略时取第一行）</span>
+          <textarea id="akCwdsInput" class="field-input mono" rows="3" spellcheck="false" placeholder="D:\baibu-agent"></textarea>
+        </label>
+        <div class="field">
+          <span class="f-label">执行权限</span>
+          <label style="font-size:12px;color:var(--ink2)"><input type="checkbox" id="akAllowQueued"> 允许直接执行（<code>plan:false</code> 直进 queued 不经看板确认；默认关 = 只能建 plan 任务）</label>
+        </div>
+        <div id="akCreateErr" class="form-err"></div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" id="akModalCancelBtn">取消</button>
+        <button class="btn" id="akCreateBtn">生成密钥</button>
+      </div>
+    </div>
+  </div>
+
   <div id="newTaskModal" class="overlay" style="display:none">
     <div class="modal-card" style="max-width:720px;max-height:88vh">
       <div class="modal-head">
