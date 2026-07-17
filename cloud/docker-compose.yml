@@ -22,8 +22,13 @@ services:
       # ⚠ swuk_ 登录密钥与 swmt_ 机器令牌将明文过网。风险随阶段跃迁：
       #   P0+P1 只读 → 泄露止于「看到全团队任务看板」，无 RCE 面；
       #   P2 起 → 可给所有机器派活 = 全员开发机 RCE。
-      # P2 绊线：P2 意图下行上线时，若本项为 1 且非 localhost 必须拒绝启动。
+      # 绊线（判据已按用户决策修订，见 docs/ops/cloud-deploy.md §1）：本项为 1 且绑定非 localhost 时，
+      # 下行面（手机中继 downlink/rpc/watch/ /api/my/*，及将来 P2 派活）默认 503，不阻止启动；
+      # 必须显式设 CLOUD_ACCEPT_PLAINTEXT_DISPATCH=1 才放行下行面。
       - CLOUD_INSECURE_COOKIE=1
+      # 手机端个人控制台已上线：明确接受「公网裸 HTTP 明文链路上可被冒充 owner 派活」的风险，放行下行面。
+      # 本地 cwd 白名单（默认空）是唯一不依赖云端诚实的兜底。若改前置 TLS，去掉 INSECURE 后本项也可去掉。
+      - CLOUD_ACCEPT_PLAINTEXT_DISPATCH=1
       - NODE_ENV=production
     ports:
       - "8790:8790"
