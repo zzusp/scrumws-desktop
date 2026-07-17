@@ -70,11 +70,11 @@ const main = async () => {
     `缺 models/efforts/cwds 均拒建 → ${noModels.status}/${noEfforts.status}/${noCwds.status}`);
 
   r = await req('GET', '/api/apikeys');
-  // prefix（明文前 12 位）是有意展示的；泄漏 = 出现完整明文（swak_ 后 ≥40 字符）或 hash 字段
+  // 2026-07-17 起列表有意外带 plaintext（本机管理面「复制」用）；不该泄漏的只剩 hash 字段
   const listStr = JSON.stringify(r.json);
-  const leaked = /"hash"/.test(listStr) || /swak_[A-Za-z0-9_-]{40,}/.test(listStr);
-  record('A6-list-no-secret', r.status === 200 && r.json.keys.length === 2 && !leaked,
-    `列表 2 条且不含 hash/完整明文 → ${r.status} keys=${r.json?.keys?.length} leaked=${leaked}`);
+  const leaked = /"hash"/.test(listStr);
+  record('A6-list-no-hash', r.status === 200 && r.json.keys.length === 2 && !leaked,
+    `列表 2 条且不含 hash → ${r.status} keys=${r.json?.keys?.length} leaked=${leaked}`);
 
   // ---- B. 外部建任务 ----
   r = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p' } });
@@ -273,6 +273,13 @@ const main = async () => {
   } else {
     record('P7-legacy-no-policy-denied', false, '未传 dataRoot，无法注入旧格式密钥');
   }
+
+  // ---- R. 复制 = 列表外带原密钥明文 ----
+  r = await req('GET', '/api/apikeys');
+  const rvNew = (r.json?.keys || []).find((k) => k.id === chatKey.key.id);
+  const rvLegacy = (r.json?.keys || []).find((k) => k.id === 'legacy01');
+  record('R1-list-plaintext', rvNew?.plaintext === chatKey.plaintext && rvLegacy?.plaintext === null,
+    `列表明文：新钥与创建时一致=${rvNew?.plaintext === chatKey.plaintext}；旧格式钥=null（复制置灰）`);
 
   const fails = results.filter((x) => !x.pass);
   console.log(`\n== ${results.length - fails.length}/${results.length} PASS ==`);

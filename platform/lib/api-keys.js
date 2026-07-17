@@ -71,7 +71,10 @@ function validateKeyConfig({ label, source, allowedModels, allowedEfforts, allow
   return { ok: true, cfg: { label: lab, source: src, allowedModels: models, allowedEfforts: efforts, allowedCwds: cwds, allowQueued: !!allowQueued } };
 }
 
-// 创建 key：返回 {ok, key(存盘条目), plaintext}；plaintext 只此一次，之后任何端点不再可取。
+// 创建 key：返回 {ok, key(存盘条目), plaintext}。
+// 明文随条目落盘（2026-07-17：「复制密钥」= 复制原文）：发起端配置（如 baibu 的
+// scrumws-ingest.json）本就在同机存明文，服务端留存不扩大风险面；管理面只听 127.0.0.1，
+// 列表直接外带明文供「复制」。鉴权比对仍用 sha256。
 export function createApiKey(input) {
   const v = validateKeyConfig(input || {});
   if (!v.ok) return v;
@@ -81,6 +84,7 @@ export function createApiKey(input) {
     ...v.cfg,
     prefix: plaintext.slice(0, 12),
     hash: sha256Hex(plaintext),
+    plaintext,
     createdAt: nowStr(),
     disabled: false,
     lastUsedAt: null,
@@ -90,6 +94,7 @@ export function createApiKey(input) {
   writeKeys(keys);
   return { ok: true, key: publicView(entry), plaintext };
 }
+
 
 // 编辑已有 key：可改 label / source / 策略 / allowQueued；密钥本体（prefix/hash）与
 // createdAt / disabled / lastUsedAt 不动——明文不可复原，"换钥"只能删了重建或复制克隆。
@@ -105,7 +110,7 @@ export function updateApiKey(input) {
   return { ok: true, key: publicView(k) };
 }
 
-// 列表/响应视图：永不外带 hash
+// 列表/响应视图：不外带 hash；plaintext 直接外带（本机管理面「复制」用；明文留存前的旧钥为 null）
 function publicView(k) {
   return {
     id: k.id, label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt,
@@ -114,6 +119,7 @@ function publicView(k) {
     allowedEfforts: Array.isArray(k.allowedEfforts) ? k.allowedEfforts : [],
     allowedCwds: Array.isArray(k.allowedCwds) ? k.allowedCwds : [],
     allowQueued: !!k.allowQueued,
+    plaintext: k.plaintext || null,
   };
 }
 

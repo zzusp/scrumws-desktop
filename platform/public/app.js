@@ -2382,7 +2382,7 @@ async function refreshApiKeys() {
         <td>${k.disabled ? '<span class="tag tag-amber">已禁用</span>' : '<span class="tag tag-jade">启用</span>'}</td>
         <td style="white-space:nowrap;text-align:right">
           <button class="btn" data-ak-edit="${escapeAttr(k.id)}" title="修改此密钥的备注/来源/策略（密钥本体不变）">编辑</button>
-          <button class="btn" data-ak-copy="${escapeAttr(k.id)}" title="按此密钥配置克隆生成一把新密钥（明文不可复原）">复制</button>
+          <button class="btn" data-ak-copy="${escapeAttr(k.id)}" ${k.plaintext ? '' : 'disabled'} title="${k.plaintext ? '复制原密钥明文到剪贴板' : '该密钥创建于明文不留存的旧版本，无法复制原文'}">复制</button>
           <button class="btn" data-ak-toggle="${escapeAttr(k.id)}" data-ak-to="${k.disabled ? '0' : '1'}">${k.disabled ? '启用' : '禁用'}</button>
           <button class="btn btn-danger" data-ak-del="${escapeAttr(k.id)}" data-ak-name="${escapeAttr(`${k.prefix}…（${k.label}）`)}">删除</button>
         </td>
@@ -2390,9 +2390,9 @@ async function refreshApiKeys() {
     </tbody></table></div>`;
 }
 
-// 表单回填（编辑/复制共用）与模式切换
-function akFillForm(k, { copy = false } = {}) {
-  $('akLabelInput').value = copy ? `${k.label} 副本` : k.label;
+// 表单回填（编辑用）与模式切换
+function akFillForm(k) {
+  $('akLabelInput').value = k.label;
   $('akSourceInput').value = k.source;
   document.querySelectorAll('#akModelsBox input').forEach((x) => { x.checked = k.allowedModels.includes(x.value); });
   document.querySelectorAll('#akEffortsBox input').forEach((x) => { x.checked = k.allowedEfforts.includes(x.value); });
@@ -2455,7 +2455,7 @@ function renderApiKeyPlaintext(created) {
   box.style.display = '';
   box.innerHTML = `
     <div class="ak-plain">
-      <span style="font-size:11.5px;color:var(--amber);white-space:nowrap;font-weight:600">明文只显示这一次</span>
+      <span style="font-size:11.5px;color:var(--amber);white-space:nowrap;font-weight:600">新密钥</span>
       <code id="akPlainText">${escapeHtml(created.plaintext)}</code>
       <button class="btn" id="akCopyBtn" style="margin-left:auto;white-space:nowrap">复制</button>
     </div>
@@ -2513,8 +2513,17 @@ function initApiKeysPage() {
       return;
     }
     if (copyBtn) {
+      // 复制 = 原密钥明文进剪贴板（列表数据已带明文）
       const k = akKeysCache.find((x) => x.id === copyBtn.dataset.akCopy);
-      if (k) { akFillForm(k, { copy: true }); akSetEditMode(null); window.scrollTo(0, 0); }
+      if (!k?.plaintext) return;
+      try {
+        await navigator.clipboard.writeText(k.plaintext);
+        copyBtn.textContent = '已复制';
+        setTimeout(() => { copyBtn.textContent = '复制'; }, 1500);
+      } catch {
+        // 剪贴板不可用（如无焦点）：弹窗展示原文手动复制
+        customAlert({ title: '密钥原文（手动复制）', message: `<code style="word-break:break-all">${escapeHtml(k.plaintext)}</code>` });
+      }
       return;
     }
     if (toggleBtn) {
