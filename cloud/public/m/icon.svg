@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- ScrumWS 手机端图标：与云端/本地看板同一只 lucide bot，深底白线（纯文本 SVG，无 binary） -->
+  <rect width="512" height="512" rx="112" fill="#1b1b1e"/>
+  <g transform="translate(64 64) scale(16)" fill="none" stroke="#fafafa" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 8V4H8"/>
+    <rect width="16" height="12" x="4" y="8" rx="2"/>
+    <path d="M2 14h2"/>
+    <path d="M20 14h2"/>
+    <path d="M15 13v2"/>
+    <path d="M9 13v2"/>
+  </g>
+</svg>

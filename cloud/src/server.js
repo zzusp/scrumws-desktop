@@ -8,6 +8,9 @@ import { pool } from './db.js';
 import { sendError } from './http.js';
 import userRoutes from './routes/user.js';
 import machineRoutes from './routes/machine.js';
+import machineRelayRoutes from './routes/machine-relay.js';
+import myRoutes from './routes/my.js';
+import { BIND_HOST, logDispatchPosture } from './dispatch-gate.js';
 import { startSweeper } from './sweeper.js';
 
 const PORT = Number(process.env.CLOUD_PORT || 8790);
@@ -40,6 +43,8 @@ export function buildServer() {
 
   app.register(userRoutes);
   app.register(machineRoutes);
+  app.register(machineRelayRoutes); // 手机中继：下行长连 + rpc/watch 上行（spec §4.1/4.2）
+  app.register(myRoutes);           // 手机中继：owner API（spec §4.3）
 
   // 云端前端（cloud/public）必须由本服务托管、与 API 同源：public/app.js 用相对路径 /api/… +
   // credentials:'same-origin' 发请求，会话是 HttpOnly cookie —— 静态站与 API 分家就拿不到 cookie。
@@ -66,8 +71,9 @@ async function main() {
   process.on('SIGTERM', () => { shutdown('SIGTERM'); });
   process.on('SIGINT', () => { shutdown('SIGINT'); });
 
-  // 0.0.0.0：云端服务必须对外可达（与本地看板 8799 只绑 127.0.0.1 的规矩相反，那是两种东西）
-  await app.listen({ port: PORT, host: '0.0.0.0' });
+  // 0.0.0.0：云端服务必须对外可达（与本地看板 8799 只绑 127.0.0.1 的规矩相反，那是两种东西）。
+  // 常量住在 dispatch-gate.js —— 绊线判据的「非仅绑 localhost」必须看真实绑定面，不许两处各写一份。
+  await app.listen({ port: PORT, host: BIND_HOST });
 
   // 安全姿态必须在启动日志里可见：这个开关一旦设错，症状是「凭据明文过网」——
   // 不报错、不影响功能，运行期没有任何迹象。只有开机这一行能让人发现设错了。
@@ -77,6 +83,7 @@ async function main() {
       ' swuk_ 登录密钥与 swmt_ 机器令牌将明文过网 —— 仅限内网/可信链路，公网部署务必关掉并前置 TLS 反代。'
     );
   }
+  logDispatchPosture(app.log); // 手机中继绊线姿态（spec §4.6），同上理由：只有开机这一行能发现设错
 }
 
 main().catch((err) => {

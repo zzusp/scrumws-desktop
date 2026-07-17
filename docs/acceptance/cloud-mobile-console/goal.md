@@ -19,11 +19,11 @@
 | SG | 内容 | 依赖 | 状态 |
 |---|---|---|---|
 | SG1 | 契约落档（spec + goal + matrix 骨架） | — | ✅ 本轮完成 |
-| SG2 | 云端中继服务端：downlink SSE + rpc pending 表 + `/api/my/*` + watch 转发 + 绊线（新文件 `routes/my.js` / `routes/machine-relay.js` / `relay-registry.js` / `dispatch-gate.js`） | SG1 | ⬜ |
-| SG3 | 本地下行：SSE 客户端 + verb 执行器 + 闸门 + watch 轮询器（新文件 `platform/lib/cloud/downlink.js` / `relay-verbs.js`；connector 挂钩 ≤15 行）+ `/api/cloud/remote-config` + 桌面设置页开关/白名单 UI | SG1 | ⬜ |
-| SG4 | 手机端页面 `cloud/public/m/`：登录 / 机器 / 看板 / 详情（watch + 消息）/ 新建 + PWA manifest | SG2 契约面 | ⬜ |
-| SG5 | 端到端验收 round-1：一次性干净库 + 沙箱 dataRoot，跑 matrix 全部用例 | SG2+SG3+SG4 | ⬜ |
-| SG6 | 收口：cloud/README + docs/ops/cloud-deploy.md 补充；PR（ship 三硬线） | SG5 全绿 | ⬜ |
+| SG2 | 云端中继服务端：downlink SSE + rpc pending 表 + `/api/my/*` + watch 转发 + 绊线（新文件 `routes/my.js` / `routes/machine-relay.js` / `relay-registry.js` / `dispatch-gate.js`） | SG1 | ✅ 协议冒烟 36/36 |
+| SG3 | 本地下行：SSE 客户端 + verb 执行器 + 闸门 + watch 轮询器（新文件 `platform/lib/cloud/downlink.js` / `relay-verbs.js`；connector 挂钩 ≤15 行）+ `/api/cloud/remote-config` + 桌面设置页开关/白名单 UI | SG1 | ✅ 沙箱冒烟通过 |
+| SG4 | 手机端页面 `cloud/public/m/`：登录 / 机器 / 看板 / 详情（watch + 消息）/ 新建 + PWA manifest | SG2 契约面 | ✅ mock e2e 31/31 |
+| SG5 | 端到端验收 round-1：一次性干净库 + 沙箱 dataRoot，跑 matrix 全部用例 | SG2+SG3+SG4 | ✅ C01–C13 全绿（A 23/23·B 7/7·C 7/7） |
+| SG6 | 收口：cloud/README + docs/ops/cloud-deploy.md 补充；PR（ship 三硬线） | SG5 全绿 | ✅ 文档同步 + PR |
 
 ## 关键信息
 

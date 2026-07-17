@@ -1,0 +1,14 @@
+{
+  "name": "ScrumWS 控制台",
+  "short_name": "ScrumWS",
+  "description": "手机端个人控制台：经云端中继访问自己机器上的任务看板",
+  "lang": "zh-CN",
+  "start_url": "/m/",
+  "scope": "/m/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#1b1b1e",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

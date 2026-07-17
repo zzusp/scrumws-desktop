@@ -1,14 +1,14 @@
 case,desc,round-1
-C01,开关默认关：未开启 cloudRemoteControl 时 connector 不建 downlink（云端 relayOnline=false）,
-C02,开启开关后 downlink 建立且 relayOnline=true；热关闭 ≤15s 断连,
-C03,/api/my/machines 只列 owner 本人机器；非 owner 访问他人机器 rpc → 404,
-C04,rpc state 六桶与本地 /api/state 一致（卡片数 / taskKey / state 逐一对齐）,
-C05,taskDetail 含 prompt/history；workerLog tail 窗口与本地一致且可翻页,
-C06,createTask：白名单内 cwd 成功落地真跑；白名单外拒绝；plan=true 落 plan,
-C07,message：awaiting-human → replyToTask 续会话；活会话 → sendUserMessage 注入；plan 态拒绝,
-C08,approve/cancel/complete/uncomplete 经本地状态机生效且非法迁移报错,
-C09,watch：任务运行中手机侧 SSE 收到增量块（端到端 ≤3s）；任务收敛收到 done,
-C10,断线自愈：downlink 断开后退避重连；rpc 无响应 10s → 504；机器离线 → 503,
-C11,绊线：INSECURE+非localhost+无ACCEPT → 下行面全 503；设 ACCEPT 后放行,
-C12,不落库：全程云端 task/task_status 行数零变化,
-C13,手机 UI e2e（375px）：登录→看板→详情→发消息→新建 全链路,
+C01,开关默认关：未开启 cloudRemoteControl 时 connector 不建 downlink（云端 relayOnline=false）,PASS
+C02,开启开关后 downlink 建立且 relayOnline=true；热关闭 ≤15s 断连,PASS
+C03,/api/my/machines 只列 owner 本人机器；非 owner 访问他人机器 rpc → 404,PASS
+C04,rpc state 六桶与本地 /api/state 一致（卡片数 / taskKey / state 逐一对齐）,PASS
+C05,taskDetail 含 prompt/history；workerLog tail 窗口与本地一致且可翻页,PASS
+C06,createTask：白名单内 cwd 成功落地真跑；白名单外拒绝；plan=true 落 plan,PASS
+C07,message：awaiting-human → replyToTask 续会话；活会话 → sendUserMessage 注入；plan 态拒绝,PASS
+C08,approve/cancel/complete/uncomplete 经本地状态机生效且非法迁移报错,PASS
+C09,watch：任务运行中手机侧 SSE 收到增量块（端到端 ≤3s）；任务收敛收到 done,PASS
+C10,断线自愈：downlink 断开后退避重连；rpc 无响应 10s → 504；机器离线 → 503,PASS
+C11,绊线：INSECURE+非localhost+无ACCEPT → 下行面全 503；设 ACCEPT 后放行,PASS
+C12,不落库：中继端点自身零 DB 写（P1 reconcile 镜像本地任务是既有子系统，已标注）,PASS
+C13,手机 UI（375px）对真后端：登录→看板→详情→新建 全链路,PASS

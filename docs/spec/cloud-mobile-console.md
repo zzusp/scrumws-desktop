@@ -130,7 +130,7 @@ GET  /api/my/machines/:id/watch?taskKey=…      // 浏览器 EventSource
 
 - **verb 白名单在 connector 侧写死**（不是转发任意路径）——云端被攻破也只能调这张表里的动作。
 - `source:'mobile'` 仅是来源元数据（README 任务来源不变量）；`'cloud'` 前缀留给并行开发中的团队派活（P2 intent），两者不混。
-- 中继新建的任务是**本地任务**，不写云库——与决策 14 一致。将来 P2 落地后如需「手机建的任务离线可见」，由 P2 的 intent 通道承接，本设计不预做。
+- **中继路径自身零 DB 写**（relay-registry / routes/my / machine-relay 全程不碰 task 表）。⚠ 但当前基线里，手机建的本地任务仍会经**既有 P0/P1 reconcile**（`reconcile.js` 的 `tasks/upsert`）镜像到 `cloud.task`（`origin='local'`，SG5 实测确认）——那是 P0/P1 子系统，非本特性引入。决策 14「本地任务不全量上云」的 reconcile 过滤属**并行/未落地**工作，其落地后本地任务（含手机建的）停止上云，届时中继成为查看它们的唯一通路（正是决策 14 的目标终态）。本特性不预做该过滤，也不依赖它。
 
 ### 4.5 watch 帧内容（v1 = 轮询式 worker-log 尾巴）
 

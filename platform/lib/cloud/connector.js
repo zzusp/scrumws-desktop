@@ -7,6 +7,7 @@ import { readIdentity, ensureMachineUid, saveIdentity, clearCloudBinding } from 
 import { readSynced } from './synced.js';
 import { cloudRequest } from './http.js';
 import { reconcileOnce } from './reconcile.js';
+import { syncDownlink, stopDownlink, downlinkStatus } from './downlink.js';
 
 // 云端 connector：纯出站（心跳 15s + 对账 15s 同 tick + 全量 digest 每 5min）。
 // · 只在持 scheduler.lock 的主实例起（server.js 与 usage timer 同位置），副实例「只看不调度」不重复上报
@@ -75,6 +76,8 @@ async function heartbeat(target, snap) {
 async function tick() {
   if (running) return;
   const id = readIdentity();
+  // 手机中继下行通道：随 cloudRemoteControl 热起停（默认 false = 零下行面），未 enroll 同样保持关闭
+  try { syncDownlink(id); } catch { /* 下行通道故障不影响心跳/对账 */ }
   if (!id?.token || !id?.cloudUrl) return;   // 未 enroll → 空转（不扫描、不报错）
   running = true;
   const target = { cloudUrl: id.cloudUrl, token: id.token };
@@ -118,9 +121,10 @@ export function startConnector() {
   tick();                          // 立即跑一轮，别让用户等 15s 才看到状态
 }
 
-/** 停止定时器。 */
+/** 停止定时器（连带下行通道：解绑 / 401 终局后不许残留下行面）。 */
 export function stopConnector() {
   if (timer) { clearInterval(timer); timer = null; }
+  stopDownlink();
 }
 
 /**
@@ -141,6 +145,7 @@ export function connectorStatus() {
     lastPushed,
     lastError,
     syncedCount: Object.keys(readSynced()).length,
+    remoteControl: downlinkStatus(),   // 手机中继：{enabled, connected, lastError, lastEventAt}
   };
 }
 
