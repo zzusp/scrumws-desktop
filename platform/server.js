@@ -522,6 +522,21 @@ const server = http.createServer(async (req, res) => {
       if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
       return sendJson(res, 200, { ok: true });
     }
+    // 持钥方自省：凭密钥查自己的身份与权限范围（来源 / 三项白名单 / 直执权限），调用方据此自适应
+    // （如：从 allowedModels[0] 取默认模型、按 allowQueued 决定要不要传 plan:false）。契约见外部接入指导文档。
+    if (pathname === '/api/external/whoami') {
+      const auth = verifyApiKey(req.headers.authorization);
+      if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+      const k = auth.key;
+      return sendJson(res, 200, {
+        ok: true,
+        key: {
+          label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt,
+          allowedModels: k.allowedModels, allowedEfforts: k.allowedEfforts, allowedCwds: k.allowedCwds,
+          allowQueued: k.allowQueued,
+        },
+      });
+    }
     if (pathname === '/api/external/task/status') {
       const auth = verifyApiKey(req.headers.authorization);
       if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });

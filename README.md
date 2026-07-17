@@ -38,6 +38,12 @@ CI 会校验 tag 版本 == package.json 版本、抽 `CHANGELOG.md` 对应段落
 进程内调度器只跑守护 **Runner Checker**（收孤儿任务）；`runtime/scheduler.lock` 跨进程互斥，多实例只有一个真调度。
 任务执行 = **Mode B 交互会话引擎**（`session-manager` 直起 claude stream-json，跨平台）：新建任务进 queued 即自动起会话（详见 `docs/api/task-ingest.md`）。
 
+## 外部接入（API 密钥）
+
+外部系统（钉钉派发器、issue 检查器、任意脚本/机器人）可凭 **API 密钥**向桌面端发起/查询任务：在「API 密钥」菜单页生成密钥（绑定来源 + 模型/effort/目录白名单 + 直执权限，可编辑/复制），调用方经 `/api/external/*` 接入——支持 `whoami` 自省权限范围、`externalKey` 幂等去重（重试不重复建任务）、来源心跳（页面显示活跃状态）；任务默认落 plan 桶（看板确认后执行），「直执」密钥可 `plan:false` 直接排队执行。
+
+**接入指导（契约 / 步骤 / 多语言示例 / 排错）：[`docs/api/external-api-guide.md`](docs/api/external-api-guide.md)**
+
 ## 任务来源不变量（改任务处理逻辑前先读）
 
 **`source`（cli / manual / api / …）只是来源元数据，不是行为开关。所有来源的任务共享同一套状态机与处理逻辑——分支按「状态」走，绝不按 source 特判。**

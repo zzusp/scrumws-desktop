@@ -2390,7 +2390,7 @@ async function refreshApiKeys() {
     </tbody></table></div>`;
 }
 
-// 表单回填（编辑用）与模式切换
+// 新增/编辑共用弹窗（akModal）：标题、确定键文案、提示按模式切换；关闭即退出编辑态
 function akFillForm(k) {
   $('akLabelInput').value = k.label;
   $('akSourceInput').value = k.source;
@@ -2399,20 +2399,28 @@ function akFillForm(k) {
   $('akCwdsInput').value = k.allowedCwds.join('\n');
   $('akAllowQueued').checked = !!k.allowQueued;
 }
-function akSetEditMode(k) {
-  akEditingId = k ? k.id : null;
-  $('akCreateBtn').textContent = k ? '保存修改' : '生成密钥';
-  $('akCancelEditBtn').style.display = k ? '' : 'none';
-  $('akEditHint').style.display = k ? '' : 'none';
-  if (k) $('akEditHintKey').textContent = `${k.prefix}…（${k.label}）`;
-}
-function akResetForm() {
+function akClearForm() {
   $('akLabelInput').value = '';
   $('akSourceInput').value = '';
   $('akCwdsInput').value = '';
   $('akAllowQueued').checked = false;
   document.querySelectorAll('#akModelsBox input:checked, #akEffortsBox input:checked').forEach((x) => { x.checked = false; });
-  akSetEditMode(null);
+}
+function akOpenModal(k) {
+  akEditingId = k ? k.id : null;
+  $('akModalTitle').textContent = k ? '编辑密钥' : '生成密钥';
+  $('akCreateBtn').textContent = k ? '保存修改' : '生成密钥';
+  $('akModalHint').textContent = k
+    ? `正在编辑 ${k.prefix}…（密钥本体与使用记录不变，只改配置）· 策略三项必选（全不选 = 没有权限）`
+    : '策略三项必选（全不选 = 没有权限）· 请求省略对应字段时取第一个勾选项 / 第一行为该密钥默认';
+  $('akCreateErr').style.display = 'none';
+  if (k) akFillForm(k); else akClearForm();
+  $('akModal').style.display = 'flex';
+  setTimeout(() => { $('akLabelInput').focus(); }, 40);
+}
+function akCloseModal() {
+  $('akModal').style.display = 'none';
+  akEditingId = null;
 }
 
 // 策略列：紧凑摘要（详情进 title tooltip）；缺任一项 = 旧格式无策略钥，建任务会被拒（策略必选=无权限）
@@ -2494,13 +2502,16 @@ function initApiKeysPage() {
         body: JSON.stringify({ id: akEditingId || undefined, label, source, allowedModels, allowedEfforts, allowedCwds, allowQueued }),
       });
       if (!r.ok) { err.textContent = r.error || (isEdit ? '保存失败' : '生成失败'); err.style.display = 'block'; return; }
-      akResetForm();
+      akCloseModal();
       if (!isEdit) renderApiKeyPlaintext(r);   // 编辑不产新明文
       await refreshApiKeys();
     } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
     finally { createBtn.disabled = false; }
   });
-  $('akCancelEditBtn').addEventListener('click', akResetForm);
+  $('akNewBtn').addEventListener('click', () => akOpenModal(null));
+  $('akModalCancelBtn').addEventListener('click', akCloseModal);
+  $('akModalX').addEventListener('click', akCloseModal);
+  $('akModal').addEventListener('click', (e) => { if (e.target === $('akModal')) akCloseModal(); });
   // 列表操作走事件委托：refreshApiKeys 整块重渲染，行内按钮不逐个绑
   $('akListBox').addEventListener('click', async (e) => {
     const editBtn = e.target.closest('[data-ak-edit]');
@@ -2509,7 +2520,7 @@ function initApiKeysPage() {
     const delBtn = e.target.closest('[data-ak-del]');
     if (editBtn) {
       const k = akKeysCache.find((x) => x.id === editBtn.dataset.akEdit);
-      if (k) { akFillForm(k); akSetEditMode(k); window.scrollTo(0, 0); }
+      if (k) akOpenModal(k);
       return;
     }
     if (copyBtn) {

@@ -29,7 +29,9 @@ try {
     && vis.navActive === 'apikeys' && vis.title.includes('API 密钥'),
     `视图可见 ${JSON.stringify(vis.apikeys)}，board 负对照 ${JSON.stringify(vis.board)}，nav=${vis.navActive}，面包屑含标题=${vis.title.includes('API 密钥')}`);
 
-  // U2a 策略必选拦截：只填 label/source 不选策略 → 点生成 → 前端必选报错、不出明文框
+  // U2a 弹窗打开 + 策略必选拦截：「＋ 生成密钥」开弹窗 → 只填 label/source → 点生成 → 弹窗内必选报错、弹窗不关、无明文
+  await page.click('#akNewBtn');
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('akModal')).display !== 'none', { timeout: 5000 });
   await page.type('#akLabelInput', 'UI 冒烟密钥');
   await page.type('#akSourceInput', 'uismoke');
   await page.click('#akCreateBtn');
@@ -37,10 +39,15 @@ try {
     const el = document.getElementById('akCreateErr');
     return el && getComputedStyle(el).display !== 'none' && /必选/.test(el.textContent || '');
   }, { timeout: 5000 });
-  const noPlain = await page.evaluate(() => !document.getElementById('akPlainText'));
-  record('U2a-policy-required', noPlain, `全不选被拦（必选报错可见、无明文框）`);
+  const u2a = await page.evaluate(() => ({
+    modalOpen: getComputedStyle(document.getElementById('akModal')).display !== 'none',
+    title: document.getElementById('akModalTitle').textContent,
+    noPlain: !document.getElementById('akPlainText'),
+  }));
+  record('U2a-policy-required', u2a.modalOpen && u2a.title === '生成密钥' && u2a.noPlain,
+    `弹窗打开（标题=${u2a.title}）、必选报错在弹窗内、未关闭、无明文`);
 
-  // U2b 补全策略 → 生成成功：一次性明文框出现（swak_ 开头）+ curl 示例
+  // U2b 补全策略 → 生成成功：弹窗关闭 + 明文横幅出现（swak_）+ curl 示例
   await page.evaluate(() => {
     document.querySelector('#akModelsBox input[value="claude-opus-4-8"]').click();
     document.querySelector('#akEffortsBox input[value="xhigh"]').click();
@@ -54,9 +61,14 @@ try {
   const plainOk = await page.evaluate(() => {
     const box = document.getElementById('akPlainBox');
     const b = box.getBoundingClientRect();
-    return { rect: b.width > 200 && b.height > 40, curl: /api\/external\/task\/create/.test(box.textContent) };
+    return {
+      rect: b.width > 200 && b.height > 40,
+      curl: /api\/external\/task\/create/.test(box.textContent),
+      modalClosed: getComputedStyle(document.getElementById('akModal')).display === 'none',
+    };
   });
-  record('U2b-create', plainOk.rect && plainOk.curl, `补全策略后生成成功：明文框可见=${plainOk.rect} curl 示例=${plainOk.curl}`);
+  record('U2b-create', plainOk.rect && plainOk.curl && plainOk.modalClosed,
+    `生成成功：弹窗已关=${plainOk.modalClosed} 明文横幅=${plainOk.rect} curl=${plainOk.curl}`);
 
   // U3 列表含新 key 行（来源 uismoke、启用态）。等行出现而非等 table：明文框先渲染、
   // 列表刷新是其后的异步 fetch，旧 table 一直在，等 table 会竞态假过。
@@ -79,12 +91,14 @@ try {
   }, { timeout: 5000 });
   record('U4-toggle', true, '禁用后行内出现「已禁用」');
 
-  // U6 编辑：行内「编辑」→ 表单回填 + 按钮变「保存修改」→ 改备注保存 → 行更新且不出新明文
+  // U6 编辑：行内「编辑」→ 弹窗打开且回填 + 标题/按钮切编辑态 → 改备注保存 → 弹窗关、行更新、不出新明文
   await page.evaluate(() => {
     const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
     tr.querySelector('[data-ak-edit]').click();
   });
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('akModal')).display !== 'none', { timeout: 5000 });
   const editState = await page.evaluate(() => ({
+    title: document.getElementById('akModalTitle').textContent,
     label: document.getElementById('akLabelInput').value,
     btn: document.getElementById('akCreateBtn').textContent,
     cwd: document.getElementById('akCwdsInput').value,
@@ -98,11 +112,11 @@ try {
   await page.click('#akCreateBtn');
   await page.waitForFunction(() => {
     const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
-    return tr && tr.textContent.includes('UI 冒烟密钥改');
+    return tr && tr.textContent.includes('UI 冒烟密钥改') && getComputedStyle(document.getElementById('akModal')).display === 'none';
   }, { timeout: 5000 });
   const noNewPlain = await page.evaluate(() => !document.getElementById('akPlainText'));
-  record('U6-edit', editState.label === 'UI 冒烟密钥' && editState.btn === '保存修改' && editState.modelChecked && !!editState.cwd && noNewPlain,
-    `回填（label/勾选/目录）+ 按钮=保存修改 + 保存后行更新且无新明文`);
+  record('U6-edit', editState.title === '编辑密钥' && editState.label === 'UI 冒烟密钥' && editState.btn === '保存修改' && editState.modelChecked && !!editState.cwd && noNewPlain,
+    `弹窗编辑态（标题=${editState.title}、按钮=${editState.btn}、回填齐）+ 保存后弹窗关、行更新、无新明文`);
 
   // U7 复制：行内「复制」= 取回原密钥明文——剪贴板成功（按钮变「已复制」）或降级弹窗展示原文，二取一
   await page.evaluate(() => {
