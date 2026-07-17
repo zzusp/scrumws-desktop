@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover：刘海屏下配合 env(safe-area-inset-*) 用满全屏又不压到手势区 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ScrumWS</title>
+<!-- theme-color 由 m.js 按当前主题动态改写（亮 #ffffff / 暗 #1b1b1e），这里给亮色初值 -->
+<meta name="theme-color" id="metaTheme" content="#ffffff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<!-- 首帧前定主题，避免刷新先闪亮色（同 cloud/public/index.html 的做法）。
+     'auto'（默认）= 跟随系统 prefers-color-scheme；手动切换后存 'light'/'dark'。 -->
+<script>
+(function () {
+  var pref = null;
+  try { pref = localStorage.getItem('m-theme'); } catch (e) { }
+  var dark = pref === 'dark' ||
+    ((pref === null || pref === 'auto') && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+})();
+</script>
+<link rel="stylesheet" href="m.css">
+</head>
+<body>
+<!-- 独立轻量 SPA：全部视图由 m.js 渲进 #app（hash 路由，无构建步骤） -->
+<div id="app"></div>
+<!-- marked：仓库 vendored 副本（复制自 platform/public/marked.min.js v9.1.6），详情页 markdown 渲染 -->
+<script src="marked.min.js"></script>
+<script src="m.js"></script>
+</body>
+</html>

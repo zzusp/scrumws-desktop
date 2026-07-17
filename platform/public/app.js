@@ -2380,8 +2380,13 @@ function cloudTime(iso) {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+let cloudRemoteCfg = null;   // /api/cloud/remote-config 的 {cloudRemoteControl, cloudAllowedCwds}（远程控制闸门）
+
 async function refreshCloudStatus() {
-  try { cloudStatus = await api('/api/cloud/status'); } catch { return; }
+  try {
+    cloudStatus = await api('/api/cloud/status');
+    cloudRemoteCfg = await api('/api/cloud/remote-config');
+  } catch { return; }
   renderCloud();
 }
 
@@ -2389,6 +2394,9 @@ function renderCloud() {
   const box = $('cloudBox');
   if (!box || !cloudStatus) return;
   const s = cloudStatus;
+  // 白名单编辑中不重建（重渲染会抹掉正在编辑的值）——对齐 modelLimits 等输入的「编辑中不回填」约定
+  const editingTa = $('cloudCwdsInput');
+  if (editingTa && (editingTa === document.activeElement || editingTa.dataset.dirty === '1')) return;
   const err = s.lastError
     ? `<div style="margin-top:8px;font-size:11.5px;color:var(--coral);word-break:break-all">${escapeHtml(s.lastError)}</div>`
     : '';
@@ -2397,6 +2405,14 @@ function renderCloud() {
     const hbTag = s.lastHeartbeatOk === true ? '<span class="tag tag-jade">已连接</span>'
       : s.lastHeartbeatOk === false ? '<span class="tag tag-amber">心跳异常</span>'
         : '<span class="tag tag-mut">等待首次心跳</span>';
+    // 远程控制（手机中继）子区块：开关 + cwd 白名单 + 中继连接状态（connectorStatus().remoteControl）
+    const rc = s.remoteControl || {};
+    const cfg = (cloudRemoteCfg && cloudRemoteCfg.ok) ? cloudRemoteCfg : { cloudRemoteControl: !!rc.enabled, cloudAllowedCwds: [] };
+    const relayTag = !cfg.cloudRemoteControl ? '<span class="tag tag-mut">中继关闭</span>'
+      : rc.connected ? '<span class="tag tag-jade">中继已连接</span>'
+        : '<span class="tag tag-amber">中继未连接</span>';
+    const rcErr = cfg.cloudRemoteControl && rc.lastError
+      ? `<div style="margin-top:6px;font-size:11px;color:var(--coral);word-break:break-all">${escapeHtml(rc.lastError)}</div>` : '';
     box.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         ${hbTag}
@@ -2414,7 +2430,51 @@ function renderCloud() {
         <span>上轮推送 <b style="color:var(--ink2)">${s.lastPushed}</b></span>
         <span>已同步 <b style="color:var(--ink2)">${s.syncedCount}</b> 张卡</span>
       </div>
+      <div style="border-top:1px solid var(--hair);margin-top:12px;padding-top:10px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer">
+            <input type="checkbox" id="cloudRemoteToggle"${cfg.cloudRemoteControl ? ' checked' : ''}>
+            远程控制（手机控制台经云端中继访问本机）
+          </label>
+          ${relayTag}
+        </div>
+        <div class="field">
+          <span class="f-label">远程新建任务 cwd 白名单（每行一个目录绝对路径 · 前缀匹配 · 空 = 拒绝一切远程新建）</span>
+          <textarea id="cloudCwdsInput" class="field-input mono" rows="3" spellcheck="false" placeholder="D:\\project\\foo"></textarea>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+          <button class="btn" id="cloudCwdsSaveBtn">保存白名单</button>
+          <span id="cloudRemoteHint" style="font-size:11.5px;color:var(--dim)"></span>
+        </div>
+        ${rcErr}
+      </div>
       ${err}`;
+    // 白名单回填走 .value（不走模板字符串，避免路径里的反斜杠/引号被 HTML 转义搅坏）
+    const ta = $('cloudCwdsInput');
+    if (ta) ta.value = (Array.isArray(cfg.cloudAllowedCwds) ? cfg.cloudAllowedCwds : []).join('\n');
+    ta?.addEventListener('input', () => { ta.dataset.dirty = '1'; const h = $('cloudRemoteHint'); if (h) h.textContent = ''; });
+    const saveRemote = async (on) => {
+      const cloudAllowedCwds = (ta?.value || '').split('\n').map((l) => l.trim()).filter(Boolean);
+      let r = null;
+      try {
+        r = await api('/api/cloud/remote-config', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cloudRemoteControl: on, cloudAllowedCwds }),
+        });
+      } catch { r = { ok: false, error: '保存失败' }; }
+      if (r?.ok) {
+        if (ta) delete ta.dataset.dirty;
+        cloudRemoteCfg = r;
+        renderCloud();   // 用刚保存的配置重绘（开关/中继标签即时对齐；connector 15s 内完成实际起停）
+        const h = $('cloudRemoteHint');
+        if (h) { h.style.color = 'var(--jade)'; h.textContent = on ? '已保存 · 15s 内建立中继连接' : '已保存 · 远程控制关闭，15s 内断开中继'; }
+      } else {
+        const h = $('cloudRemoteHint');
+        if (h) { h.style.color = 'var(--coral)'; h.textContent = r?.error || '保存失败'; }
+      }
+    };
+    $('cloudRemoteToggle')?.addEventListener('change', (e) => saveRemote(!!e.target.checked));
+    $('cloudCwdsSaveBtn')?.addEventListener('click', () => saveRemote(!!$('cloudRemoteToggle')?.checked));
     $('cloudUnenrollBtn')?.addEventListener('click', async () => {
       const yes = await customConfirm({
         title: '断开云端连接',

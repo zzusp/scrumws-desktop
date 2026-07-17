@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getState, invalidateState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
-import { writeConfig } from './lib/runner-config.js';
+import { readConfig, writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask, rewindTaskMessage } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
@@ -649,6 +649,27 @@ const server = http.createServer(async (req, res) => {
     }
     // 断开：停 connector + 清云端绑定（保留 machineUid，重连仍是同一台机器）
     if (req.method === 'POST' && pathname === '/api/cloud/unenroll') return sendJson(res, 200, unenroll());
+    // 手机中继闸门（设置页「云端」区块）：cloudRemoteControl 总开关（默认关）+ createTask cwd 白名单（默认空=拒绝）。
+    // 热加载：connector 每 tick（15s）读 runner-config 决定下行长连起停，无需重启。
+    if (req.method === 'POST' && pathname === '/api/cloud/remote-config') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        if (typeof payload?.cloudRemoteControl !== 'boolean') return sendJson(res, 400, { ok: false, error: 'cloudRemoteControl 需为 boolean' });
+        const raw = payload?.cloudAllowedCwds;
+        if (!Array.isArray(raw) || raw.some((x) => typeof x !== 'string')) return sendJson(res, 400, { ok: false, error: 'cloudAllowedCwds 需为字符串数组（每项一个目录绝对路径）' });
+        const cloudAllowedCwds = [...new Set(raw.map((s) => s.trim()).filter(Boolean))].slice(0, 50);
+        writeConfig({ cloudRemoteControl: payload.cloudRemoteControl, cloudAllowedCwds });
+        sendJson(res, 200, { ok: true, cloudRemoteControl: payload.cloudRemoteControl, cloudAllowedCwds });
+      });
+      return;
+    }
+    if (pathname === '/api/cloud/remote-config') {
+      const cfg = readConfig();
+      return sendJson(res, 200, { ok: true, cloudRemoteControl: !!cfg.cloudRemoteControl, cloudAllowedCwds: Array.isArray(cfg.cloudAllowedCwds) ? cfg.cloudAllowedCwds : [] });
+    }
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'unknown api' });
     return serveStatic(req, res);
   } catch (e) {
