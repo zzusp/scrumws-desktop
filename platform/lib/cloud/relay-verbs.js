@@ -55,15 +55,69 @@ function verbCwds() {
   return { ok: true, data: { cwds } };
 }
 
+// ---- CLI 观察态任务（无任务包）→ 从 lifecycle 卡兜底合成详情 ----
+// CLI 会话不落任务包（collect-cli.js 每次现场合成卡片），verbTaskDetail 读包必然 not found。
+// 但 readWorkerLog 认 cli:（→ readCliWorkerLog），输出流本可展示——所以 detail 也要能出，
+// 否则手机点进 CLI 卡整页报错（输出明明拉得到）。CLI 卡没有 prompt（观察态，非本端发起）。
+async function cliDetailFromCard(taskKey) {
+  let snap;
+  try { snap = await getState({ maxAgeMs: 3000 }); } catch { return null; }
+  const lc = snap?.lifecycle || {};
+  let card = null;
+  for (const bucket of ['plan', 'processing', 'queued', 'done', 'awaitingHuman', 'archived']) {
+    const hit = (lc[bucket] || []).find((c) => c?.taskKey === taskKey);
+    if (hit) { card = hit; break; }
+  }
+  if (!card) return null;
+  return {
+    ok: true,
+    data: {
+      taskKey,
+      isArchive: card.state === 'archived' || !!card.isArchive,
+      title: card.title || taskKey,
+      prompt: null,                                  // CLI 观察态无 prompt（非本端发起）
+      model: card.meta?.model ?? null,
+      effort: null,
+      cwd: card.cwd ?? card.cli?.cwd ?? null,
+      worktree: !!card.worktreeDir,
+      baseBranch: null,
+      description: card.description ?? null,
+      scheduledAt: null,
+      source: card.source ?? 'cli',
+      createdAt: card.createdAt ?? null,
+      state: card.state ?? null,
+      outcome: card.outcome ?? null,
+      enteredAt: card.enteredAt ?? null,
+      resolvedAt: card.resolvedAt ?? null,
+      outcomeDetail: card.outcomeDetail ?? null,
+      history: Array.isArray(card.history) ? card.history : [],
+      meta: {
+        sessionId: card.meta?.sessionId ?? null,
+        rounds: card.meta?.rounds ?? 0,
+        numTurns: card.meta?.numTurns ?? 0,
+        totalCostUsd: card.meta?.totalCostUsd ?? 0,
+        usage: card.meta?.usage ?? null,
+        lastRoundAt: card.meta?.lastRoundAt ?? null,
+        worktreeBranch: card.cli?.gitBranch ?? null,
+        worktreeDir: card.worktreeDir ?? null,
+      },
+    },
+  };
+}
+
 // ---- taskDetail：task.json + state.json + meta 概要（含 prompt 全文 / history / usage）----
-function verbTaskDetail(args) {
+// 无任务包时（CLI 观察态）回落 lifecycle 卡合成（见 cliDetailFromCard）。
+async function verbTaskDetail(args) {
   const taskKey = str(args?.taskKey);
   if (!validTaskKey(taskKey)) return { ok: false, error: 'invalid taskKey' };
   const safeKey = safeKeyOf(taskKey);
   let dir = path.join(P.runnerRoot, safeKey);
   let isArchive = false;
   if (!fs.existsSync(dir)) { dir = path.join(P.archiveRoot, safeKey); isArchive = true; }
-  if (!fs.existsSync(dir)) return { ok: false, error: 'task not found' };
+  if (!fs.existsSync(dir)) {
+    const cli = await cliDetailFromCard(taskKey);
+    return cli || { ok: false, error: 'task not found' };
+  }
   const task = readJson(path.join(dir, 'task.json')) || {};
   const state = readJson(path.join(dir, 'state.json')) || {};
   const meta = readJson(path.join(dir, 'meta.json')) || {};
@@ -160,6 +214,7 @@ function verbCreateTask(args) {
     cwd,
     worktree: args?.worktree,
     baseBranch: args?.baseBranch,
+    scheduledAt: args?.scheduledAt,         // 本地串 'yyyy-MM-dd HH:mm:ss'；给了 createTask 强制落 plan、到点由调度器提升执行
     plan: args?.plan,                       // true = 落 plan 待确认；false = 直接排队执行
   }));
 }
@@ -197,7 +252,7 @@ export async function runVerb(verb, args = {}) {
     switch (verb) {
       case 'state': return await verbState();
       case 'cwds': return verbCwds();
-      case 'taskDetail': return verbTaskDetail(args);
+      case 'taskDetail': return await verbTaskDetail(args);
       case 'workerLog': return verbWorkerLog(args);
       case 'createTask': return verbCreateTask(args);
       case 'message': return verbMessage(args);

@@ -12,3 +12,7 @@ C10,断线自愈：downlink 断开后退避重连；rpc 无响应 10s → 504；
 C11,绊线：INSECURE+非localhost+无ACCEPT → 下行面全 503；设 ACCEPT 后放行,PASS
 C12,不落库：中继端点自身零 DB 写（P1 reconcile 镜像本地任务是既有子系统，已标注）,PASS
 C13,手机 UI（375px）对真后端：登录→看板→详情→新建 全链路,PASS
+C14,#3 CLI 观察态任务详情可查看（verbTaskDetail 无包时 lifecycle 卡兜底；前端降级不整页崩）,PASS(r2)
+C15,#2 手机新建支持定时（relay 透传 scheduledAt→createTask 落盘+强制 plan；表单 datetime+单按钮+已定时 toast）,PASS(r2)
+C16,#4 动作按钮收敛（非全宽、38px 高 pill，实测 73×38）,PASS(r2)
+C17,#1 表单/按钮视觉 polish（fld-hint 说明样式等）,PASS(r2)

@@ -36,6 +36,18 @@ function fmtDateTime(iso) {
   const d = new Date(t), p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+// 定时执行（#2）：datetime-local 'yyyy-MM-ddTHH:mm' ↔ 本地时间串 'yyyy-MM-dd HH:mm:ss'（timeutil.parse 按本机本地时间解释）。
+const _p2 = (n) => String(n).padStart(2, '0');
+function minDatetimeLocal() {                       // 选择器下限 = 此刻（禁选过去）
+  const d = new Date();
+  return `${d.getFullYear()}-${_p2(d.getMonth() + 1)}-${_p2(d.getDate())}T${_p2(d.getHours())}:${_p2(d.getMinutes())}`;
+}
+function datetimeLocalToLocalStr(v) {               // '2026-07-18T09:30' → '2026-07-18 09:30:00'；空 → ''
+  const s = String(v || '').trim();
+  if (!s) return '';
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2}))?$/);
+  return m ? `${m[1]} ${m[2]}:${m[3] || '00'}` : '';
+}
 
 // markdown：vendored marked（v9）。本地 app 同款姿势——raw html 一律转义后原样展示，
 // 输出流内容来自自己机器的 CC 会话，但仍不给它注入 DOM 的路。
@@ -623,12 +635,18 @@ async function viewTask(machineId, taskKey) {
     rpc(machineId, 'workerLog', { taskKey, tail: 30 }),
   ]);
   if (dRes.code === 'AUTH' || wlRes.code === 'AUTH') return;
-  if (!dRes.ok) {
+  // detail 与输出都拿不到才算真错；detail 失败但输出能拉（异常兜底）→ 降级渲染，至少让输出可见。
+  // （CLI 观察态任务的 detail 由后端从 lifecycle 卡兜底合成，正常不会走到这里的降级分支。）
+  if (!dRes.ok && !wlRes.ok) {
     page.innerHTML = rpcHolder(dRes, machineId);
     page.querySelector('[data-retry]')?.addEventListener('click', () => viewTask(machineId, taskKey));
     return;
   }
-  const d = dRes.data || {};
+  const d = dRes.ok ? (dRes.data || {}) : {
+    taskKey, title: taskKey, prompt: null, history: [],
+    source: String(wlRes.data?.taskKey || taskKey).startsWith('cli:') ? 'cli' : null,
+    state: wlRes.data?.state || null,
+  };
   let curState = d.state || 'awaiting-human';
   let curOutcome = d.outcome || null;
   const title = d.title || taskKey;
@@ -886,14 +904,32 @@ async function viewNew(machineId) {
       <input type="checkbox" id="nWorktree">
       <span><span class="sw-t">在 worktree 中执行</span><span class="sw-d">隔离分支跑，不碰主检出</span></span>
     </label>
-    <div class="bbar"><div class="bbar-in subrow">
-      <button type="button" class="btn" id="nPlan">存为计划</button>
-      <button type="button" class="btn btn-primary" id="nRun">立即执行</button>
-    </div></div>`;
+    <label class="fld">
+      <span class="fld-l">定时执行（可选）</span>
+      <input class="fi" type="datetime-local" id="nSched" min="${escapeAttr(minDatetimeLocal())}">
+      <span class="fld-hint">留空 = 立即处理；设了时间 = 到点由电脑端自动执行（存为计划，可在看板提前确认）</span>
+    </label>
+    <div class="bbar"><div class="bbar-in subrow" id="subrow"></div></div>`;
+
+  // 定时与否决定底部按钮：设了时间 → 单个「定时执行」（createTask 有 scheduledAt 必落 plan、到点提升）；
+  // 没设 → 「存为计划 / 立即执行」两个。
+  const schedEl = document.getElementById('nSched');
+  function paintSubrow() {
+    const scheduled = !!schedEl.value;
+    document.getElementById('subrow').innerHTML = scheduled
+      ? '<button type="button" class="btn btn-primary btn-block" id="nSchedBtn">定时执行</button>'
+      : '<button type="button" class="btn" id="nPlan">存为计划</button>'
+      + '<button type="button" class="btn btn-primary" id="nRun">立即执行</button>';
+    document.getElementById('nSchedBtn')?.addEventListener('click', () => submit(true));
+    document.getElementById('nRun')?.addEventListener('click', () => submit(false));
+    document.getElementById('nPlan')?.addEventListener('click', () => submit(true));
+  }
+  schedEl.addEventListener('input', paintSubrow);
 
   async function submit(plan) {
     const prompt = document.getElementById('nPrompt').value.trim();
     if (!prompt) { toast('Prompt 不能为空', 'err'); return; }
+    const scheduledAt = datetimeLocalToLocalStr(schedEl.value);   // 'yyyy-MM-ddTHH:mm' → 'yyyy-MM-dd HH:mm:ss'
     const body = {
       title: document.getElementById('nTitle').value.trim() || null,
       prompt,
@@ -901,22 +937,21 @@ async function viewNew(machineId) {
       effort: document.getElementById('nEffort').value,
       cwd: document.getElementById('nCwd').value,
       worktree: document.getElementById('nWorktree').checked,
+      scheduledAt: scheduledAt || undefined,   // 给了 → 后端 createTask 强制 plan
       plan,
     };
-    const btns = [document.getElementById('nPlan'), document.getElementById('nRun')];
-    btns.forEach((b) => { b.disabled = true; });
+    document.querySelectorAll('#subrow .btn').forEach((b) => { b.disabled = true; });
     try {
       const r = await rpc(machineId, 'createTask', body);
       if (!r.ok) { toast(r.message, 'err'); return; }   // 502 = 本地拒绝（白名单外等），原因透传
       const taskKey = r.data?.taskKey || r.data?.key;
-      toast(plan ? '已存为计划' : '已排队执行');
+      toast(scheduledAt ? `已定时到 ${scheduledAt.slice(0, 16)}` : (plan ? '已存为计划' : '已排队执行'));
       location.hash = taskKey
         ? `#/task/${encodeURIComponent(machineId)}/${encodeURIComponent(taskKey)}`
         : backTo;
-    } finally { btns.forEach((b) => { b.disabled = false; }); }
+    } finally { document.querySelectorAll('#subrow .btn').forEach((b) => { b.disabled = false; }); }
   }
-  document.getElementById('nRun').addEventListener('click', () => submit(false));
-  document.getElementById('nPlan').addEventListener('click', () => submit(true));
+  paintSubrow();
 }
 
 // ==========================================================================
