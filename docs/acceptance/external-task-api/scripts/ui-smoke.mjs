@@ -29,9 +29,23 @@ try {
     && vis.navActive === 'apikeys' && vis.title.includes('API 密钥'),
     `视图可见 ${JSON.stringify(vis.apikeys)}，board 负对照 ${JSON.stringify(vis.board)}，nav=${vis.navActive}，面包屑含标题=${vis.title.includes('API 密钥')}`);
 
-  // U2 生成密钥：填表 → 点生成 → 一次性明文框出现（swak_ 开头）+ curl 示例
+  // U2a 策略必选拦截：只填 label/source 不选策略 → 点生成 → 前端必选报错、不出明文框
   await page.type('#akLabelInput', 'UI 冒烟密钥');
   await page.type('#akSourceInput', 'uismoke');
+  await page.click('#akCreateBtn');
+  await page.waitForFunction(() => {
+    const el = document.getElementById('akCreateErr');
+    return el && getComputedStyle(el).display !== 'none' && /必选/.test(el.textContent || '');
+  }, { timeout: 5000 });
+  const noPlain = await page.evaluate(() => !document.getElementById('akPlainText'));
+  record('U2a-policy-required', noPlain, `全不选被拦（必选报错可见、无明文框）`);
+
+  // U2b 补全策略 → 生成成功：一次性明文框出现（swak_ 开头）+ curl 示例
+  await page.evaluate(() => {
+    document.querySelector('#akModelsBox input[value="claude-opus-4-8"]').click();
+    document.querySelector('#akEffortsBox input[value="xhigh"]').click();
+    document.getElementById('akCwdsInput').value = 'C:\\Windows';
+  });
   await page.click('#akCreateBtn');
   await page.waitForFunction(() => {
     const el = document.getElementById('akPlainText');
@@ -42,7 +56,7 @@ try {
     const b = box.getBoundingClientRect();
     return { rect: b.width > 200 && b.height > 40, curl: /api\/external\/task\/create/.test(box.textContent) };
   });
-  record('U2-create', plainOk.rect && plainOk.curl, `明文框可见=${plainOk.rect} curl 示例=${plainOk.curl}`);
+  record('U2b-create', plainOk.rect && plainOk.curl, `补全策略后生成成功：明文框可见=${plainOk.rect} curl 示例=${plainOk.curl}`);
 
   // U3 列表含新 key 行（来源 uismoke、启用态）
   await page.waitForFunction(() => document.querySelector('#akListBox table'), { timeout: 5000 });

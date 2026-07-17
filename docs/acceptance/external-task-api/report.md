@@ -1,6 +1,6 @@
 # report：外部任务 API + API 密钥管理（桌面端侧）
 
-**结论：matrix 30/30 全绿（round-1 一轮通过；唯一首跑 FAIL 是用例断言 bug，产品代码零返工）。**
+**结论：matrix 全绿——round-1 30/30；round-2（per-key 策略 + 心跳增量）32/32 API + 5/5 UI + 派发器 e2e；round-3（策略改必选：全不选=无权限）33/33 API + 6/6 UI。明细见 round-N.md。**
 
 ## 交付
 
@@ -15,7 +15,9 @@
 
 ## 语义要点
 
-- 外部通道任务 **source 强制取密钥绑定值**、**缺省落 plan 桶**、`externalKey` 同 source 幂等（任务删除后同键可重建）。
+- 外部通道任务 **source 强制取密钥绑定值**、**缺省落 plan 桶**（调用方可显式 `plan:false` 直进 queued）、`externalKey` 同 source 幂等（任务删除后同键可重建）。
+- **per-key 策略白名单**（round-2 引入，round-3 改**必选**）：密钥必须配全 `allowedModels/allowedEfforts/allowedCwds`（全不选=没有权限：缺项拒建钥，旧格式无策略钥建任务一律 400）；请求省略取首项为默认；越界 400；cwd 允许白名单目录及其子目录。
+- **来源心跳**（round-2）：`POST /api/external/heartbeat` 每 tick 打点，「API 密钥」页 lastUsedAt<5min 亮活跃绿点；不用长连接（发起端为 fork-per-tick 短命进程）。
 - 鉴权失败（缺头/错钥/禁用/已删）统一 401，不泄露密钥状态；跨 source 查询统一 404，不泄露他源任务存在性。
 - 管理端点沿用「只听 127.0.0.1」安全模型；密钥明文只在创建响应出现一次。
 

@@ -46,12 +46,49 @@ function readTaskBrief(taskKey) {
   };
 }
 
+// per-key 策略执行：密钥必须带 allowedModels / allowedEfforts / allowedCwds 三个白名单——
+// **全不选 = 没有权限**：缺任一项（含旧格式无策略密钥）一律拒绝建任务，须重新生成密钥。
+// 请求省略字段 → 取白名单首项为该密钥默认；请求越界 → err（外层回 400）。
+// cwd 判定：等于白名单某项或在其之下（Windows 路径大小写不敏感）。
+function resolveAgainstPolicy(key, p) {
+  const missing = [];
+  if (!Array.isArray(key.allowedModels) || !key.allowedModels.length) missing.push('可用模型');
+  if (!Array.isArray(key.allowedEfforts) || !key.allowedEfforts.length) missing.push('可用 effort');
+  if (!Array.isArray(key.allowedCwds) || !key.allowedCwds.length) missing.push('可访问目录');
+  if (missing.length) return { err: `该密钥未配置${missing.join(' / ')}（策略必选=无权限），请在「API 密钥」页重新生成` };
+  const pick = (reqVal, allowed, label) => {
+    const v = String(reqVal || '').trim();
+    if (!v) return { val: allowed[0] };
+    if (!allowed.includes(v)) return { err: `${label} 不在该密钥允许范围：${allowed.join(', ')}` };
+    return { val: v };
+  };
+  const m = pick(p.model, key.allowedModels, 'model');
+  if (m.err) return { err: m.err };
+  const e = pick(p.effort, key.allowedEfforts, 'effort');
+  if (e.err) return { err: e.err };
+  const ac = key.allowedCwds;
+  let cwd = String(p.cwd || '').trim();
+  if (!cwd) {
+    cwd = ac[0];
+  } else {
+    const norm = path.resolve(cwd).toLowerCase();
+    const hit = ac.some((b) => {
+      const base = path.resolve(b).toLowerCase();
+      return norm === base || norm.startsWith(base + path.sep);
+    });
+    if (!hit) return { err: `cwd 不在该密钥允许范围：${ac.join('；')}` };
+  }
+  return { model: m.val, effort: e.val, cwd };
+}
+
 // 建任务（幂等）：externalKey（可选，≤200 字符）在同 source 内幂等——台账命中且任务包仍在（含归档）
-// 直接返回原任务（existed:true），任务包已被删则掉台账重建。source/plan 之外的字段原样透传 createTask 校验。
+// 直接返回原任务（existed:true），任务包已被删则掉台账重建。source/plan/策略字段之外原样透传 createTask 校验。
 export function createExternalTask(key, payload) {
   const p = payload || {};
   const externalKey = String(p.externalKey || '').trim();
   if (externalKey.length > 200) return { ok: false, error: 'externalKey 超长（≤200 字符）' };
+  const pol = resolveAgainstPolicy(key, p);
+  if (pol.err) return { ok: false, error: pol.err };
 
   if (externalKey) {
     const ledger = readLedger();
@@ -64,9 +101,9 @@ export function createExternalTask(key, payload) {
 
   const r = createTask({
     source: key.source,
-    title: p.title, prompt: p.prompt, model: p.model, description: p.description,
+    title: p.title, prompt: p.prompt, model: pol.model, description: p.description,
     plan: p.plan === false ? false : true,
-    cwd: p.cwd, effort: p.effort, scheduledAt: p.scheduledAt,
+    cwd: pol.cwd, effort: pol.effort, scheduledAt: p.scheduledAt,
     worktree: p.worktree, baseBranch: p.baseBranch, dynamicWorkflow: p.dynamicWorkflow,
     externalKey: externalKey || undefined,
   });
