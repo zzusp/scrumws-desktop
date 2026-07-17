@@ -74,8 +74,11 @@ try {
   await page.click('#nSchedBtn');
   await page.waitForFunction(() => (document.getElementById('toastHost')?.textContent || '').includes('已定时'), { timeout: 8000 });
   step('#2 提交 → 「已定时到 …」toast', true, (await page.$eval('#toastHost', (e) => e.textContent).catch(() => '')).trim());
-  // 跳详情后应能看到定时标（详情 meta 里 scheduledAt 由 mock 回读）
+  // 跳详情后应能看到定时标（详情 .dt-sched，scheduledAt 由 mock 回读）
   await page.waitForFunction(() => location.hash.includes('/task/'), { timeout: 8000 });
+  await page.waitForFunction(() => document.querySelector('.dt-sched'), { timeout: 8000 }).catch(() => {});
+  const schedTxt = await page.$eval('.dt-sched', (e) => e.textContent.trim()).catch(() => '');
+  step('#2 详情页显示定时标', /定时执行/.test(schedTxt) && /2026-12-31 09:00/.test(schedTxt), schedTxt);
   await shot('r2-new-created.png');
 
   const fails = results.filter((r) => !r.pass);

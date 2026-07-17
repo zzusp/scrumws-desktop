@@ -663,6 +663,7 @@ async function viewTask(machineId, taskKey) {
       <div class="tc-title">${escapeHtml(title)}</div>
       <div class="dt-tags" id="dtTags"></div>
       <div class="dt-meta" title="${escapeAttr(d.cwd || '')}">${escapeHtml(d.cwd || '')}${d.model ? ' · ' + escapeHtml(d.model) : ''}${d.effort ? ' · ' + escapeHtml(d.effort) : ''}</div>
+      ${d.scheduledAt ? `<div class="dt-sched">${clockIcon()} 定时执行 · ${escapeHtml(d.scheduledAt)}</div>` : ''}
       ${d.prompt ? `<details class="dt-prompt"><summary>Prompt 全文</summary><div class="prompt-box">${escapeHtml(d.prompt)}</div></details>` : ''}
     </section>
     <div class="stream-head">
