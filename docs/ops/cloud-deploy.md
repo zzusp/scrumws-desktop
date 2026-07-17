@@ -2,7 +2,17 @@
 
 对应 `cloud/`（Fastify + pg）。设计见 [`../spec/cloud-control-plane.md`](../spec/cloud-control-plane.md)，实现契约见 [`../spec/cloud-p0p1-contract.md`](../spec/cloud-p0p1-contract.md)。
 
-**当前部署形态：内网模式（裸 HTTP）**，见 §1。
+**当前部署形态：内网模式（裸 HTTP），已上线** → http://115.159.161.47:8790
+
+| 项 | 值 |
+|---|---|
+| 服务器 | `ubuntu@115.159.161.47:22`（口令在仓库根 `server_info.txt`，已入 .gitignore） |
+| 应用目录 | `/opt/scrumws-cloud/`（对照物：`/opt/claude-center/`） |
+| 容器 | `scrumws-cloud`，`restart: unless-stopped` + HEALTHCHECK |
+| 端口 | 8790（腾讯云安全组需放行；3000/8787 是 claude-center 的，勿动） |
+| Postgres | 宿主机 55432，**不在 compose 内** |
+
+⚠ **部署源不走 GitHub**：国内服务器对 `github.com:443` 普遍不通。本地打 bundle → scp → `rsync --delete --exclude=.env`。抄自 claude-center 的同款设计。
 
 ---
 
@@ -81,24 +91,69 @@ docker run --rm postgres:17-alpine psql "$DATABASE_URL" -c "\dt"
 
 ---
 
-## 3. 首个用户与密钥
+## 2.5 部署 / 发版
+
+一条龙：`cloud/deploy-on-server.sh`（build → up → 健康检查 → 清理悬空镜像）。**在开发机跑这三条**：
 
 ```bash
-cd cloud
-npm ci
-node scripts/bootstrap.mjs --check                    # 零副作用自检，先跑这个
-node scripts/bootstrap.mjs --name "你的名字" --slug team --label "我的密码管理器"
+# 1) 打 bundle（务必排除 node_modules 与 .env）
+cd <repo>
+tar -czf /tmp/scrumws-cloud-deploy.tar.gz --exclude=node_modules --exclude=.env -C cloud .
+
+# 2) 传 bundle + 部署脚本（脚本单独传，避免「先 rsync 才能拿到新脚本」的鸡生蛋——抄 claude-center）
+scp -P 22 /tmp/scrumws-cloud-deploy.tar.gz ubuntu@115.159.161.47:/tmp/
+scp -P 22 cloud/deploy-on-server.sh        ubuntu@115.159.161.47:/tmp/
+
+# 3) 执行
+ssh -p 22 ubuntu@115.159.161.47 'bash /tmp/deploy-on-server.sh 0.1.0 /tmp/scrumws-cloud-deploy.tar.gz'
 ```
 
-输出的 `swuk_…` **明文只打印这一次**，立刻存进密码管理器。丢了只能再生成一把。
+Windows 上没有 sshpass，用 PuTTY 的 `pscp` / `plink -pw`。**注意**：Git Bash 的 `/tmp` 是 MSYS 虚拟路径，`pscp` 这类原生 Windows 程序不认，要给真实路径；`tar` 则相反，`C:/...` 会被当成远程主机名，要用 `/c/...` 形式。
+
+脚本会自检：缺 bundle / 缺 `.env` / 版本号格式不对都直接退出。健康检查 60s 不过就打印容器日志并退出非零。
+
+**上线后独立核实**（别信脚本自己的回执）：
+
+```bash
+docker ps --filter name=scrumws-cloud --format '{{.Names}} | {{.Status}}'   # 应 (healthy)
+docker logs scrumws-cloud 2>&1 | grep -i insecure                            # 确认安全姿态符合预期
+curl -s http://<公网IP>:8790/api/health                                       # → {"ok":true}
+curl -s -o /dev/null -w '%{http_code}' http://<公网IP>:8790/api/machines      # → 401（鉴权真的挡着）
+```
+
+⚠ 最后两条**必须从公网打**，不能只在服务器内部 `127.0.0.1` 上 curl——首次上线就栽过：容器内部一切正常，公网却因安全组没放行 8790 而不通。
+
+---
+
+## 3. 首个用户与密钥
+
+在服务器上经容器跑（镜像里已有依赖，无需 npm ci）：
+
+```bash
+# 零副作用自检，先跑这个：连库 + 验表齐全 + 打印将要做什么，不写任何行
+docker exec scrumws-cloud node scripts/bootstrap.mjs   --name "你的名字" --workspace "工作区名" --slug team --check
+
+# 确认自检说的是「新建」而不是「复用」再执行
+docker exec scrumws-cloud node scripts/bootstrap.mjs   --name "你的名字" --workspace "工作区名" --slug team --label "我的密码管理器"
+```
+
+- `--workspace` **必填**；workspace 名含中文时 slugify 结果为空，**必须**显式给 `--slug`
+- 同名 + 同 workspace 视为同一个人 → 只补发密钥（自检会显示「复用」）
+- 输出的 `swuk_…` **明文只打印这一次**，立刻存进密码管理器。丢了只能再生成一把
+
+> ⚠ 裸 HTTP 下（决策 13），你**用浏览器登录的那一刻这把密钥就明文过网了**。若它还经过别的渠道（终端记录、聊天、agent transcript），登录后立刻在管理页生成第二把、撤销第一把。
 
 ---
 
 ## 4. 起服务
 
+日常部署走 §2.5 的 `deploy-on-server.sh`（build + up + 健康检查一条龙）。手工起停：
+
 ```bash
-cd cloud
-CLOUD_INSECURE_COOKIE=1 npm start     # 监听 0.0.0.0:8790
+cd /opt/scrumws-cloud
+docker compose up -d cloud      # CLOUD_INSECURE_COOKIE=1 已写死在 compose 的 environment
+docker compose logs -f cloud
+docker compose restart cloud
 ```
 
 启动日志会打出当前安全姿态。看到这行说明开关生效了：
@@ -122,7 +177,7 @@ curl -s http://<host>:8790/api/health     # → {"ok":true}
 1. **`trustProxy` 未开**（`cloud/src/server.js:22`）。开了就等于信任任意客户端的 `X-Forwarded-For`，限流 key 可被伪造。代价是**前置反代时限流按反代 IP 聚合成全局 10/5min**。收口反代方案时要一起定：要么在反代层做限流，要么开 `trustProxy` 且确保它只信任自己那一跳。**当前无反代，不构成问题。**
 2. **限流状态在进程内**，多实例不共享。当前单实例，暂不构成问题。
 3. **Postgres `55432` 公网可直连**。云端服务上线后应收口到只对它开放。属部署收口，没人做就是个洞。
-4. **无 Dockerfile / docker-compose**。当前靠 `npm start` 裸跑，没有进程守护、没有开机自启、没有日志轮转。要长期跑得补。
+4. ~~无 Dockerfile / docker-compose~~ → **已补**（`cloud/Dockerfile`、`cloud/docker-compose.yml`、`cloud/deploy-on-server.sh`）。进程守护与开机自启由 `restart: unless-stopped` 兜底；**日志轮转仍未配**（docker 默认 json-file 无上限，长期跑会涨满盘，需设 `log-opts max-size`）。
 
 ---
 
@@ -141,13 +196,39 @@ curl -s http://<host>:8790/api/health     # → {"ok":true}
 
 ---
 
+## 6.5 ⚠ 首次上线时踩的：库里可能有 agent 自测残留的**活凭据**
+
+2026-07-17 首次部署后发现：真实 `scrumws` 库里不是空的，有 6 台假机器（`SELFTEST-PC` / `GUARD-PC` / `X`）、6 条重复假任务、**7 把未撤销的 `swrk_`** 和 1 把 `swuk_`——全是开发期云端服务端 agent 自测时打进真实库的（后来的实跑 agent 才改用一次性验证库）。
+
+**当时无害**（库只有内网 Postgres 能碰），**服务一上公网就成了活凭据**：拿那把 `swuk_` 可直接登录，拿 `swrk_` 可往里注册机器。
+
+**上线前必查**：
+
+```bash
+psql "$DATABASE_URL" -c "select key_prefix, label, revoked_at is not null revoked from registration_key"
+psql "$DATABASE_URL" -c "select key_prefix, label from user_key"
+psql "$DATABASE_URL" -c "select display_name, hostname from machine"
+```
+
+见到 `自测` / `SELFTEST-PC` / `origin-guard` 这类 label 就是开发残留。确认无真实数据后清库重来：
+
+```bash
+psql "$DATABASE_URL" -c "drop schema public cascade; create schema public;"
+psql "$DATABASE_URL" -f cloud/migrations/001_p0p1_init.sql
+```
+
+**教训**：凭据的危险性不是固有属性，是**部署形态的函数**。同一把密钥，内网库里躺着无害，服务上公网那一刻就变成了洞。**每次改变暴露面（内网→公网、加端口、加反代），都要重新过一遍"现存凭据在新形态下意味着什么"。**
+
 ## 7. 回滚
 
 云端是**只读镜像**，停掉它不影响任何机器上的任务执行——这是「本地权威」的直接推论。
 
 ```bash
 # 停服务：本地看板照常跑，任务照常执行，只是不再上报
-pkill -f "node src/server.js"        # 或按 PID 定点收
+cd /opt/scrumws-cloud && docker compose down
+
+# 回退到上一版镜像（build 过的旧 tag 还在本地）
+docker compose down && APP_VERSION=<旧版本> docker compose up -d cloud
 
 # 解绑单台机器：桌面 app → 设置 → 云端 → 解绑（删本地 identity.json）
 # 或云端撤销该机器的 machine_token

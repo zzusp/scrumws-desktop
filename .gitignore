@@ -3,10 +3,13 @@ dist/
 *.log
 .sandbox/
 graphify-out/
-# 凭据禁入库：DATABASE_URL / 测试账号口令
+# 凭据禁入库（docs/ops/ 规范）。两者都从未被 track，无需清历史。
+# .env          —— DATABASE_URL / 测试账号口令
+# server_info.txt —— 部署服务器 IP / 端口 / root 口令（部署时由 ops 本地持有）
 .env
 .env.*
 !.env.example
+server_info.txt
 # 历史遗留：旧默认 dataRoot 是 Windows 相对路径 'D:\baibu-agent'，在 macOS 上会当相对路径在仓库内建目录。
 # 默认已改为绝对 ~/.scrumws；忽略这个残留目录（可安全删除）。反斜杠在 gitignore 里需转义成 \\。
 D:\\baibu-agent/
