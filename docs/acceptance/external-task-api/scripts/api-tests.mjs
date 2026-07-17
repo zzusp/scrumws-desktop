@@ -1,6 +1,7 @@
 // 外部任务 API + API 密钥管理端点验收（跨轮复用）。
 // 前置：对一个「隔离数据根」的实例跑（SCRUMWS_DATA_ROOT=临时目录 SCRUMWS_PORT=18799 node platform/standalone.js），
-//       不要指向真实 8799/~/.scrumws。用例只建 plan 任务，不触发 claude 会话。
+//       不要指向真实 8799/~/.scrumws。且实例须以 **PATH 无 claude** 的环境起（Q2 会建 plan:false 任务
+//       触发 spawn——claude 不存在时子进程秒死零副作用；其余用例只建 plan 任务）。
 // 用法：node api-tests.mjs [baseUrl] [dataRoot]
 //   baseUrl  缺省 http://127.0.0.1:18799
 //   dataRoot 该实例的数据根（做磁盘断言）；缺省跳过磁盘断言并标 FAIL（要求传）
@@ -40,12 +41,13 @@ const main = async () => {
 
   // 策略三项必选（2026-07-17 语义：全不选 = 没有权限）——所有建钥都带全策略
   const FULL_POLICY = { allowedModels: ['claude-opus-4-8', 'claude-haiku-4-5-20251001'], allowedEfforts: ['xhigh', 'low'], allowedCwds: [DATA_ROOT] };
-  r = await req('POST', '/api/apikeys/create', { body: { label: '钉钉派发器', source: 'chat', ...FULL_POLICY } });
+  r = await req('POST', '/api/apikeys/create', { body: { label: '钉钉派发器', source: 'chat', ...FULL_POLICY, allowQueued: true } });
   const chatKey = r.json;
   record('A2-create-key', r.status === 200 && chatKey?.ok && /^swak_[A-Za-z0-9_-]{40,}$/.test(chatKey.plaintext || '')
     && chatKey.key?.source === 'chat' && chatKey.key?.prefix === chatKey.plaintext.slice(0, 12)
-    && chatKey.key?.allowedModels?.length === 2 && chatKey.key?.allowedEfforts?.length === 2 && chatKey.key?.allowedCwds?.length === 1,
-    `建 chat 密钥（明文 swak_、prefix 对齐、策略外显）→ ${r.status} prefix=${chatKey?.key?.prefix}`);
+    && chatKey.key?.allowedModels?.length === 2 && chatKey.key?.allowedEfforts?.length === 2 && chatKey.key?.allowedCwds?.length === 1
+    && chatKey.key?.allowQueued === true,
+    `建 chat 密钥（明文 swak_、prefix 对齐、策略外显、allowQueued 回显）→ ${r.status} prefix=${chatKey?.key?.prefix}`);
 
   r = await req('POST', '/api/apikeys/create', { body: { label: 'issue 检查器', source: 'issue', ...FULL_POLICY } });
   const issueKey = r.json;
@@ -68,11 +70,11 @@ const main = async () => {
     `缺 models/efforts/cwds 均拒建 → ${noModels.status}/${noEfforts.status}/${noCwds.status}`);
 
   r = await req('GET', '/api/apikeys');
-  // prefix（明文前 12 位）是有意展示的；泄漏 = 出现完整明文（swak_ 后 ≥40 字符）或 hash 字段
+  // 2026-07-17 起列表有意外带 plaintext（本机管理面「复制」用）；不该泄漏的只剩 hash 字段
   const listStr = JSON.stringify(r.json);
-  const leaked = /"hash"/.test(listStr) || /swak_[A-Za-z0-9_-]{40,}/.test(listStr);
-  record('A6-list-no-secret', r.status === 200 && r.json.keys.length === 2 && !leaked,
-    `列表 2 条且不含 hash/完整明文 → ${r.status} keys=${r.json?.keys?.length} leaked=${leaked}`);
+  const leaked = /"hash"/.test(listStr);
+  record('A6-list-no-hash', r.status === 200 && r.json.keys.length === 2 && !leaked,
+    `列表 2 条且不含 hash → ${r.status} keys=${r.json?.keys?.length} leaked=${leaked}`);
 
   // ---- B. 外部建任务 ----
   r = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p' } });
@@ -217,6 +219,43 @@ const main = async () => {
     && /不在该密钥允许范围/.test(outModel.json?.error + outEffort.json?.error + outCwd.json?.error),
     `越界 model/effort/cwd → ${outModel.status}/${outEffort.status}/${outCwd.status}`);
 
+  // ---- Q. 直接执行权限（allowQueued）+ 密钥编辑 ----
+  // policy 钥未开 allowQueued → plan:false 拒绝（issue 钥已在 D4 删除，不可用于此例）
+  r = await req('POST', '/api/external/task/create', {
+    body: { title: 't', prompt: 'p', plan: false }, token: polKey.plaintext,
+  });
+  record('Q1-queued-denied', r.status === 400 && /不允许直接排队执行/.test(r.json?.error || ''),
+    `未开 allowQueued 传 plan:false → ${r.status} ${r.json?.error}`);
+
+  // chat 钥开了 allowQueued → plan:false 直进 queued（隔离实例 PATH 无 claude，spawn 秒死零副作用）
+  r = await req('POST', '/api/external/task/create', {
+    body: { title: '直执任务', prompt: 'p', plan: false, externalKey: 'q2-1' }, token: chatKey.plaintext,
+  });
+  let q2Init = null;
+  if (r.status === 200 && DATA_ROOT) {
+    try { q2Init = JSON.parse(fs.readFileSync(path.join(taskDirOf(r.json.taskKey), 'state.json'), 'utf8')).history?.[0]?.state; } catch { }
+  }
+  record('Q2-queued-allowed', r.status === 200 && r.json?.state !== 'plan' && q2Init === 'queued',
+    `开 allowQueued 传 plan:false → ${r.status} state=${r.json?.state}（磁盘初态 ${q2Init}）`);
+
+  // 编辑：建单模型钥 → 越界 400 → update 扩白名单/改 label → 同请求 200
+  r = await req('POST', '/api/apikeys/create', { body: { label: '待编辑钥', source: 'upd', allowedModels: ['claude-opus-4-8'], allowedEfforts: ['xhigh'], allowedCwds: [DATA_ROOT] } });
+  const updKey = r.json;
+  const q3a = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p', model: 'claude-sonnet-5' }, token: updKey.plaintext });
+  r = await req('POST', '/api/apikeys/update', {
+    body: { id: updKey.key.id, label: '已编辑钥', source: 'upd', allowedModels: ['claude-opus-4-8', 'claude-sonnet-5'], allowedEfforts: ['xhigh'], allowedCwds: [DATA_ROOT], allowQueued: false },
+  });
+  const q3c = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p', model: 'claude-sonnet-5', externalKey: 'q3-1' }, token: updKey.plaintext });
+  record('Q3-update-key', q3a.status === 400 && r.status === 200 && r.json?.key?.label === '已编辑钥'
+    && r.json.key.allowedModels.length === 2 && q3c.status === 200 && q3c.json?.state === 'plan',
+    `编辑前越界 ${q3a.status} → update 后同请求 ${q3c.status}（label=${r.json?.key?.label}）`);
+
+  // 编辑校验：缺策略 / 未知 id → 400
+  const q4a = await req('POST', '/api/apikeys/update', { body: { id: updKey.key.id, label: 'x', source: 'upd', allowedEfforts: ['xhigh'], allowedCwds: [DATA_ROOT] } });
+  const q4b = await req('POST', '/api/apikeys/update', { body: { id: 'nope', label: 'x', source: 'upd', allowedModels: ['claude-opus-4-8'], allowedEfforts: ['xhigh'], allowedCwds: [DATA_ROOT] } });
+  record('Q4-update-validate', q4a.status === 400 && /allowedModels 必选/.test(q4a.json?.error || '') && q4b.status === 400 && /key not found/.test(q4b.json?.error || ''),
+    `update 缺策略 ${q4a.status} / 未知 id ${q4b.status}`);
+
   // 旧格式无策略密钥（现 API 已建不出，直接注入 keys 文件模拟存量）→ 建任务一律拒绝（无权限）
   const legacyPlain = 'swak_' + 'L'.repeat(43);
   if (DATA_ROOT) {
@@ -234,6 +273,13 @@ const main = async () => {
   } else {
     record('P7-legacy-no-policy-denied', false, '未传 dataRoot，无法注入旧格式密钥');
   }
+
+  // ---- R. 复制 = 列表外带原密钥明文 ----
+  r = await req('GET', '/api/apikeys');
+  const rvNew = (r.json?.keys || []).find((k) => k.id === chatKey.key.id);
+  const rvLegacy = (r.json?.keys || []).find((k) => k.id === 'legacy01');
+  record('R1-list-plaintext', rvNew?.plaintext === chatKey.plaintext && rvLegacy?.plaintext === null,
+    `列表明文：新钥与创建时一致=${rvNew?.plaintext === chatKey.plaintext}；旧格式钥=null（复制置灰）`);
 
   const fails = results.filter((x) => !x.pass);
   console.log(`\n== ${results.length - fails.length}/${results.length} PASS ==`);

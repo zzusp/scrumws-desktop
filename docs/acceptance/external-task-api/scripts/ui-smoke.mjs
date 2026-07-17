@@ -58,8 +58,9 @@ try {
   });
   record('U2b-create', plainOk.rect && plainOk.curl, `补全策略后生成成功：明文框可见=${plainOk.rect} curl 示例=${plainOk.curl}`);
 
-  // U3 列表含新 key 行（来源 uismoke、启用态）
-  await page.waitForFunction(() => document.querySelector('#akListBox table'), { timeout: 5000 });
+  // U3 列表含新 key 行（来源 uismoke、启用态）。等行出现而非等 table：明文框先渲染、
+  // 列表刷新是其后的异步 fetch，旧 table 一直在，等 table 会竞态假过。
+  await page.waitForFunction(() => [...document.querySelectorAll('#akListBox tbody tr')].some((x) => x.textContent.includes('uismoke')), { timeout: 5000 });
   const row = await page.evaluate(() => {
     const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
     return tr ? { text: tr.textContent, hasToggle: !!tr.querySelector('[data-ak-toggle]'), hasDel: !!tr.querySelector('[data-ak-del]') } : null;
@@ -78,7 +79,56 @@ try {
   }, { timeout: 5000 });
   record('U4-toggle', true, '禁用后行内出现「已禁用」');
 
-  // U5 删除：点删除 → customConfirm 弹窗出现 → 确认 → 行消失
+  // U6 编辑：行内「编辑」→ 表单回填 + 按钮变「保存修改」→ 改备注保存 → 行更新且不出新明文
+  await page.evaluate(() => {
+    const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
+    tr.querySelector('[data-ak-edit]').click();
+  });
+  const editState = await page.evaluate(() => ({
+    label: document.getElementById('akLabelInput').value,
+    btn: document.getElementById('akCreateBtn').textContent,
+    cwd: document.getElementById('akCwdsInput').value,
+    modelChecked: !!document.querySelector('#akModelsBox input[value="claude-opus-4-8"]:checked'),
+  }));
+  await page.evaluate(() => {
+    document.getElementById('akLabelInput').value = 'UI 冒烟密钥改';
+    document.getElementById('akPlainBox').style.display = 'none';
+    document.getElementById('akPlainBox').innerHTML = '';
+  });
+  await page.click('#akCreateBtn');
+  await page.waitForFunction(() => {
+    const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
+    return tr && tr.textContent.includes('UI 冒烟密钥改');
+  }, { timeout: 5000 });
+  const noNewPlain = await page.evaluate(() => !document.getElementById('akPlainText'));
+  record('U6-edit', editState.label === 'UI 冒烟密钥' && editState.btn === '保存修改' && editState.modelChecked && !!editState.cwd && noNewPlain,
+    `回填（label/勾选/目录）+ 按钮=保存修改 + 保存后行更新且无新明文`);
+
+  // U7 复制：行内「复制」= 取回原密钥明文——剪贴板成功（按钮变「已复制」）或降级弹窗展示原文，二取一
+  await page.evaluate(() => {
+    const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
+    tr.querySelector('[data-ak-copy]').click();
+  });
+  await page.waitForFunction(() => {
+    const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
+    const btnCopied = tr && [...tr.querySelectorAll('button')].some((b) => b.textContent.trim() === '已复制');
+    const ov = [...document.querySelectorAll('.overlay')].find((x) => getComputedStyle(x).display !== 'none');
+    const fallback = ov && /swak_[A-Za-z0-9_-]{40,}/.test(ov.textContent || '');
+    return btnCopied || fallback;
+  }, { timeout: 5000 });
+  const copied = await page.evaluate(() => {
+    const ov = [...document.querySelectorAll('.overlay')].find((x) => getComputedStyle(x).display !== 'none');
+    if (ov) {
+      const m = /swak_[A-Za-z0-9_-]{40,}/.exec(ov.textContent || '');
+      const btn = [...ov.querySelectorAll('button')].find((b) => /确定|关闭|好/.test(b.textContent));
+      if (btn) btn.click();
+      return { via: 'fallback-alert', plain: m ? m[0] : null };
+    }
+    return { via: 'clipboard', plain: null };
+  });
+  record('U7-copy-original', true, `取回原文成功（途径=${copied.via}）`);
+
+  // U5 删除：删除 uismoke 钥（customConfirm 确认）→ 行移除
   await page.evaluate(() => {
     const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
     tr.querySelector('[data-ak-del]').click();
@@ -92,11 +142,8 @@ try {
     const btn = [...ov.querySelectorAll('button')].find((b) => b.textContent.trim() === '删除');
     btn.click();
   });
-  await page.waitForFunction(() => {
-    const trs = [...document.querySelectorAll('#akListBox tbody tr')];
-    return trs.length === 0 ? !!document.querySelector('#akListBox div') : !trs.some((x) => x.textContent.includes('uismoke'));
-  }, { timeout: 5000 });
-  record('U5-delete', true, '确认弹窗出现、确认后行移除');
+  await page.waitForFunction(() => ![...document.querySelectorAll('#akListBox tbody tr')].some((x) => x.textContent.includes('uismoke')), { timeout: 5000 });
+  record('U5-delete', true, 'uismoke 钥经确认弹窗删除、行移除');
 
   await page.screenshot({ path: process.env.UI_SHOT || 'ui-apikeys.png' });
 } finally {

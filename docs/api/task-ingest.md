@@ -90,10 +90,11 @@ curl -s -X POST http://127.0.0.1:8799/api/task/create \
 
 `/api/task/create` 无鉴权、来源标签由请求方自报，适合本机自用；**外部系统（钉钉派发器、issue 检查器、其他机器人）建议走外部通道** `/api/external/*`：
 
-- **鉴权**：`Authorization: Bearer swak_…`。密钥在桌面端「API 密钥」菜单页生成（明文只显示一次），可禁用/删除。
+- **鉴权**：`Authorization: Bearer swak_…`。密钥在桌面端「API 密钥」菜单页生成，可禁用/删除；明文留存本机（`runtime/api-keys.json`，仅本机管理面可见），列表行内「复制」即可取回原文。
 - **来源可信**：每把密钥绑定一个 `source`，该密钥建的任务一律记为此来源（请求体里的 `source` 忽略），查询也只能查本来源的任务。
 - **per-key 策略白名单**（创建密钥时**三项都必选**——全不选 = 没有权限，无法创建）：`allowedModels` / `allowedEfforts`（须为全局白名单子集）、`allowedCwds`（绝对路径列表；任务 `cwd` 须等于某项或在其之下，Windows 大小写不敏感）。请求省略对应字段时取白名单**首项**为该密钥默认；请求越界一律 `400 …不在该密钥允许范围…`；旧格式无策略字段的密钥建任务一律 `400 该密钥未配置…（策略必选=无权限）`，须重新生成。
-- **默认 plan 桶**：外部推入的任务缺省 `plan:true`（人工在看板确认后才执行）；显式传 `plan:false` 才落 `queued` 自动执行。
+- **默认 plan 桶 + 直接执行权限**：外部推入的任务缺省 `plan:true`（人工在看板确认后才执行）。显式传 `plan:false` 直进 `queued` 自动执行**需要密钥开启「允许直接执行」（`allowQueued`，默认关）**——未开启的密钥传 `plan:false` 一律 `400 该密钥不允许直接排队执行…`。
+- **密钥可编辑 / 可复制**：「API 密钥」页行内「编辑」改备注/来源/策略/直执权限（密钥本体与使用记录不变，`POST /api/apikeys/update`）；「复制」把**原密钥明文**复制进剪贴板。明文留存前创建的旧版密钥无法取回（只存了 sha256），按钮置灰，可编辑配置或删除重建。
 - **幂等去重**：可带 `externalKey`（≤200 字符，来源侧唯一事件 id，如钉钉消息时间戳、issue 编号）。同 source 同 `externalKey` 重复调用不重复建任务，返回原 `taskKey` + `existed:true`（台账存 `runtime/external-ingest.json`；对应任务被删除后同键会重建）。
 - **来源心跳**：`POST /api/external/heartbeat`（仅带鉴权头，无 body）→ `200 {"ok":true}`。发起端每 tick 打一下即可让「API 密钥」页显示该来源活跃（lastUsedAt 5 分钟内亮绿点）。无副作用；不用长连接——发起端多为短命定时进程，无宿主可持连，活跃度以心跳新鲜度判定更准。
 

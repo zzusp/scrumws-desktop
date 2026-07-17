@@ -1,6 +1,6 @@
 # report：外部任务 API + API 密钥管理（桌面端侧）
 
-**结论：matrix 全绿——round-1 30/30；round-2（per-key 策略 + 心跳增量）32/32 API + 5/5 UI + 派发器 e2e；round-3（策略改必选：全不选=无权限）33/33 API + 6/6 UI。明细见 round-N.md。**
+**结论：matrix 全绿——round-1 30/30；round-2（per-key 策略 + 心跳）32/32+5/5+派发器 e2e；round-3（策略必选）33/33+6/6；round-4（allowQueued 直执权限 + 编辑/复制）37/37+8/8。生产链路 e2e 见 D:\baibu-agent\docs\acceptance\scrumws-ingest-cutover\round-3.md。明细见各 round-N.md。**
 
 ## 交付
 
