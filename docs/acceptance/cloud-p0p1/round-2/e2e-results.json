@@ -1,0 +1,212 @@
+{
+  "results": [
+    {
+      "name": "GET / 由真实 server.js 托管",
+      "ok": true,
+      "detail": "HTTP 200 text/html; charset=utf-8"
+    },
+    {
+      "name": "swuk_ 登录进入 shell",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "侧边栏有「机器纳管」入口且路由可达",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rk 明文当场展示",
+      "ok": true,
+      "detail": "长度=48 前缀=swrk_AMfo"
+    },
+    {
+      "name": "展示「明文只此一次」的复制引导",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "新生成的 rk 出现在下方列表",
+      "ok": true,
+      "detail": "prefix=swrk_AMfo"
+    },
+    {
+      "name": "配对码 8 位",
+      "ok": true,
+      "detail": "code=H8X7TTH8"
+    },
+    {
+      "name": "配对码有 10min 倒计时",
+      "ok": true,
+      "detail": "倒计时=10:00 后过期"
+    },
+    {
+      "name": "join token 拼出且 swjt_ 前缀",
+      "ok": true,
+      "detail": "长度=153"
+    },
+    {
+      "name": "join token 内容 = {v:1, 本页 origin, rk 明文, code}",
+      "ok": true,
+      "detail": "v=1 url=http://127.0.0.1:8790 rk 匹配=true code 匹配=true"
+    },
+    {
+      "name": "join token 的 url 无尾斜杠（§6.17）",
+      "ok": true,
+      "detail": "url=http://127.0.0.1:8790"
+    },
+    {
+      "name": "点复制 → writeText 兑现，自研 toast 报「已复制」（非 alert）",
+      "ok": true,
+      "detail": "toast=\"join token已复制到剪贴板\""
+    },
+    {
+      "name": "localStorage/sessionStorage/URL/cookie 里搜不到 rk / code / token 明文",
+      "ok": true,
+      "detail": "存储与 URL 全文 = \"cloud-theme=light;http://127.0.0.1:8790/#/enroll\"…"
+    },
+    {
+      "name": "#/board 页面里 <select> 元素数 = 0",
+      "ok": true,
+      "detail": "实测 0 个"
+    },
+    {
+      "name": "#/machines 页面里 <select> 元素数 = 0",
+      "ok": true,
+      "detail": "实测 0 个"
+    },
+    {
+      "name": "#/enroll 页面里 <select> 元素数 = 0",
+      "ok": true,
+      "detail": "实测 0 个"
+    },
+    {
+      "name": "下拉展开：自绘浮层出现且挂在 body 上（能盖出 overflow 容器）",
+      "ok": true,
+      "detail": "{\"opts\":4,\"role\":\"listbox\",\"expanded\":\"true\",\"selected\":1,\"bg\":\"oklch(1 0 0)\",\"inBody\":true,\"pos\":\"fixed\"}"
+    },
+    {
+      "name": "下拉 ARIA：role=listbox / aria-expanded=true / 有 aria-selected 项",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Esc 关闭下拉",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "键盘 ↑↓ + Enter 能选中（原生 select 白送的能力，自研必须补齐）",
+      "ok": true,
+      "detail": "选中=live · 实时"
+    },
+    {
+      "name": "点浮层外部关闭下拉",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "切到暗色主题",
+      "ok": true,
+      "detail": "{\"theme\":\"dark\",\"body\":\"oklch(0.15 0.005 285.8)\"}"
+    },
+    {
+      "name": "暗色下拉浮层用的是 token 底色（不是系统白底）",
+      "ok": true,
+      "detail": "浮层底色=oklch(0.21 0.006 285.9)"
+    },
+    {
+      "name": "桌面端就地拆包：URL / rk / 配对码 三项自动填好",
+      "ok": true,
+      "detail": "url=http://127.0.0.1:8790 · rk 逐字匹配=true · code=H8X7TTH8 · 提示=\"已从 join token 填好三项，确认 URL 后点连接\""
+    },
+    {
+      "name": "点「连接」→ enroll 成功（桌面端切到「已连接」面板）",
+      "ok": true,
+      "detail": "enrolled=true workspace=scrumws machineId=e458f445-b311-454d-a3fc-bb114af6fcd7"
+    },
+    {
+      "name": "本地 identity 落盘且不含 rk（入场券用完即弃）",
+      "ok": true,
+      "detail": "/api/cloud/status 全文搜 rk 明文 = ✅ 无"
+    },
+    {
+      "name": "桌面端设置页无 JS 报错",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "云端机器列表出现这台机器且 online",
+      "ok": true,
+      "detail": "百部 online 孙鹏 0 / 5 主机名百部 平台win32 / x64 claude2.1.211 app0.1.0 最后心跳刚刚 自动执行未上报 注册于刚刚 machineUide4ef6eff-9bbd-408a-8e19-dde"
+    },
+    {
+      "name": "刷新后回到「生成一把」态（内存里的 rk 明文没了）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "点「拼 join token」→ 给出明确提示而不是坏串",
+      "ok": true,
+      "detail": "拼不出 join token：本页内存里没有注册密钥的明文。 明文只在「生成」那一次的响应里出现过 —— 刷新 / 重进本页即永久丢失（云端库里只剩 sha256，谁也拿不回来）。 请在上面重新生成一把注册密钥再拼；或者手动把三个字段分别贴到桌面端「设置 → 云端」： 云端 URLhttp://12…"
+    },
+    {
+      "name": "提示说清「刷新后 rk 明文已丢失」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "提示给出出路：重新生成 或 手动贴三个字段",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "负例下**没有**拼出任何 token（绝不半成品）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "撤销弹自研 modal（role=dialog / aria-modal）",
+      "ok": true,
+      "detail": "{\"role\":\"dialog\",\"modal\":\"true\",\"txt\":\"撤销注册密钥 即将撤销 swrk_AMfo… 之后用这把密钥的机器再也进不来（enroll → 401） 已在线的机器不受任何影响：照常心跳、照常上报（密钥只管入场，不管在场） 不\"}"
+    },
+    {
+      "name": "modal 讲清「不影响已在线机器」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "modal 打开时背景不滚动",
+      "ok": true,
+      "detail": "scrollTop 0 → 0"
+    },
+    {
+      "name": "Esc 关闭 modal（且未执行撤销）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "alert/confirm/prompt 全程被调用 0 次（运行时探针）",
+      "ok": true,
+      "detail": "实际=[]"
+    },
+    {
+      "name": "无非预期的非 2xx（401 探测 / favicon 除外）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ui.js / app.js 均 200（新增的组件层真被托管）",
+      "ok": true,
+      "detail": "UI.dropdown 可用 = 组件层确实加载了"
+    }
+  ],
+  "consoleErrors": [
+    "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "nonOk": [
+    "401 http://127.0.0.1:8790/api/auth/me",
+    "404 http://127.0.0.1:8790/favicon.ico"
+  ]
+}

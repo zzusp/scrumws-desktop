@@ -985,6 +985,17 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             </div>
           </section>
 
+          <!-- 云端：把本机注册到云端控制面，纯出站上报（云端只读看板）。注册密钥用完即弃，本地不存 -->
+          <section class="card" style="max-width:640px;margin-bottom:var(--gap)">
+            <div class="sec-head">
+              <h2>云端</h2>
+              <span class="sec-sub">把本机注册到云端控制面 · 只出站上报任务状态（心跳 15s / 对账 15s），云端拿不到本机入站访问 · 注册密钥只在连接那一次用，本地不保存</span>
+            </div>
+            <div id="cloudBox">
+              <div style="color:var(--dim);font-size:12.5px">加载中…</div>
+            </div>
+          </section>
+
           <!-- 平台守护（req5 从数据看板迁入）：runner-checker 项目固有调度，常开不可停，仅可调节拍；仅此一项，不再多套一层卡片 -->
           <section class="card" style="max-width:640px">
             <div class="sec-head">

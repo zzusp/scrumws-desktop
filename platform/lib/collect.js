@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { P } from './paths.js';
 import { fmt, parse, ago } from './timeutil.js';
@@ -22,6 +23,7 @@ function pidAlive(pid) {
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
 }
+const sha1 = (s) => crypto.createHash('sha1').update(s, 'utf8').digest('hex');
 function tailLine(file, bytes = 8192) {
   try {
     const fd = fs.openSync(file, 'r');
@@ -129,6 +131,11 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
     description: task?.description || null,   // 纯用户备注（看板编辑，不进 prompt）
     cwd: task?.cwd || null,                   // 任务配置的工作目录（新建/编辑时写入 task.json）；awaiting 卡片非失败态展示
     effort: task?.effort || null,             // 推理档位（新建/编辑写入）；详情侧栏展示
+    model: task?.model || null,               // 任务配置的模型（云端对账指纹需感知其变化）
+    // prompt 指纹：原文最长 100000 字符，塞进卡片会撑爆 /api/state（前端全量轮询）——只放 40 字节
+    // 指纹，云端对账据此感知 prompt 改动，原文由 connector 单独读 task.json 上传。两者都取自已读入的
+    // task 对象，零额外 I/O。
+    promptSha: task?.prompt ? sha1(task.prompt) : null,
     scheduledAt: task?.scheduledAt || null,   // 定时执行时刻（plan 到点自动执行）；提升后清空
     worktree: !!task?.worktree,               // 是否 worktree 隔离运行
     baseBranch: task?.baseBranch || null,     // worktree 签出基分支（配置）
@@ -358,7 +365,60 @@ function liveJobCard(id, logFile, enabled, intervalSec, sched, now) {
   };
 }
 
+// ---------- 进程内缓存 + 广播 ----------
+// collectState() 是全量重扫（readdir + 每个任务包读 5 个 JSON + 反读 jsonl 数后台子 agent），不便宜。
+// 但前端本来就在轮询它——所以云端 connector 不得自己触发扫描，两边共享同一次扫描结果。
+// TTL 取值依据：前端轮询默认 15s、夹在 [5s, 600s]（app.js:6）。
+//   · /api/state 用 3000 → UI 最快也只有 5s 一次（>3s）故永远不被降级，TTL 只起「合并瞬时并发请求」
+//     的作用（多标签页 / modal 关闭时的补拉）；
+//   · connector 用 15000 → 基本必然命中 UI 那次扫描的缓存，UI 关着时才自己触发（上报必需）。
+// 净账：UI 开着时扫描次数不增（connector +0），UI 关着时 4 次/分（原来 0 次，这是上报的必要成本）。
+export const STATE_CACHE_TTL_MS = 3000;
+
+let cached = null;        // { snapshot, at, gen }
+let inflight = null;      // { promise, gen }  single-flight：扫描期间所有 getState 复用同一 Promise
+let generation = 0;       // 写代次：写请求 +1，作废「写之前的扫描」（见 invalidateState）
+const stateListeners = new Set();
+
+/**
+ * 作废状态缓存：写请求改完磁盘后调（server.js 在每个 POST 的 res 'finish' 上统一挂）。
+ * 只推进代次、不清 cached —— peekState() 仍能拿到最后一次快照（陈旧好过没有）。
+ */
+export function invalidateState() { generation++; }
+
+/**
+ * 缓存 + single-flight 入口。**所有新调用方都走这个，不要直接调 collectState()**。
+ * maxAgeMs=0 → 跳过年龄判断，但仍参与 single-flight。
+ * ⚠ 代次是 read-your-writes 的保证：前端每个 mutation 都紧跟一次 refreshState()（app.js:2190），
+ *   若只按年龄判，mutation 前 3s 内的任何扫描（UI 上一轮轮询 / connector tick）都会让这次回拉
+ *   命中旧缓存 → 拿到 mutation 之前的快照，要等下一轮轮询（默认 15s）才自愈。
+ */
+export async function getState(opts = {}) {
+  const maxAgeMs = opts.maxAgeMs ?? STATE_CACHE_TTL_MS;
+  if (cached && cached.gen === generation && maxAgeMs > 0 && Date.now() - cached.at <= maxAgeMs) {
+    return cached.snapshot;
+  }
+  // 搭便车也只能搭「本代」的：写之前发起的那次扫描读不到本次写入，返回它等于丢更新。
+  // 同代则合并——否则 UI + connector 撞在同一秒 = 两次全量扫描，比不加缓存还糟。
+  if (inflight && inflight.gen === generation) return inflight.promise;
+  const gen = generation;
+  const promise = collectState().finally(() => { if (inflight?.promise === promise) inflight = null; });
+  inflight = { promise, gen };
+  return promise;
+}
+
+/** 同步取最后一次快照，**永不触发扫描**。从没扫过 → null。 */
+export function peekState() { return cached; }
+
+/** 订阅：每次扫描成功完成后回调（同一快照对象，只读，勿改）。返回退订函数。 */
+export function onState(listener) {
+  stateListeners.add(listener);
+  return () => stateListeners.delete(listener);
+}
+
 export async function collectState() {
+  // 按「扫描开始」记代次：扫描途中发生的写入本次未必读到，记成当前代会把它当成「已包含」→ 丢更新。
+  const startGen = generation;
   const now = new Date();
   const sched = scheduler.status();
 
@@ -373,7 +433,7 @@ export async function collectState() {
   const buckets = collectAll(now);
   const cfg = readConfig();
 
-  return {
+  const snapshot = {
     now: fmt(now),
     scheduler: { mode: sched.mode, lockPid: sched.lockPid },
     checker,
@@ -392,4 +452,10 @@ export async function collectState() {
       modelContextLimits: modelContextLimits(),       // 生效的 model→上下文上限映射（内置默认 + 用户配置）：设置页据此回填、详情页环形取分母
     },
   };
+  // 扫描成功才写缓存 + 广播（抛异常时旧缓存保留——陈旧好过没有）
+  cached = { snapshot, at: Date.now(), gen: startGen };
+  for (const fn of stateListeners) {
+    try { fn(snapshot); } catch (e) { console.error('[collect] onState listener error:', e.message); }
+  }
+  return snapshot;
 }

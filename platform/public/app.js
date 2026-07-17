@@ -1098,6 +1098,7 @@ function router() {
     scheduleStateRefresh();
   }
   if (view === 'task' && taskKey) loadTaskDetail(taskKey);
+  if (view === 'settings') refreshCloudStatus();
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', router);
@@ -2193,6 +2194,9 @@ async function refreshState() {
     syncModelLimitsInput();
     syncMaxRunnersInput();
     syncUsagePollInput();
+    // 云端连线状态跟着看板节拍刷（心跳/对账时间要动）。未连接时不刷：那时区块里是三个输入框，
+    // 重渲染会把用户正在填的值抹掉——只在进设置页 / 连接 / 断开时才重建表单。
+    if (cloudOnSettings() && cloudStatus?.enrolled) refreshCloudStatus();
   } catch (e) { console.error('state error:', e); }
 }
 
@@ -2298,6 +2302,152 @@ function syncMaxRunnersInput() {
       } else if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '保存失败'; }
     } catch { if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '保存失败'; } }
     finally { btn.disabled = false; }
+  });
+}
+
+// ---- 设置页「云端」区块 ----
+// 三个输入缺一不可：注册密钥答「这台机器有资格加入这个云端吗」（实例级、一把管全体），配对码答
+// 「这台机器是谁的」（绑机器主人）——少了配对码云端就定不了 machine 归属。注册密钥用完即弃，
+// 本地不存，所以「已连接」面板里没有它这一行可展示。
+// join token 只是「一次贴三样」的输入法糖：**就地在浏览器拆包**填进输入框（让用户看见将要连的 URL
+// 再点连接），不发给任何服务端；解析失败一律静默不填，手打三个字段的路径永远可用。
+function parseJoinToken(s) {
+  const t = String(s || '').trim();
+  if (!t.startsWith('swjt_')) return null;
+  try {
+    const o = JSON.parse(decodeURIComponent(escape(atob(
+      t.slice(5).replace(/-/g, '+').replace(/_/g, '/')))));   // base64url → base64 → utf8
+    if (o?.v !== 1 || !o.url || !o.rk || !o.code) return null;
+    return { cloudUrl: String(o.url), registrationKey: String(o.rk), code: String(o.code) };
+  } catch { return null; }
+}
+
+let cloudStatus = null;
+const cloudOnSettings = () => (location.hash || '').indexOf('#/settings') === 0;
+// ISO-8601 → 本机时间文案（云端与 connector 都用 ISO 传时间，展示时才本地化）
+function cloudTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+async function refreshCloudStatus() {
+  try { cloudStatus = await api('/api/cloud/status'); } catch { return; }
+  renderCloud();
+}
+
+function renderCloud() {
+  const box = $('cloudBox');
+  if (!box || !cloudStatus) return;
+  const s = cloudStatus;
+  const err = s.lastError
+    ? `<div style="margin-top:8px;font-size:11.5px;color:var(--coral);word-break:break-all">${escapeHtml(s.lastError)}</div>`
+    : '';
+
+  if (s.enrolled) {
+    const hbTag = s.lastHeartbeatOk === true ? '<span class="tag tag-jade">已连接</span>'
+      : s.lastHeartbeatOk === false ? '<span class="tag tag-amber">心跳异常</span>'
+        : '<span class="tag tag-mut">等待首次心跳</span>';
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        ${hbTag}
+        <button class="btn" id="cloudUnenrollBtn" style="margin-left:auto" title="停止上报并清除本机的云端绑定（保留机器身份，重连仍是同一台机器）">断开</button>
+      </div>
+      <div style="font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.9;word-break:break-all">
+        <div>workspace <b style="color:var(--ink2)">${escapeHtml(s.workspaceName || '—')}</b></div>
+        <div>cloudUrl ${escapeHtml(s.cloudUrl || '—')}</div>
+        <div>machineId ${escapeHtml(s.machineId || '—')}</div>
+        <div>machineUid ${escapeHtml(s.machineUid || '—')}</div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11px;color:var(--mut);font-family:var(--mono)">
+        <span>最近心跳 <b style="color:var(--ink2)">${cloudTime(s.lastHeartbeatAt)}</b></span>
+        <span>最近对账 <b style="color:var(--ink2)">${cloudTime(s.lastReconcileAt)}</b></span>
+        <span>上轮推送 <b style="color:var(--ink2)">${s.lastPushed}</b></span>
+        <span>已同步 <b style="color:var(--ink2)">${s.syncedCount}</b> 张卡</span>
+      </div>
+      ${err}`;
+    $('cloudUnenrollBtn')?.addEventListener('click', async () => {
+      const yes = await customConfirm({
+        title: '断开云端连接',
+        message: '本机将停止上报，云端稍后把这台机器标为<b>离线</b>。<br>已上报的任务历史不会删除；重新连接需要再贴一次注册密钥与配对码。',
+        confirmText: '断开', tone: 'danger',
+      });
+      if (!yes) return;
+      try { await api('/api/cloud/unenroll', { method: 'POST' }); } catch { /* 断开失败下面刷新会照出来 */ }
+      refreshCloudStatus();
+    });
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="field" style="margin-bottom:10px">
+      <span class="f-label">粘贴 join token（可选 · 自动填下面三项；纯本地拆包，不发给任何服务端）</span>
+      <input type="text" id="cloudJoinToken" class="field-input mono" autocomplete="off" spellcheck="false" placeholder="swjt_…">
+    </div>
+    <label class="field" style="margin-bottom:10px">
+      <span class="f-label">云端 URL</span>
+      <input type="text" id="cloudUrlInput" class="field-input mono" autocomplete="off" spellcheck="false" placeholder="https://cloud.example.com:8790">
+    </label>
+    <div class="field" style="margin-bottom:10px">
+      <span class="f-label">注册密钥（管理员给 · 只在连接这一次用，本地不保存）</span>
+      <span style="display:flex;gap:8px">
+        <input type="password" id="cloudRkInput" class="field-input mono" style="flex:1" autocomplete="off" spellcheck="false" placeholder="swrk_…">
+        <button type="button" class="btn" id="cloudRkToggle" style="flex:none">显示</button>
+      </span>
+    </div>
+    <label class="field" style="margin-bottom:10px">
+      <span class="f-label">配对码（云端「添加机器」现生成 · 10 分钟内有效、只能用一次）</span>
+      <input type="text" id="cloudCodeInput" class="field-input mono" maxlength="8" autocomplete="off" spellcheck="false" placeholder="7K3M9QXB">
+    </label>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="btn btn-primary" id="cloudEnrollBtn">连接</button>
+      <span id="cloudEnrollHint" style="font-size:11.5px;color:var(--dim)"></span>
+    </div>
+    ${err}`;
+
+  const jt = $('cloudJoinToken'), urlI = $('cloudUrlInput'), rkI = $('cloudRkInput'), codeI = $('cloudCodeInput');
+  const btn = $('cloudEnrollBtn'), hint = $('cloudEnrollHint'), toggle = $('cloudRkToggle');
+
+  jt?.addEventListener('input', () => {
+    const p = parseJoinToken(jt.value);
+    if (!p) return;                       // 解析失败静默不填
+    urlI.value = p.cloudUrl;
+    rkI.value = p.registrationKey;
+    codeI.value = p.code;
+    if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '已从 join token 填好三项，确认 URL 后点连接'; }
+  });
+  toggle?.addEventListener('click', () => {
+    const show = rkI.type === 'password';
+    rkI.type = show ? 'text' : 'password';
+    toggle.textContent = show ? '隐藏' : '显示';
+  });
+  btn?.addEventListener('click', async () => {
+    const cloudUrl = urlI.value.trim(), registrationKey = rkI.value.trim(), code = codeI.value.trim();
+    if (!cloudUrl || !registrationKey || !code) {
+      if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = '云端 URL / 注册密钥 / 配对码 三者均必填'; }
+      return;
+    }
+    btn.disabled = true;
+    if (hint) { hint.style.color = 'var(--dim)'; hint.textContent = '连接中…'; }
+    let r = null;
+    try {
+      r = await api('/api/cloud/enroll', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cloudUrl, registrationKey, code }),
+      });
+    } catch { r = { ok: false, error: '连接失败' }; }
+    finally { btn.disabled = false; }
+    if (r?.ok) {
+      // 成功即清空四个框：注册密钥与配对码用完即弃，别留在 DOM 里
+      jt.value = ''; urlI.value = ''; rkI.value = ''; codeI.value = '';
+      refreshCloudStatus();
+      return;
+    }
+    // 失败只清密钥与配对码（都是一次性的，重试要重贴），URL 留着省得重打
+    rkI.value = ''; codeI.value = ''; jt.value = '';
+    if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r?.error || '连接失败'; }
   });
 }
 

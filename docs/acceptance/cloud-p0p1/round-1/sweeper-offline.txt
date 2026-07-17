@@ -1,0 +1,18 @@
+[0s] machine=online  任务 mirror=[live,local_missing]
+[15s] machine=online  任务 mirror=[live,local_missing]
+[30s] machine=online  任务 mirror=[live,local_missing]
+[46s] machine=online  任务 mirror=[live,local_missing]
+[61s] machine=online  任务 mirror=[live,local_missing]
+[76s] machine=online  任务 mirror=[live,local_missing]
+[91s] machine=offline  任务 mirror=[local_missing,stale]
+
+=== sweeper 把机器标 offline（阈值 90s，实测 91s）===
+执行真相与停机前逐字节相同 = true ✅ PASS
+任务 mirror = local_missing,stale
+  → live→stale 只动镜像新鲜度；state/outcome/rounds/成本/isArchive 一个字节没动（契约 §6.13）
+  → local_missing 的那张保持 local_missing（没被 stale 覆盖）
+    cli:20260716100400-005         done         outcome=success  isArchive=true
+    manual:20260716100000-001      plan         outcome=null     isArchive=false
+    manual:20260716100100-002      queued       outcome=null     isArchive=false
+    manual:20260716100200-003      processing   outcome=null     isArchive=false
+    manual:20260716100300-004      done         outcome=success  isArchive=false

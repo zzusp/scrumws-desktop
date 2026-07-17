@@ -1,0 +1,18 @@
+前置：机器 百部 status=online lastSeenAt=2026-07-16T16:16:54.523Z
+
+PASS  前置 · 机器当前在线
+撤销 rk：prefix=swrk__zc7 label=P1 验收 lastUsedAt=2026-07-16T16:16:13.552Z
+PASS  撤销 rk → 200
+      {"ok":true,"id":"01a4920a-7f15-4363-a6ef-d2b8d0640790","revokedAt":"2026-07-16T16:17:05.410Z"}
+PASS  撤销后 · 用这把 rk 拉新机器入场 → 401（新机器进不来）
+      {"error":{"code":"UNAUTHORIZED","message":"注册密钥或配对码无效／已过期，请向管理员确认后重新生成配对码"}}
+
+等 40s（>2 个心跳周期），看已在线的机器是否被误伤…
+  撤销前 lastSeenAt = 2026-07-16T16:16:54.523Z
+  撤销后 lastSeenAt = 2026-07-16T16:17:39.559Z
+PASS  已在线机器仍 online（rk 撤销不管在场）
+      status=online
+PASS  心跳仍在前进（机器令牌照常工作，没被 rk 撤销牵连）
+
+→ 结论：rk 只管入场（新机器 401），不管在场（老机器照常心跳）。
+   要踢掉某台机器得撤它的 machine_token（§6.8 /api/machines/:id/revoke），不是撤 rk。
