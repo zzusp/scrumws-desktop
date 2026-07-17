@@ -435,10 +435,17 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // 新增任务（推送式，任意来源）：body = {source?, title, prompt, model?, effort?, description?, plan?, cwd?,
-    //   scheduledAt?, worktree?, baseBranch?, dynamicWorkflow?}。只入队（state=plan/queued），不 spawn；
-    // 看板新建按钮与外部 CLI/API 共用此端点
+    // 新增任务（看板页面专用，2026-07-18 同源收口）：body = {source?, title, prompt, model?, effort?,
+    //   description?, plan?, cwd?, scheduledAt?, worktree?, baseBranch?, dynamicWorkflow?}。
+    // 仅接受看板页面自己的浏览器请求——同源 fetch POST 必带 Origin 标头且指向本服务；
+    // 程序化/外部调用（无/异源 Origin）一律 403，必须走 /api/external/task/create 的密钥+策略管道。
+    // （非防御本机恶意进程——开放 localhost 做不到——而是关死"无鉴权对接"路径，保证一切程序化
+    //   任务新增都经过密钥鉴权，见 docs/api/external-api-guide.md。）
     if (req.method === 'POST' && pathname === '/api/task/create') {
+      const origin = String(req.headers.origin || '');
+      if (origin !== `http://127.0.0.1:${PORT}` && origin !== `http://localhost:${PORT}`) {
+        return sendJson(res, 403, { ok: false, error: '本端点仅限看板页面使用；程序化/外部任务新增请走 /api/external/task/create（Authorization: Bearer swak_…，密钥在「API 密钥」页生成，契约见 docs/api/external-api-guide.md）' });
+      }
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 32 * 1024) req.destroy(); });
       req.on('end', () => {
@@ -500,8 +507,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     // ---- 外部任务通道（Authorization: Bearer swak_…；key 见「API 密钥」页）----
-    // 与 /api/task/create 的差异：source 强制取 key 绑定值、缺省落 plan 桶、externalKey 幂等去重。
-    // 契约见 docs/api/task-ingest.md「外部 API」章。
+    // 一切程序化任务新增的唯一入口：source 强制取 key 绑定值、per-key 策略、缺省落 plan 桶、
+    // externalKey 幂等去重。契约见 docs/api/external-api-guide.md。
     if (req.method === 'POST' && pathname === '/api/external/task/create') {
       const auth = verifyApiKey(req.headers.authorization);
       if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
