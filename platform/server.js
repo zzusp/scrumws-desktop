@@ -14,7 +14,7 @@ import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer
 import * as scheduler from './lib/scheduler.js';
 import { startConnector, connectorStatus, enroll, unenroll } from './lib/cloud/connector.js';
 import { ensureMachineUid } from './lib/cloud/identity.js';
-import { createApiKey, listApiKeys, setApiKeyDisabled, deleteApiKey, verifyApiKey } from './lib/api-keys.js';
+import { createApiKey, updateApiKey, listApiKeys, setApiKeyDisabled, deleteApiKey, verifyApiKey } from './lib/api-keys.js';
 import { createExternalTask, externalTaskStatus } from './lib/external-ingest.js';
 import { P } from './lib/paths.js';
 
@@ -461,6 +461,18 @@ const server = http.createServer(async (req, res) => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
         const r = createApiKey(payload || {});
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    // 编辑已有密钥（label/source/策略/allowQueued；密钥本体与使用记录不动）
+    if (req.method === 'POST' && pathname === '/api/apikeys/update') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 8 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = updateApiKey(payload || {});
         sendJson(res, r.ok ? 200 : 400, r);
       });
       return;

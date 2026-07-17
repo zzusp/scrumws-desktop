@@ -89,6 +89,10 @@ export function createExternalTask(key, payload) {
   if (externalKey.length > 200) return { ok: false, error: 'externalKey 超长（≤200 字符）' };
   const pol = resolveAgainstPolicy(key, p);
   if (pol.err) return { ok: false, error: pol.err };
+  // 直接执行权限：plan:false（跳过看板确认直进 queued 自动执行）需要密钥显式开启 allowQueued
+  if (p.plan === false && !key.allowQueued) {
+    return { ok: false, error: '该密钥不允许直接排队执行（plan:false）：任务须经看板确认，或在「API 密钥」页为其开启「允许直接执行」' };
+  }
 
   if (externalKey) {
     const ledger = readLedger();

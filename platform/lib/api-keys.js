@@ -47,12 +47,11 @@ function normStrArr(v, max = 20) {
   return out;
 }
 
-// 创建 key：label = 人读备注；source = 该 key 建任务的来源标签（校验规则与 createTask.source 一致）。
-// 策略白名单（**三项都必选**——全不选 = 没有权限、拒绝创建；由 external-ingest 在建任务时执行）：
-//   allowedModels / allowedEfforts —— 必须是全局白名单子集；请求省略该字段时取首项为默认
-//   allowedCwds —— 允许的工作目录（绝对路径；请求 cwd 须等于某项或在其之下，省略取首项）
-// 返回 {ok, key(存盘条目), plaintext}；plaintext 只此一次，之后任何端点不再可取。
-export function createApiKey({ label, source, allowedModels, allowedEfforts, allowedCwds }) {
+// 配置校验（create / update 共用）：label 必填；source 规则与 createTask.source 一致；
+// 策略白名单**三项必选**（全不选 = 没有权限）：allowedModels / allowedEfforts 须为全局白名单子集、
+// allowedCwds 须为绝对路径（请求省略对应字段时取首项为默认）；allowQueued（默认 false）= 是否允许
+// plan:false 直进 queued 自动执行（关闭时该密钥只能建 plan 任务，须看板确认）。
+function validateKeyConfig({ label, source, allowedModels, allowedEfforts, allowedCwds, allowQueued }) {
   const lab = String(label || '').trim().slice(0, 100);
   const src = String(source || '').trim();
   if (!lab) return { ok: false, error: 'label required' };
@@ -69,24 +68,41 @@ export function createApiKey({ label, source, allowedModels, allowedEfforts, all
     cwds.push(path.resolve(c));
   }
   if (!cwds.length) return { ok: false, error: 'allowedCwds 必填：至少一个可访问目录（绝对路径；第一行为该密钥默认）' };
+  return { ok: true, cfg: { label: lab, source: src, allowedModels: models, allowedEfforts: efforts, allowedCwds: cwds, allowQueued: !!allowQueued } };
+}
+
+// 创建 key：返回 {ok, key(存盘条目), plaintext}；plaintext 只此一次，之后任何端点不再可取。
+export function createApiKey(input) {
+  const v = validateKeyConfig(input || {});
+  if (!v.ok) return v;
   const plaintext = `swak_${crypto.randomBytes(32).toString('base64url')}`;
   const entry = {
     id: crypto.randomBytes(6).toString('hex'),
-    label: lab,
-    source: src,
+    ...v.cfg,
     prefix: plaintext.slice(0, 12),
     hash: sha256Hex(plaintext),
     createdAt: nowStr(),
     disabled: false,
     lastUsedAt: null,
   };
-  entry.allowedModels = models;
-  entry.allowedEfforts = efforts;
-  entry.allowedCwds = cwds;
   const keys = readKeys();
   keys.push(entry);
   writeKeys(keys);
   return { ok: true, key: publicView(entry), plaintext };
+}
+
+// 编辑已有 key：可改 label / source / 策略 / allowQueued；密钥本体（prefix/hash）与
+// createdAt / disabled / lastUsedAt 不动——明文不可复原，"换钥"只能删了重建或复制克隆。
+export function updateApiKey(input) {
+  const id = String(input?.id || '');
+  const keys = readKeys();
+  const k = keys.find((x) => x.id === id);
+  if (!k) return { ok: false, error: 'key not found' };
+  const v = validateKeyConfig(input || {});
+  if (!v.ok) return v;
+  Object.assign(k, v.cfg);
+  writeKeys(keys);
+  return { ok: true, key: publicView(k) };
 }
 
 // 列表/响应视图：永不外带 hash
@@ -97,6 +113,7 @@ function publicView(k) {
     allowedModels: Array.isArray(k.allowedModels) ? k.allowedModels : [],
     allowedEfforts: Array.isArray(k.allowedEfforts) ? k.allowedEfforts : [],
     allowedCwds: Array.isArray(k.allowedCwds) ? k.allowedCwds : [],
+    allowQueued: !!k.allowQueued,
   };
 }
 

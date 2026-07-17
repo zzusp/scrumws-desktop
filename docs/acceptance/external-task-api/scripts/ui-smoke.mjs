@@ -58,8 +58,9 @@ try {
   });
   record('U2b-create', plainOk.rect && plainOk.curl, `补全策略后生成成功：明文框可见=${plainOk.rect} curl 示例=${plainOk.curl}`);
 
-  // U3 列表含新 key 行（来源 uismoke、启用态）
-  await page.waitForFunction(() => document.querySelector('#akListBox table'), { timeout: 5000 });
+  // U3 列表含新 key 行（来源 uismoke、启用态）。等行出现而非等 table：明文框先渲染、
+  // 列表刷新是其后的异步 fetch，旧 table 一直在，等 table 会竞态假过。
+  await page.waitForFunction(() => [...document.querySelectorAll('#akListBox tbody tr')].some((x) => x.textContent.includes('uismoke')), { timeout: 5000 });
   const row = await page.evaluate(() => {
     const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
     return tr ? { text: tr.textContent, hasToggle: !!tr.querySelector('[data-ak-toggle]'), hasDel: !!tr.querySelector('[data-ak-del]') } : null;
@@ -78,25 +79,68 @@ try {
   }, { timeout: 5000 });
   record('U4-toggle', true, '禁用后行内出现「已禁用」');
 
-  // U5 删除：点删除 → customConfirm 弹窗出现 → 确认 → 行消失
+  // U6 编辑：行内「编辑」→ 表单回填 + 按钮变「保存修改」→ 改备注保存 → 行更新且不出新明文
   await page.evaluate(() => {
     const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
-    tr.querySelector('[data-ak-del]').click();
+    tr.querySelector('[data-ak-edit]').click();
   });
-  await page.waitForFunction(() => {
-    const ov = [...document.querySelectorAll('.overlay')].find((x) => getComputedStyle(x).display !== 'none');
-    return ov && /删除密钥/.test(ov.textContent);
-  }, { timeout: 5000 });
+  const editState = await page.evaluate(() => ({
+    label: document.getElementById('akLabelInput').value,
+    btn: document.getElementById('akCreateBtn').textContent,
+    cwd: document.getElementById('akCwdsInput').value,
+    modelChecked: !!document.querySelector('#akModelsBox input[value="claude-opus-4-8"]:checked'),
+  }));
   await page.evaluate(() => {
-    const ov = [...document.querySelectorAll('.overlay')].find((x) => getComputedStyle(x).display !== 'none');
-    const btn = [...ov.querySelectorAll('button')].find((b) => b.textContent.trim() === '删除');
-    btn.click();
+    document.getElementById('akLabelInput').value = 'UI 冒烟密钥改';
+    document.getElementById('akPlainBox').style.display = 'none';
+    document.getElementById('akPlainBox').innerHTML = '';
   });
+  await page.click('#akCreateBtn');
   await page.waitForFunction(() => {
-    const trs = [...document.querySelectorAll('#akListBox tbody tr')];
-    return trs.length === 0 ? !!document.querySelector('#akListBox div') : !trs.some((x) => x.textContent.includes('uismoke'));
+    const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
+    return tr && tr.textContent.includes('UI 冒烟密钥改');
   }, { timeout: 5000 });
-  record('U5-delete', true, '确认弹窗出现、确认后行移除');
+  const noNewPlain = await page.evaluate(() => !document.getElementById('akPlainText'));
+  record('U6-edit', editState.label === 'UI 冒烟密钥' && editState.btn === '保存修改' && editState.modelChecked && !!editState.cwd && noNewPlain,
+    `回填（label/勾选/目录）+ 按钮=保存修改 + 保存后行更新且无新明文`);
+
+  // U7 复制：行内「复制」→ 表单回填 label 带「副本」+ 按钮=生成密钥 → 生成 → 新行出现（同 source 两行）
+  await page.evaluate(() => {
+    const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
+    tr.querySelector('[data-ak-copy]').click();
+  });
+  const copyState = await page.evaluate(() => ({
+    label: document.getElementById('akLabelInput').value,
+    btn: document.getElementById('akCreateBtn').textContent,
+  }));
+  await page.click('#akCreateBtn');
+  await page.waitForFunction(() => {
+    const el = document.getElementById('akPlainText');
+    return el && /^swak_[A-Za-z0-9_-]{40,}$/.test(el.textContent || '');
+  }, { timeout: 5000 });
+  await page.waitForFunction(() => [...document.querySelectorAll('#akListBox tbody tr')].filter((x) => x.textContent.includes('uismoke')).length === 2, { timeout: 5000 });
+  record('U7-copy', /副本/.test(copyState.label) && copyState.btn === '生成密钥', `复制回填 label=${copyState.label}、克隆出新钥（uismoke 两行 + 新明文）`);
+
+  // U5 删除：逐行删除全部 uismoke 钥（customConfirm 确认）→ 列表清空
+  for (let i = 0; i < 2; i++) {
+    await page.evaluate(() => {
+      const tr = [...document.querySelectorAll('#akListBox tbody tr')].find((x) => x.textContent.includes('uismoke'));
+      tr.querySelector('[data-ak-del]').click();
+    });
+    await page.waitForFunction(() => {
+      const ov = [...document.querySelectorAll('.overlay')].find((x) => getComputedStyle(x).display !== 'none');
+      return ov && /删除密钥/.test(ov.textContent);
+    }, { timeout: 5000 });
+    await page.evaluate(() => {
+      const ov = [...document.querySelectorAll('.overlay')].find((x) => getComputedStyle(x).display !== 'none');
+      const btn = [...ov.querySelectorAll('button')].find((b) => b.textContent.trim() === '删除');
+      btn.click();
+    });
+    await page.waitForFunction((left) => {
+      return [...document.querySelectorAll('#akListBox tbody tr')].filter((x) => x.textContent.includes('uismoke')).length === left;
+    }, { timeout: 5000 }, 1 - i);
+  }
+  record('U5-delete', true, '两把 uismoke 钥均经确认弹窗删除、列表移除');
 
   await page.screenshot({ path: process.env.UI_SHOT || 'ui-apikeys.png' });
 } finally {

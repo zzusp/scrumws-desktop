@@ -2356,12 +2356,16 @@ function syncMaxRunnersInput() {
 
 // ---- API 密钥页（#/apikeys）：外部任务通道 /api/external/* 的鉴权凭据管理 ----
 // 明文只在 create 响应里出现一次：渲染进一次性提示框（复制按钮 + curl 示例），刷新/切页即不可再取。
+// 编辑 = 回填表单改配置（POST update，密钥本体不变）；复制 = 按现有配置克隆（明文不可复原，生成的是新钥）。
+let akKeysCache = [];      // 最近一次列表（编辑/复制回填用）
+let akEditingId = null;    // 非 null = 表单处于「编辑」模式，提交走 update
 async function refreshApiKeys() {
   const box = $('akListBox');
   if (!box) return;
   let r;
   try { r = await api('/api/apikeys'); } catch { box.innerHTML = '<div style="color:var(--coral);font-size:12.5px">加载失败（后端未响应）</div>'; return; }
   const keys = r.keys || [];
+  akKeysCache = keys;
   if (!keys.length) {
     box.innerHTML = '<div style="color:var(--dim);font-size:12.5px">还没有密钥 · 用上方表单生成第一把</div>';
     return;
@@ -2372,16 +2376,43 @@ async function refreshApiKeys() {
       <tr>
         <td class="mono" title="仅前缀，明文不可再取 · 创建于 ${escapeAttr(k.createdAt || '—')}">${escapeHtml(k.prefix)}…</td>
         <td class="mono">${escapeHtml(k.source)}</td>
-        <td>${escapeHtml(k.label)}</td>
-        <td style="font-size:11.5px" title="${escapeAttr(akPolicyTitle(k))}">${akPolicyCell(k)}</td>
+        <td style="min-width:110px">${escapeHtml(k.label)}</td>
+        <td style="font-size:11.5px;min-width:150px" title="${escapeAttr(akPolicyTitle(k))}">${akPolicyCell(k)}</td>
         <td class="mono">${akLivenessCell(k)}</td>
         <td>${k.disabled ? '<span class="tag tag-amber">已禁用</span>' : '<span class="tag tag-jade">启用</span>'}</td>
         <td style="white-space:nowrap;text-align:right">
+          <button class="btn" data-ak-edit="${escapeAttr(k.id)}" title="修改此密钥的备注/来源/策略（密钥本体不变）">编辑</button>
+          <button class="btn" data-ak-copy="${escapeAttr(k.id)}" title="按此密钥配置克隆生成一把新密钥（明文不可复原）">复制</button>
           <button class="btn" data-ak-toggle="${escapeAttr(k.id)}" data-ak-to="${k.disabled ? '0' : '1'}">${k.disabled ? '启用' : '禁用'}</button>
           <button class="btn btn-danger" data-ak-del="${escapeAttr(k.id)}" data-ak-name="${escapeAttr(`${k.prefix}…（${k.label}）`)}">删除</button>
         </td>
       </tr>`).join('')}
     </tbody></table></div>`;
+}
+
+// 表单回填（编辑/复制共用）与模式切换
+function akFillForm(k, { copy = false } = {}) {
+  $('akLabelInput').value = copy ? `${k.label} 副本` : k.label;
+  $('akSourceInput').value = k.source;
+  document.querySelectorAll('#akModelsBox input').forEach((x) => { x.checked = k.allowedModels.includes(x.value); });
+  document.querySelectorAll('#akEffortsBox input').forEach((x) => { x.checked = k.allowedEfforts.includes(x.value); });
+  $('akCwdsInput').value = k.allowedCwds.join('\n');
+  $('akAllowQueued').checked = !!k.allowQueued;
+}
+function akSetEditMode(k) {
+  akEditingId = k ? k.id : null;
+  $('akCreateBtn').textContent = k ? '保存修改' : '生成密钥';
+  $('akCancelEditBtn').style.display = k ? '' : 'none';
+  $('akEditHint').style.display = k ? '' : 'none';
+  if (k) $('akEditHintKey').textContent = `${k.prefix}…（${k.label}）`;
+}
+function akResetForm() {
+  $('akLabelInput').value = '';
+  $('akSourceInput').value = '';
+  $('akCwdsInput').value = '';
+  $('akAllowQueued').checked = false;
+  document.querySelectorAll('#akModelsBox input:checked, #akEffortsBox input:checked').forEach((x) => { x.checked = false; });
+  akSetEditMode(null);
 }
 
 // 策略列：紧凑摘要（详情进 title tooltip）；缺任一项 = 旧格式无策略钥，建任务会被拒（策略必选=无权限）
@@ -2393,6 +2424,7 @@ function akPolicyCell(k) {
   parts.push(`模型 ${k.allowedModels.length === 1 ? escapeHtml(k.allowedModels[0].replace(/^claude-/, '')) : k.allowedModels.length + ' 个'}`);
   parts.push(`effort ${k.allowedEfforts.length === 1 ? escapeHtml(k.allowedEfforts[0]) : k.allowedEfforts.length + ' 档'}`);
   parts.push(`目录 ${k.allowedCwds.length} 个`);
+  if (k.allowQueued) parts.push('<span style="color:var(--amber)">直执</span>');
   return parts.join(' · ');
 }
 function akPolicyTitle(k) {
@@ -2400,6 +2432,7 @@ function akPolicyTitle(k) {
   lines.push(`可用模型：${k.allowedModels?.length ? k.allowedModels.join(', ') : '（缺）'}`);
   lines.push(`可用 effort：${k.allowedEfforts?.length ? k.allowedEfforts.join(', ') : '（缺）'}`);
   lines.push(`可访问目录：${k.allowedCwds?.length ? k.allowedCwds.join('；') : '（缺）'}`);
+  lines.push(`直接执行：${k.allowQueued ? '允许（plan:false 直进 queued）' : '不允许（只能建 plan 任务）'}`);
   return lines.join('\n');
 }
 // 活跃列：lastUsedAt（含 heartbeat 刷新）5 分钟内 → 绿点在线；否则灰点 + 时间
@@ -2444,6 +2477,7 @@ function initApiKeysPage() {
     const allowedModels = [...document.querySelectorAll('#akModelsBox input:checked')].map((x) => x.value);
     const allowedEfforts = [...document.querySelectorAll('#akEffortsBox input:checked')].map((x) => x.value);
     const allowedCwds = $('akCwdsInput').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    const allowQueued = $('akAllowQueued').checked;
     // 策略三项必选（全不选 = 没有权限）：前端先拦一道，后端仍强制校验
     if (!allowedModels.length || !allowedEfforts.length || !allowedCwds.length) {
       // .form-err 类默认 display:none，必须显式 block（置 '' 只是清掉内联样式、等于仍隐藏）
@@ -2453,25 +2487,36 @@ function initApiKeysPage() {
     }
     createBtn.disabled = true;
     try {
-      const r = await api('/api/apikeys/create', {
+      const isEdit = !!akEditingId;
+      const r = await api(isEdit ? '/api/apikeys/update' : '/api/apikeys/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, source, allowedModels, allowedEfforts, allowedCwds }),
+        body: JSON.stringify({ id: akEditingId || undefined, label, source, allowedModels, allowedEfforts, allowedCwds, allowQueued }),
       });
-      if (!r.ok) { err.textContent = r.error || '生成失败'; err.style.display = 'block'; return; }
-      $('akLabelInput').value = '';
-      $('akSourceInput').value = '';
-      $('akCwdsInput').value = '';
-      document.querySelectorAll('#akModelsBox input:checked, #akEffortsBox input:checked').forEach((x) => { x.checked = false; });
-      renderApiKeyPlaintext(r);
+      if (!r.ok) { err.textContent = r.error || (isEdit ? '保存失败' : '生成失败'); err.style.display = 'block'; return; }
+      akResetForm();
+      if (!isEdit) renderApiKeyPlaintext(r);   // 编辑不产新明文
       await refreshApiKeys();
     } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
     finally { createBtn.disabled = false; }
   });
+  $('akCancelEditBtn').addEventListener('click', akResetForm);
   // 列表操作走事件委托：refreshApiKeys 整块重渲染，行内按钮不逐个绑
   $('akListBox').addEventListener('click', async (e) => {
+    const editBtn = e.target.closest('[data-ak-edit]');
+    const copyBtn = e.target.closest('[data-ak-copy]');
     const toggleBtn = e.target.closest('[data-ak-toggle]');
     const delBtn = e.target.closest('[data-ak-del]');
+    if (editBtn) {
+      const k = akKeysCache.find((x) => x.id === editBtn.dataset.akEdit);
+      if (k) { akFillForm(k); akSetEditMode(k); window.scrollTo(0, 0); }
+      return;
+    }
+    if (copyBtn) {
+      const k = akKeysCache.find((x) => x.id === copyBtn.dataset.akCopy);
+      if (k) { akFillForm(k, { copy: true }); akSetEditMode(null); window.scrollTo(0, 0); }
+      return;
+    }
     if (toggleBtn) {
       const r = await api('/api/apikeys/toggle', {
         method: 'POST',
