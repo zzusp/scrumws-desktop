@@ -7,7 +7,7 @@ import { readConfig } from '../runner-config.js';
 import { createTask } from '../task-actions.js';
 import { readIdentity, ensureMachineUid, saveIdentity, clearCloudBinding } from './identity.js';
 import { readSynced } from './synced.js';
-import { readLinks, writeLinks } from './links.js';
+import { readLink, writeLink, deleteLink } from './links.js';
 import { isCwdAllowed } from './cwd-allow.js';
 import { computeAutoExec } from './gate.js';
 import { appendCompletionProtocol } from './completion-protocol.js';
@@ -96,13 +96,13 @@ async function ackIntent(target, id, localTaskKey) {
   catch (e) { lastError = `ack 失败：${e.message}`; return; }
   if (r.status === 401) return onUnauthorized();
   if (r.status === 200) {
-    const m = readLinks();
-    if (m[id]) { m[id].ackedAt = new Date().toISOString(); writeLinks(m); }
+    const e = readLink(id);
+    if (e) { e.ackedAt = new Date().toISOString(); writeLink(id, e); }
     return;
   }
   if (r.status === 404) {
     // §5.2 竞态：意图已被云端取消删除 → 撤 link，本地任务成可见孤儿，主人自行中断 / 归档
-    const m = readLinks(); delete m[id]; writeLinks(m);
+    deleteLink(id);
     lastError = `意图 ${id} 已被云端取消，本地任务留作孤儿`;
     return;
   }
@@ -124,8 +124,7 @@ async function rejectIntent(target, id, reason) {
 async function handleIntent(target, intent) {
   const id = String(intent?.intentId || '');
   if (!id) return;
-  const links = readLinks();
-  const link = links[id];
+  const link = readLink(id);
 
   // a. 幂等：已建过 → 直接重 ack（上一轮 ack 的响应丢了才会走到这），绝不建第二个任务
   if (link?.taskKey) return void await ackIntent(target, id, link.taskKey);
@@ -144,7 +143,7 @@ async function handleIntent(target, intent) {
 
   // d. 先占位：崩在 d–e 之间时，下一轮认得出来（走 a'），不会建出第二个任务
   const reservedAt = new Date().toISOString();
-  writeLinks({ ...links, [id]: { taskKey: null, reservedAt } });
+  writeLink(id, { taskKey: null, reservedAt });
 
   // e. 同一条代码路径（README:43-47 的不变式）——不新写 runner，不碰 planSources（那是整来源一刀切，
   //    我们要的是逐任务）。source='cloud' 只是来源元数据，任务建出来后与其它来源逐字节同权。
@@ -161,11 +160,11 @@ async function handleIntent(target, intent) {
     plan: !autoExec,                                   // ★ 闸门的唯一去处（planFirst，task-actions.js:466）
   });
   if (!r.ok) {
-    const next = readLinks(); delete next[id]; writeLinks(next);   // 撤占位：这次没建出来，reject 是终局
+    deleteLink(id);   // 撤占位：这次没建出来，reject 是终局
     return void await rejectIntent(target, id, `本地建任务失败：${r.error}`);
   }
   // f. 落 link 再 ack（顺序不可换：先 ack 后落盘时，崩在中间会让下一轮重建第二个任务）
-  writeLinks({ ...readLinks(), [id]: { taskKey: r.taskKey, reservedAt, createdAt: new Date().toISOString(), ackedAt: null } });
+  writeLink(id, { taskKey: r.taskKey, reservedAt, createdAt: new Date().toISOString(), ackedAt: null });
   await ackIntent(target, id, r.taskKey);
 }
 
