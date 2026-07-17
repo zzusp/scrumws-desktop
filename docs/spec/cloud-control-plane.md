@@ -2,6 +2,15 @@
 
 把每个人的本地 app 注册到云端，在云端新建 / 分配任务、看执行情况。
 
+> ⚠ **2026-07-17 修订**：曾计划引入 Issue / Stage / Run 三层做流程流转，
+> [`cloud-pipeline-model.md`](cloud-pipeline-model.md) 已**标记本期不做**——本期回到本文的简单形态：
+> **任务直接指派给一个人，落到他 online 的机器上**。
+>
+> 但有两条修订**本期生效**：
+> 1. **本地任务不再全量上云，只同步云端下发的**（决策 14）→ **决策 5 作废**，§6.3 对账要按 link 过滤
+> 2. **agent 显式声明完成**：本地加 `--disallowedTools AskUserQuestion`，
+>    `completeTask` 允许 `resolvedBy='agent'`（决策 15，见 pipeline-model §5）
+
 **关键决策（已与用户确认）**：本地权威 + 云端控制面；云端自研 Node/TS；团队内网自托管（~5–20 人）。
 
 ---
@@ -674,6 +683,9 @@ P0+P1 之后云端就是一个**全团队 agent 运行态的只读大盘**——
 | 11 | **注册密钥** `swrk_` | 云端自己生成，本地 enroll 时必带。**不替代配对码**（否则丢 `owner_user_id`，§7.3 闸门失效）；**不在本地持久化**（入场券用完即弃）；只管入场不管在场（撤销不影响已在线机器） |
 | 12 | **重注册不更新 `owner_user_id`** | 机器归**首次 enroll 时生成配对码的那个人**，之后换谁生成配对码给同一台机器重注册，机器仍归原主。这是 §7.3 `owner-only` 闸门的归属依据 |
 | 13 | **不强制 HTTPS，按内网模式部署** | `CLOUD_INSECURE_COOKIE=1` 摘掉会话 cookie 的 `Secure`，裸 HTTP 可用。**用户已知悉将部署到公网并接受该风险**（见下）。默认仍带 `Secure`，须显式关闭 |
+| 14 | **本地任务不全量上云** | 只同步**云端下发**的任务（有 cloud link 的）。本地自己敲的活不上云——云端是派活平台，不是监控大盘。**决策 5 作废**；`task.origin` 的 `local` 分支作废；P1 因此不再能独立交付（云端在下行落地前是空的） |
+| 15 | **agent 可显式声明完成** | 本地加 `--disallowedTools AskUserQuestion`（否则 agent 默默自己猜，用户看不到问题）；`completeTask` 允许 `resolvedBy='agent'`。**agent 只改本地状态、不碰云端**——避免 agent 持云端凭据（multica 为此被迫建整套遏制）。人仍可 `uncomplete` 撤回 |
+| 16 | **流程/多 agent 轮转本期不做** | 任务**直接指派给一个人**，落到他 **online** 的机器。设计留档见 [`cloud-pipeline-model.md`](cloud-pipeline-model.md)。「agent 没绑机器怎么选」不是问题——**能用才能选**，UI 只列 online 机器 |
 
 **决策 12 的推论（P2 前要知道）**：
 
