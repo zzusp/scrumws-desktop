@@ -42,7 +42,14 @@ function mapTaskRow(r) {
     // 任务的真实创建时间取本地 task.json.createdAt 的镜像；task.created_at 只是云端入库时刻（导入产物）
     createdAt: iso(r.local_created_at),
     status: {
+      // ⚠ state 是本地 state.json 的**原值**，不是看板分桶。归档的 runner 任务原值仍是 'done'
+      //   （collect.js:204 是「isArchive 优先」分桶，只有 CLI 卡的原值才会是 'archived'）。
+      //   要分桶用下面的 bucket，别拿 state 分——拿它分会把归档任务算进 done。
       state: r.state,
+      // 派生桶，与 §6.7 taskCounts 和 ?state= 筛选**同口径**（三处必须一起改）。
+      // 补这个字段是因为「同名不同义」真的骗到人了：?state=archived 查得出 20 条，
+      // 而同一批任务响应里 state 写着 'done' —— 消费者按 state 分桶就会得出与看板相反的结论。
+      bucket: r.is_archive ? 'archived' : r.state,
       outcome: r.outcome,
       enteredAt: iso(r.entered_at),
       resolvedAt: iso(r.resolved_at),

@@ -1,0 +1,33 @@
+# 云端控制面部署 compose。照 claude-center 的模式（/opt/claude-center/docker-compose.yml）：
+# postgres 走宿主机自建（55432），**不在 compose 内起**；env_file 指向 /opt/scrumws-cloud/.env，
+# 由 ops 维护、不入 git。
+#
+# 使用（在服务器 /opt/scrumws-cloud/ 下）：
+#   docker compose build cloud
+#   docker compose up -d cloud
+#
+# 健康检查 + 重启策略由 image HEALTHCHECK + restart: unless-stopped 兜底。
+services:
+  cloud:
+    image: scrumws-cloud:${APP_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scrumws-cloud
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 决策 13（设计 §7.5）：按内网模式部署，摘掉会话 cookie 的 Secure，裸 HTTP 可用。
+      # ⚠ swuk_ 登录密钥与 swmt_ 机器令牌将明文过网。风险随阶段跃迁：
+      #   P0+P1 只读 → 泄露止于「看到全团队任务看板」，无 RCE 面；
+      #   P2 起 → 可给所有机器派活 = 全员开发机 RCE。
+      # P2 绊线：P2 意图下行上线时，若本项为 1 且非 localhost 必须拒绝启动。
+      - CLOUD_INSECURE_COOKIE=1
+      - NODE_ENV=production
+    ports:
+      - "8790:8790"
+    extra_hosts:
+      # 容器内经 host-gateway 访问宿主机 postgres。若 .env 的 DATABASE_URL 已用公网 IP
+      # （115.159.161.47:55432）直连也能通，二选一；host-gateway 只是稳健兜底。
+      - "host.docker.internal:host-gateway"
