@@ -26,11 +26,12 @@
 | G3 | 外部任务 API（create/status + 去重） | platform/lib/external-ingest.js + server.js 路由 + createTask externalKey 透传 | done |
 | G4 | 「API 密钥」菜单页 | index.html + app.js | done |
 | G5 | 文档同步 | docs/api/task-ingest.md 增外部 API 契约 | done |
-| G6 | 隔离环境实跑验证（matrix 全绿）+ PR | matrix.csv / round-N.md / PR | in-progress（30/30 全绿，PR 待开） |
+| G6 | 隔离环境实跑验证（matrix 全绿）+ PR | matrix.csv / round-N.md / PR | done（30/30 全绿，PR #59 OPEN） |
 | G7 | baibu-agent 派发器对接（chat-watch / issue-watch） | 两个 .mjs 改造 + scrumws-ingest.json 配置 + 实跑验证 | pending |
 
 ## sub goal 进展
 
 - 2026-07-17 G1 done：两路探索（桌面端架构 / baibu-agent 派发链）完成，方案落 plan.md。
 - 2026-07-17 G2–G5 done：api-keys.js / external-ingest.js / server.js 6 条路由 / createTask externalKey 透传 / UI 页 / 文档全部落码。
-- 2026-07-17 G6：round-1 全绿（API 24/24 + 看板集成 S1 + UI 冒烟 5/5，见 round-1.md），进入收口。
+- 2026-07-17 G6 done：round-1 全绿（API 24/24 + 看板集成 S1 + UI 冒烟 5/5，见 round-1.md）；PR #59 https://github.com/zzusp/scrumws-desktop/pull/59（gh 确认 OPEN）。
+- 2026-07-17 G7 开工：先取 ground truth（旧看板 8788 是否在跑 / chat-watch 调度状态 / 真实桌面端 8799 跑的是哪份代码），再定切换时序。
