@@ -6,6 +6,7 @@
 //   dataRoot 该实例的数据根（做磁盘断言）；缺省跳过磁盘断言并标 FAIL（要求传）
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const BASE = process.argv[2] || 'http://127.0.0.1:18799';
 const DATA_ROOT = process.argv[3] || '';
@@ -37,22 +38,34 @@ const main = async () => {
   record('A1-list-empty', r.status === 200 && r.json?.ok === true && Array.isArray(r.json.keys) && r.json.keys.length === 0,
     `初始列表为空 → ${r.status} keys=${r.json?.keys?.length}`);
 
-  r = await req('POST', '/api/apikeys/create', { body: { label: '钉钉派发器', source: 'chat' } });
+  // 策略三项必选（2026-07-17 语义：全不选 = 没有权限）——所有建钥都带全策略
+  const FULL_POLICY = { allowedModels: ['claude-opus-4-8', 'claude-haiku-4-5-20251001'], allowedEfforts: ['xhigh', 'low'], allowedCwds: [DATA_ROOT] };
+  r = await req('POST', '/api/apikeys/create', { body: { label: '钉钉派发器', source: 'chat', ...FULL_POLICY } });
   const chatKey = r.json;
   record('A2-create-key', r.status === 200 && chatKey?.ok && /^swak_[A-Za-z0-9_-]{40,}$/.test(chatKey.plaintext || '')
-    && chatKey.key?.source === 'chat' && chatKey.key?.prefix === chatKey.plaintext.slice(0, 12),
-    `建 chat 密钥（明文 swak_、prefix 对齐）→ ${r.status} prefix=${chatKey?.key?.prefix}`);
+    && chatKey.key?.source === 'chat' && chatKey.key?.prefix === chatKey.plaintext.slice(0, 12)
+    && chatKey.key?.allowedModels?.length === 2 && chatKey.key?.allowedEfforts?.length === 2 && chatKey.key?.allowedCwds?.length === 1,
+    `建 chat 密钥（明文 swak_、prefix 对齐、策略外显）→ ${r.status} prefix=${chatKey?.key?.prefix}`);
 
-  r = await req('POST', '/api/apikeys/create', { body: { label: 'issue 检查器', source: 'issue' } });
+  r = await req('POST', '/api/apikeys/create', { body: { label: 'issue 检查器', source: 'issue', ...FULL_POLICY } });
   const issueKey = r.json;
   record('A3-create-key-2', r.status === 200 && issueKey?.ok && issueKey.key?.source === 'issue',
     `建 issue 密钥 → ${r.status}`);
 
-  r = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'bad source!' } });
+  r = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'bad source!', ...FULL_POLICY } });
   record('A4-bad-source', r.status === 400 && r.json?.ok === false, `非法 source 拒绝 → ${r.status} ${r.json?.error}`);
 
-  r = await req('POST', '/api/apikeys/create', { body: { label: '', source: 'ok' } });
+  r = await req('POST', '/api/apikeys/create', { body: { label: '', source: 'ok', ...FULL_POLICY } });
   record('A5-empty-label', r.status === 400 && r.json?.ok === false, `空 label 拒绝 → ${r.status} ${r.json?.error}`);
+
+  // 策略缺任一项 → 拒绝创建（全不选 = 没有权限）
+  const noModels = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'a7', allowedEfforts: ['xhigh'], allowedCwds: [DATA_ROOT] } });
+  const noEfforts = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'a7', allowedModels: ['claude-opus-4-8'], allowedCwds: [DATA_ROOT] } });
+  const noCwds = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'a7', allowedModels: ['claude-opus-4-8'], allowedEfforts: ['xhigh'] } });
+  record('A7-policy-required', noModels.status === 400 && /allowedModels 必选/.test(noModels.json?.error || '')
+    && noEfforts.status === 400 && /allowedEfforts 必选/.test(noEfforts.json?.error || '')
+    && noCwds.status === 400 && /allowedCwds 必填/.test(noCwds.json?.error || ''),
+    `缺 models/efforts/cwds 均拒建 → ${noModels.status}/${noEfforts.status}/${noCwds.status}`);
 
   r = await req('GET', '/api/apikeys');
   // prefix（明文前 12 位）是有意展示的；泄漏 = 出现完整明文（swak_ 后 ≥40 字符）或 hash 字段
@@ -174,8 +187,8 @@ const main = async () => {
   r = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'p2', allowedModels: ['gpt-4o'] } });
   record('P2-bad-model-rejected', r.status === 400 && /allowedModels/.test(r.json?.error || ''), `非白名单模型拒绝 → ${r.status} ${r.json?.error}`);
 
-  r = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'p3', allowedCwds: ['relative/path'] } });
-  record('P3-relative-cwd-rejected', r.status === 400 && /绝对路径/.test(r.json?.error || ''), `相对路径拒绝 → ${r.status}`);
+  r = await req('POST', '/api/apikeys/create', { body: { label: 'x', source: 'p3', allowedModels: ['claude-opus-4-8'], allowedEfforts: ['xhigh'], allowedCwds: ['relative/path'] } });
+  record('P3-relative-cwd-rejected', r.status === 400 && /绝对路径/.test(r.json?.error || ''), `相对路径拒绝 → ${r.status} ${r.json?.error}`);
 
   // 省略 model/effort/cwd → 取白名单首项为默认
   r = await req('POST', '/api/external/task/create', {
@@ -204,11 +217,23 @@ const main = async () => {
     && /不在该密钥允许范围/.test(outModel.json?.error + outEffort.json?.error + outCwd.json?.error),
     `越界 model/effort/cwd → ${outModel.status}/${outEffort.status}/${outCwd.status}`);
 
-  // 无策略的旧密钥不受限（chat key 传任意白名单模型 + 任意存在目录）
-  r = await req('POST', '/api/external/task/create', {
-    body: { title: '无策略不受限', prompt: 'p', model: 'claude-haiku-4-5-20251001', effort: 'low', externalKey: 'pol-3' }, token: chatKey.plaintext,
-  });
-  record('P7-no-policy-unrestricted', r.status === 200, `无策略密钥不受限 → ${r.status}`);
+  // 旧格式无策略密钥（现 API 已建不出，直接注入 keys 文件模拟存量）→ 建任务一律拒绝（无权限）
+  const legacyPlain = 'swak_' + 'L'.repeat(43);
+  if (DATA_ROOT) {
+    const kf = path.join(DATA_ROOT, 'runtime', 'api-keys.json');
+    const store = JSON.parse(fs.readFileSync(kf, 'utf8'));
+    store.keys.push({
+      id: 'legacy01', label: '旧格式无策略钥', source: 'legacy', prefix: legacyPlain.slice(0, 12),
+      hash: crypto.createHash('sha256').update(legacyPlain, 'utf8').digest('hex'),
+      createdAt: '2026-07-17 00:00:00', disabled: false, lastUsedAt: null,
+    });
+    fs.writeFileSync(kf, JSON.stringify(store, null, 2));
+    r = await req('POST', '/api/external/task/create', { body: { title: 't', prompt: 'p' }, token: legacyPlain });
+    record('P7-legacy-no-policy-denied', r.status === 400 && /未配置.*无权限/.test(r.json?.error || ''),
+      `旧无策略钥建任务被拒 → ${r.status} ${r.json?.error}`);
+  } else {
+    record('P7-legacy-no-policy-denied', false, '未传 dataRoot，无法注入旧格式密钥');
+  }
 
   const fails = results.filter((x) => !x.pass);
   console.log(`\n== ${results.length - fails.length}/${results.length} PASS ==`);

@@ -2384,19 +2384,22 @@ async function refreshApiKeys() {
     </tbody></table></div>`;
 }
 
-// 策略列：紧凑摘要（详情进 title tooltip）；三项都空 = 不限
+// 策略列：紧凑摘要（详情进 title tooltip）；缺任一项 = 旧格式无策略钥，建任务会被拒（策略必选=无权限）
 function akPolicyCell(k) {
+  if (!k.allowedModels?.length || !k.allowedEfforts?.length || !k.allowedCwds?.length) {
+    return '<span class="tag tag-amber" title="旧格式密钥缺策略，建任务会被拒；请删除后重新生成">未配置（无权限）</span>';
+  }
   const parts = [];
-  if (k.allowedModels?.length) parts.push(`模型 ${k.allowedModels.length === 1 ? escapeHtml(k.allowedModels[0].replace(/^claude-/, '')) : k.allowedModels.length + ' 个'}`);
-  if (k.allowedEfforts?.length) parts.push(`effort ${k.allowedEfforts.length === 1 ? escapeHtml(k.allowedEfforts[0]) : k.allowedEfforts.length + ' 档'}`);
-  if (k.allowedCwds?.length) parts.push(`目录 ${k.allowedCwds.length} 个`);
-  return parts.length ? parts.join(' · ') : '<span style="color:var(--dim)">不限</span>';
+  parts.push(`模型 ${k.allowedModels.length === 1 ? escapeHtml(k.allowedModels[0].replace(/^claude-/, '')) : k.allowedModels.length + ' 个'}`);
+  parts.push(`effort ${k.allowedEfforts.length === 1 ? escapeHtml(k.allowedEfforts[0]) : k.allowedEfforts.length + ' 档'}`);
+  parts.push(`目录 ${k.allowedCwds.length} 个`);
+  return parts.join(' · ');
 }
 function akPolicyTitle(k) {
   const lines = [];
-  lines.push(`可用模型：${k.allowedModels?.length ? k.allowedModels.join(', ') : '不限'}`);
-  lines.push(`可用 effort：${k.allowedEfforts?.length ? k.allowedEfforts.join(', ') : '不限'}`);
-  lines.push(`可访问目录：${k.allowedCwds?.length ? k.allowedCwds.join('；') : '不限'}`);
+  lines.push(`可用模型：${k.allowedModels?.length ? k.allowedModels.join(', ') : '（缺）'}`);
+  lines.push(`可用 effort：${k.allowedEfforts?.length ? k.allowedEfforts.join(', ') : '（缺）'}`);
+  lines.push(`可访问目录：${k.allowedCwds?.length ? k.allowedCwds.join('；') : '（缺）'}`);
   return lines.join('\n');
 }
 // 活跃列：lastUsedAt（含 heartbeat 刷新）5 分钟内 → 绿点在线；否则灰点 + 时间
@@ -2441,6 +2444,13 @@ function initApiKeysPage() {
     const allowedModels = [...document.querySelectorAll('#akModelsBox input:checked')].map((x) => x.value);
     const allowedEfforts = [...document.querySelectorAll('#akEffortsBox input:checked')].map((x) => x.value);
     const allowedCwds = $('akCwdsInput').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    // 策略三项必选（全不选 = 没有权限）：前端先拦一道，后端仍强制校验
+    if (!allowedModels.length || !allowedEfforts.length || !allowedCwds.length) {
+      // .form-err 类默认 display:none，必须显式 block（置 '' 只是清掉内联样式、等于仍隐藏）
+      err.textContent = '策略必选：可用模型、可用 effort、可访问目录都至少选/填一项（全不选 = 没有权限）';
+      err.style.display = 'block';
+      return;
+    }
     createBtn.disabled = true;
     try {
       const r = await api('/api/apikeys/create', {
@@ -2448,14 +2458,14 @@ function initApiKeysPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ label, source, allowedModels, allowedEfforts, allowedCwds }),
       });
-      if (!r.ok) { err.textContent = r.error || '生成失败'; err.style.display = ''; return; }
+      if (!r.ok) { err.textContent = r.error || '生成失败'; err.style.display = 'block'; return; }
       $('akLabelInput').value = '';
       $('akSourceInput').value = '';
       $('akCwdsInput').value = '';
       document.querySelectorAll('#akModelsBox input:checked, #akEffortsBox input:checked').forEach((x) => { x.checked = false; });
       renderApiKeyPlaintext(r);
       await refreshApiKeys();
-    } catch (e) { err.textContent = e.message; err.style.display = ''; }
+    } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
     finally { createBtn.disabled = false; }
   });
   // 列表操作走事件委托：refreshApiKeys 整块重渲染，行内按钮不逐个绑

@@ -43,3 +43,4 @@
 - 2026-07-17 用户决策：**旧看板（8788）整体退役**——派发调度改 Windows 计划任务直调 `dashboard/lib/jobs/run-job.js`（dashboard 目录保留作库），删 `baibu-dashboard` 计划任务、停 8788 进程（G8）。
 - 2026-07-17 G7b done（PR #60 OPEN https://github.com/zzusp/scrumws-desktop/pull/60；#59 已被用户合并，round-2 提交曾误推已合分支、按硬线另开 #60 续修订）+ G8 done：`baibu-scrumws-chat`（1min，wrapper 4×15s，实测 22:37:47→22:39:02 六连 tick 精准 15s 节拍）/`baibu-scrumws-issue`（3min，22:39:02 正点开火，POST 对旧版桌面端 404 fail-soft 指纹不落）落地；`baibu-dashboard` schtask 删除 + 8788 进程杀停（query 复核 cannot find / 端口无监听）。baibu 侧证据：docs/acceptance/scrumws-ingest-cutover/round-2.md。
 - **桌面端 app 现状**：`electron .` 直跑 D:\project\scrumws-desktop 主检出（18:02 启动，代码早于 #59 合并）——**用户需在主仓 `git pull` + 重启 app**，/api/external 才生效，届时 pending 的 chat 批次自动补投、issue 自动重派。
+- 2026-07-17 用户修正策略语义（round-3，全绿）：**三项白名单必选，全不选 = 没有权限**——缺项拒建钥、旧格式无策略钥建任务一律 400（须重新生成）；UI 标必选 + 前端拦截 + 旧钥「未配置（无权限）」标识。顺带修出真实 UI bug（.form-err 类 display:none，原 style.display='' 显示失败，三处改 'block'）。生产两把钥带全策略不受影响。

@@ -46,13 +46,18 @@ function readTaskBrief(taskKey) {
   };
 }
 
-// per-key 策略执行：密钥可带 allowedModels / allowedEfforts / allowedCwds 白名单（空 = 不限）。
+// per-key 策略执行：密钥必须带 allowedModels / allowedEfforts / allowedCwds 三个白名单——
+// **全不选 = 没有权限**：缺任一项（含旧格式无策略密钥）一律拒绝建任务，须重新生成密钥。
 // 请求省略字段 → 取白名单首项为该密钥默认；请求越界 → err（外层回 400）。
 // cwd 判定：等于白名单某项或在其之下（Windows 路径大小写不敏感）。
 function resolveAgainstPolicy(key, p) {
+  const missing = [];
+  if (!Array.isArray(key.allowedModels) || !key.allowedModels.length) missing.push('可用模型');
+  if (!Array.isArray(key.allowedEfforts) || !key.allowedEfforts.length) missing.push('可用 effort');
+  if (!Array.isArray(key.allowedCwds) || !key.allowedCwds.length) missing.push('可访问目录');
+  if (missing.length) return { err: `该密钥未配置${missing.join(' / ')}（策略必选=无权限），请在「API 密钥」页重新生成` };
   const pick = (reqVal, allowed, label) => {
     const v = String(reqVal || '').trim();
-    if (!Array.isArray(allowed) || !allowed.length) return { val: v };
     if (!v) return { val: allowed[0] };
     if (!allowed.includes(v)) return { err: `${label} 不在该密钥允许范围：${allowed.join(', ')}` };
     return { val: v };
@@ -63,17 +68,15 @@ function resolveAgainstPolicy(key, p) {
   if (e.err) return { err: e.err };
   const ac = key.allowedCwds;
   let cwd = String(p.cwd || '').trim();
-  if (Array.isArray(ac) && ac.length) {
-    if (!cwd) {
-      cwd = ac[0];
-    } else {
-      const norm = path.resolve(cwd).toLowerCase();
-      const hit = ac.some((b) => {
-        const base = path.resolve(b).toLowerCase();
-        return norm === base || norm.startsWith(base + path.sep);
-      });
-      if (!hit) return { err: `cwd 不在该密钥允许范围：${ac.join('；')}` };
-    }
+  if (!cwd) {
+    cwd = ac[0];
+  } else {
+    const norm = path.resolve(cwd).toLowerCase();
+    const hit = ac.some((b) => {
+      const base = path.resolve(b).toLowerCase();
+      return norm === base || norm.startsWith(base + path.sep);
+    });
+    if (!hit) return { err: `cwd 不在该密钥允许范围：${ac.join('；')}` };
   }
   return { model: m.val, effort: e.val, cwd };
 }

@@ -956,10 +956,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               </div>
               <button class="btn" id="akCreateBtn" style="margin-bottom:1px">生成密钥</button>
             </div>
-            <!-- 策略白名单（可选）：全不选 / 留空 = 不限；请求省略对应字段时取第一个勾选项 / 第一行为该密钥默认 -->
+            <!-- 策略白名单（三项都必选，全不选 = 没有权限不能建钥）；请求省略对应字段时取第一个勾选项 / 第一行为该密钥默认 -->
             <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:12px">
               <div class="field" style="min-width:260px">
-                <span class="f-label">可用模型（不勾 = 不限；第一个勾选项为默认）</span>
+                <span class="f-label">可用模型（必选；第一个勾选项为默认）</span>
                 <div id="akModelsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
                   <label><input type="checkbox" value="claude-opus-4-8"> Opus 4.8</label>
                   <label><input type="checkbox" value="claude-fable-5"> Fable 5</label>
@@ -969,7 +969,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
                 </div>
               </div>
               <div class="field" style="min-width:160px">
-                <span class="f-label">可用 effort（不勾 = 不限）</span>
+                <span class="f-label">可用 effort（必选；第一个勾选项为默认）</span>
                 <div id="akEffortsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
                   <label><input type="checkbox" value="low"> Low</label>
                   <label><input type="checkbox" value="medium"> Medium</label>
@@ -979,7 +979,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
                 </div>
               </div>
               <div class="field" style="flex:1;min-width:260px">
-                <span class="f-label">可访问目录（每行一个绝对路径；留空 = 不限；任务 cwd 须等于某行或在其之下）</span>
+                <span class="f-label">可访问目录（必填，每行一个绝对路径；任务 cwd 须等于某行或在其之下，省略时取第一行）</span>
                 <textarea id="akCwdsInput" class="field-input mono" rows="4" spellcheck="false" placeholder="D:\baibu-agent"></textarea>
               </div>
             </div>

@@ -48,7 +48,7 @@ function normStrArr(v, max = 20) {
 }
 
 // 创建 key：label = 人读备注；source = 该 key 建任务的来源标签（校验规则与 createTask.source 一致）。
-// 可选策略白名单（空 = 不限；由 external-ingest 在建任务时执行）：
+// 策略白名单（**三项都必选**——全不选 = 没有权限、拒绝创建；由 external-ingest 在建任务时执行）：
 //   allowedModels / allowedEfforts —— 必须是全局白名单子集；请求省略该字段时取首项为默认
 //   allowedCwds —— 允许的工作目录（绝对路径；请求 cwd 须等于某项或在其之下，省略取首项）
 // 返回 {ok, key(存盘条目), plaintext}；plaintext 只此一次，之后任何端点不再可取。
@@ -58,14 +58,17 @@ export function createApiKey({ label, source, allowedModels, allowedEfforts, all
   if (!lab) return { ok: false, error: 'label required' };
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
   const models = normStrArr(allowedModels);
+  if (!models.length) return { ok: false, error: 'allowedModels 必选：至少勾选一个可用模型（第一个为该密钥默认）' };
   for (const m of models) if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `allowedModels 含非白名单模型：${m}（可用：${Array.from(ALLOWED_MODELS).join(', ')}）` };
   const efforts = normStrArr(allowedEfforts);
+  if (!efforts.length) return { ok: false, error: 'allowedEfforts 必选：至少勾选一个可用 effort（第一个为该密钥默认）' };
   for (const e of efforts) if (!ALLOWED_EFFORTS.has(e)) return { ok: false, error: `allowedEfforts 含非法档位：${e}（可用：${Array.from(ALLOWED_EFFORTS).join(', ')}）` };
   const cwds = [];
   for (const c of normStrArr(allowedCwds)) {
     if (!path.isAbsolute(c)) return { ok: false, error: `allowedCwds 须为绝对路径：${c}` };
     cwds.push(path.resolve(c));
   }
+  if (!cwds.length) return { ok: false, error: 'allowedCwds 必填：至少一个可访问目录（绝对路径；第一行为该密钥默认）' };
   const plaintext = `swak_${crypto.randomBytes(32).toString('base64url')}`;
   const entry = {
     id: crypto.randomBytes(6).toString('hex'),
@@ -77,9 +80,9 @@ export function createApiKey({ label, source, allowedModels, allowedEfforts, all
     disabled: false,
     lastUsedAt: null,
   };
-  if (models.length) entry.allowedModels = models;
-  if (efforts.length) entry.allowedEfforts = efforts;
-  if (cwds.length) entry.allowedCwds = cwds;
+  entry.allowedModels = models;
+  entry.allowedEfforts = efforts;
+  entry.allowedCwds = cwds;
   const keys = readKeys();
   keys.push(entry);
   writeKeys(keys);
