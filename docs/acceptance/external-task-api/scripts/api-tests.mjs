@@ -8,6 +8,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileP = promisify(execFile);
 
 const BASE = process.argv[2] || 'http://127.0.0.1:18799';
 const DATA_ROOT = process.argv[3] || '';
@@ -171,6 +174,42 @@ const main = async () => {
   const hbNoAuth = await req('POST', '/api/external/heartbeat');
   record('F1-heartbeat', r.status === 200 && r.json?.ok === true && hbNoAuth.status === 401,
     `心跳 200 / 无鉴权 401 → ${r.status}/${hbNoAuth.status}`);
+
+  // ---- O. /api/task/create 同源收口（2026-07-18：看板页面专用，程序化 403）----
+  r = await req('POST', '/api/task/create', { body: { title: 't', prompt: 'p' } });
+  record('O1-origin-gate-403', r.status === 403 && /仅限看板页面/.test(r.json?.error || '') && /api\/external\/task\/create/.test(r.json?.error || ''),
+    `无 Origin 程序化调用 → ${r.status}（错误指路外部通道）`);
+
+  {
+    const port = new URL(BASE).port || '80';
+    const res = await fetch(`${BASE}/api/task/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: `http://127.0.0.1:${port}` },
+      body: JSON.stringify({ title: '看板同源建任务', prompt: 'p', plan: true }),
+    });
+    const j = await res.json().catch(() => null);
+    record('O2-board-origin-ok', res.status === 200 && j?.ok === true && j.state === 'plan',
+      `同源 Origin（模拟看板页面）→ ${res.status} ${j?.taskKey || j?.error}`);
+  }
+
+  // ---- CLI（外部通道瘦客户端，实跑子进程）----
+  {
+    const port = new URL(BASE).port || '80';
+    const cli = path.join(process.cwd(), 'platform', 'cli.js');
+    const envNoKey = { ...process.env };
+    delete envNoKey.SCRUMWS_API_KEY;
+    let c1;
+    try {
+      c1 = await execFileP('node', [cli, 'create', '--key', chatKey.plaintext, '--title', 'CLI 密钥建任务', '--prompt', 'p', '--external-key', 'cli-1', '--port', port], { env: envNoKey });
+    } catch (e) { c1 = { failed: true, stderr: e.stderr, stdout: e.stdout }; }
+    record('CLI1-keyed-create', !c1.failed && /已入计划/.test(c1.stdout || ''), `带密钥 CLI 建任务 → ${String(c1.stdout || c1.stderr).trim().slice(0, 80)}`);
+
+    let c2ok = false; let c2msg = '';
+    try {
+      await execFileP('node', [cli, 'create', '--title', 't', '--prompt', 'p', '--port', port], { env: envNoKey });
+    } catch (e) { c2ok = e.code === 1 && /缺 API 密钥/.test(e.stderr || ''); c2msg = String(e.stderr).trim().slice(0, 60); }
+    record('CLI2-no-key-exit1', c2ok, `无密钥 CLI → exit 1「${c2msg}」`);
+  }
 
   // ---- W. 持钥方自省（whoami）----
   r = await req('GET', '/api/external/whoami', { token: chatKey.plaintext });

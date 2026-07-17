@@ -13,7 +13,7 @@ import * as _collectCli from './collect-cli.js';
 
 // 扫全库 sessionId（runner-state + runner-archive 下每个任务包的 meta.sessionHistory + meta.sessionId），
 // 用于 in-flight 检测："孤儿"jsonl = 出现在 CC 项目目录、但不属于任何已知任务的 session。
-// 也供 CLI 添加弹窗判「已在看板」：分身/adopt 任务的会话 sid 都在这里（含跨轮 sessionHistory）。
+// 也供 CLI 添加弹窗判「已在看板」：看板任务/adopt 任务的会话 sid 都在这里（含跨轮 sessionHistory）。
 export function collectKnownSessionIds() {
   const ids = new Set();
   for (const root of [P.runnerRoot, P.archiveRoot]) {
@@ -372,7 +372,7 @@ function readCliWorkerLog(taskKey) {
       toolsCount: Array.isArray(parsed.systemInit.tools) ? parsed.systemInit.tools.length : null,
     } : null,
     cwd: parsed.cwd || parsed.systemInit?.cwd || null,
-    gitBranch: parsed.gitBranch || null,   // 与分身 round 同构：详情侧栏统一从 round 取 git，不再按来源分叉
+    gitBranch: parsed.gitBranch || null,   // 与看板任务 round 同构：详情侧栏统一从 round 取 git，不再按来源分叉
     // 会话正在生成 → 前端加 pulse "● 实时" + "（进行中）"
     inflight: active,
   };
@@ -672,7 +672,7 @@ export function archiveTask(taskKey) {
 }
 
 // 取消归档：archiveTask 的逆操作，内部按来源分派——CLI 清 watchlist.archivedAt 回落自动判态；
-// 分身 runner-archive/<safeKey> 目录移回 runner-state/<safeKey>（collect 重新按 state.json 判态）。
+// 看板任务 runner-archive/<safeKey> 目录移回 runner-state/<safeKey>（collect 重新按 state.json 判态）。
 export function unarchiveTask(taskKey) {
   // 未物化的 CLI 会话（无任务包）：清 watchlist.archivedAt；物化后走下面统一的目录搬迁路径
   if (typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey)) {

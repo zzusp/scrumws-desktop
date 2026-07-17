@@ -332,7 +332,7 @@ function sourceTagHtml(t) {
 
 // 卡片上半部分只保留：任务标题 + 工作目录 + 最后一次活动时间（req2）；其余状态/耗时/描述/意图/失败原因都进详情页。
 function taskCardHtml(t, section) {
-  // 工作目录跨来源统一取（CLI 在 t.cli.cwd，分身在 t.cwd）
+  // 工作目录跨来源统一取（CLI 在 t.cli.cwd，看板任务在 t.cwd）
   const cwdVal = t.cwd || t.cli?.cwd || null;
   const cwdShort = cwdVal ? (cwdVal.length > 40 ? '…' + cwdVal.slice(-38) : cwdVal) : '—';
   const cwdLine = `<div class="card-sub" title="${escapeAttr(cwdVal || '')}">${escapeHtml(cwdShort)}</div>`;
@@ -997,8 +997,8 @@ async function renameTaskPrompt(taskKey) {
   });
   if (v === null) return;
   try {
-    // CLI 会话无 task.json，走 watchlist 改名接口；分身走 task.json 接口。两端均收 body {title}
-    // 统一走 /api/task/rename，后端 renameTask 按来源分派（分身写 task.json / CLI 写 watchlist）——前端不选端点
+    // CLI 会话无 task.json，走 watchlist 改名接口；看板任务走 task.json 接口。两端均收 body {title}
+    // 统一走 /api/task/rename，后端 renameTask 按来源分派（看板任务写 task.json / CLI 写 watchlist）——前端不选端点
     const r = await api(`/api/task/rename?taskKey=${encodeURIComponent(taskKey)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1655,7 +1655,7 @@ function renderTaskSide(taskKey) {
   const lastOk = rounds[rounds.length - 1] || null;
   // 被旁观的 CLI 会话（带 t.cli）：processing 不给「中断」、归档区给「从看板移除」。物化后无 t.cli，与其它来源一致。
   const isObservedCli = !!t.cli;
-  // 模型/cwd/git/工作时长/最近活动：CLI 与分身统一从详情 round 取（readWorkerLog 对两类同构产出）——不按来源分叉
+  // 模型/cwd/git/工作时长/最近活动：CLI 与看板任务统一从详情 round 取（readWorkerLog 对两类同构产出）——不按来源分叉
   const model = lastOk?.ccSummary?.model || lastOk?.systemInit?.model || t.meta?.model || '—';
   const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
@@ -1698,7 +1698,7 @@ function renderTaskSide(taskKey) {
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   }
   const descText = t.description || '';
-  // 工作时长：claude 实际在算的时长（区别于创建→结束墙钟）；CLI 单 round、分身多 round，累加逻辑通用。
+  // 工作时长：claude 实际在算的时长（区别于创建→结束墙钟）；CLI 单 round、看板任务多 round，累加逻辑通用。
   // 优先 ccSummary.workMs（turn_duration 累加，无 rounds.jsonl 也有值）；退回本轮 startedAt→endedAt 墙钟。
   let workMs = 0;
   (r?.rounds || []).forEach((rd) => {
@@ -1729,8 +1729,8 @@ function renderTaskSide(taskKey) {
       </div>`;
   }).reverse().join('');
   // 统一字段值：所有任务「任务信息」按同一字段集展示，共有字段（cwd/git/最近活动）一律取自详情 round
-  // （readWorkerLog 对 CLI/分身同构产出）+ t.cli/t.cwd 兜底，不按来源分叉；
-  // 权限模式/后台任务/jsonl大小是 CLI 会话独有真实数据，按 t.cli 存在性显（分身无 → 不显/—）。
+  // （readWorkerLog 对 CLI/看板任务同构产出）+ t.cli/t.cwd 兜底，不按来源分叉；
+  // 权限模式/后台任务/jsonl大小是 CLI 会话独有真实数据，按 t.cli 存在性显（看板任务无 → 不显/—）。
   const rtCwds = [...new Set((r?.rounds || []).map((x) => x?.cwd || x?.systemInit?.cwd).filter(Boolean))];
   const rtCwd = rtCwds[rtCwds.length - 1] || null;
   const cwdVal = rtCwd || t.cli?.cwd || t.cwd || '—';
@@ -1744,7 +1744,7 @@ function renderTaskSide(taskKey) {
   const jsonlVal = t.cli?.jsonlBytes ? (t.cli.jsonlBytes / 1024 / 1024).toFixed(2) + ' MB' : '—';
   const lastActive = t.lease?.heartbeatAt || meta.lastRoundAt || t.resolvedAt || '—';
   const sideTitle = t.title || t.taskKey;
-  const canRename = !t.isArchive;   // 非归档任务可重命名：统一走 /api/task/rename，后端按来源分派（分身写 task.json / CLI 写 watchlist）
+  const canRename = !t.isArchive;   // 非归档任务可重命名：统一走 /api/task/rename，后端按来源分派（看板任务写 task.json / CLI 写 watchlist）
   el.innerHTML = `
     <div class="side-block">
       <h3>任务信息</h3>

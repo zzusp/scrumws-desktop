@@ -159,6 +159,19 @@ try {
   await page.waitForFunction(() => ![...document.querySelectorAll('#akListBox tbody tr')].some((x) => x.textContent.includes('uismoke')), { timeout: 5000 });
   record('U5-delete', true, 'uismoke 钥经确认弹窗删除、行移除');
 
+  // U8 看板「新建任务」回归：同源收口后看板自身零感知（浏览器同源 fetch 自带 Origin 过闸）
+  await page.goto(`${BASE}/#/board`, { waitUntil: 'networkidle2', timeout: 20000 });
+  await new Promise((r) => setTimeout(r, 500));
+  await page.click('#newTaskBtn');
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('newTaskModal')).display !== 'none', { timeout: 5000 });
+  await page.type('#newTaskTitle', 'UI冒烟-看板新建回归');
+  await page.type('#newTaskPrompt', '冒烟占位指令');
+  await page.click('#newTaskSubmit');
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('newTaskModal')).display === 'none', { timeout: 8000 });
+  const boardCreated = await fetch(`${BASE}/api/state`).then((r) => r.json())
+    .then((s) => (s.lifecycle?.plan || []).some((t) => (t.title || '').includes('UI冒烟-看板新建回归')));
+  record('U8-board-create', boardCreated, `看板新建经同源闸成功、plan 桶出卡=${boardCreated}`);
+
   await page.screenshot({ path: process.env.UI_SHOT || 'ui-apikeys.png' });
 } finally {
   await browser.close();

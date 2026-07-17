@@ -159,7 +159,7 @@ function markProcessing(taskKey, id) {
 }
 
 // ---- processing 并发上限（复用 runner-config.maxConcurrentRunners；0 = 不限）----
-// 语义：同时处于 processing 的分身任务上限。达上限时新执行请求落 queued 等待，名额释放即自动排空。
+// 语义：同时处于 processing 的看板任务上限。达上限时新执行请求落 queued 等待，名额释放即自动排空。
 // 仅约束「新起任务」（create/approve/restart/定时提升）；不拦回复续轮（人工交互不该被并发闸卡住）。
 function maxConcurrent() { const n = Number(readConfig().maxConcurrentRunners ?? 5); return Number.isFinite(n) && n > 0 ? n : 0; }
 function processingCount() {

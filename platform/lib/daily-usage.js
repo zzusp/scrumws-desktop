@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 // 近 30 天每天用量（总 token，含 cache）：扫 ~/.claude/projects 下所有项目的 CC session jsonl 按本地日分桶。
-// 全局 = 所有 assistant 行；platform = sessionId ∈ scrumws 分身任务集合的行（全局的子集，供柱状图对比）。
+// 全局 = 所有 assistant 行；platform = sessionId ∈ scrumws 看板任务集合的行（全局的子集，供柱状图对比）。
 // CC jsonl 无 costUSD，故用 token 而非 cost。只读近 30 天 mtime 的文件（更早的不含近 30 天的行）压缩扫描量。
 // 30 天全量约 1680 文件/530MB → TTL 5min + 后台异步重扫（逐文件 await 让出，不阻塞 /api/state 事件循环）。
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
