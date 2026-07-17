@@ -177,8 +177,14 @@ export function createSession({ cwd, model, effort, resume, prompt, attachments,
     '--verbose', '--include-partial-messages'];
   // 任务发起/唤醒（startTask/replyTask）、CLI 会话续接（adopt）传 bypass:true → 跳过权限确认，避免逐工具反复授权
   //（CLI 续接：终端里本就是 bypass permissions 态）；仅手动新建交互会话（session/create）走 stdio 权限卡（S5）。
-  if (bypass) args.push('--dangerously-skip-permissions');
-  else args.push('--permission-prompt-tool', 'stdio');
+  // ⚠ --disallowedTools AskUserQuestion 只挂 bypass，不能无条件加一行（决策 15，契约 §8.1）：非 bypass 会话的
+  // AskUserQuestion 由**权限组件**收集，走 can_use_tool 通道 → 看板渲染成交互选项卡（实测可用，round-9）。
+  // 而 bypass=--dangerously-skip-permissions **没有权限卡** → 问题永远到不了人眼前 → agent 默默自己猜
+  //（multica GitHub #2588）。所以：禁的正好是坏掉的那一半，留的正好是能用的那一半。
+  if (bypass) {
+    args.push('--dangerously-skip-permissions');
+    args.push('--disallowedTools', 'AskUserQuestion');
+  } else args.push('--permission-prompt-tool', 'stdio');
   if (model) args.push('--model', model);
   if (effort) args.push('--effort', effort);
   if (resume) args.push('--resume', resume);
@@ -190,6 +196,15 @@ export function createSession({ cwd, model, effort, resume, prompt, attachments,
   // CLAUDE_CODE_DISABLE_WORKFLOWS truthy=禁用。undefined=不干预、继承 claude 默认。
   if (dynamicWorkflow === true) { env.CLAUDE_CODE_WORKFLOWS = '1'; delete env.CLAUDE_CODE_DISABLE_WORKFLOWS; }
   else if (dynamicWorkflow === false) { env.CLAUDE_CODE_DISABLE_WORKFLOWS = '1'; delete env.CLAUDE_CODE_WORKFLOWS; }
+  // 决策 15（契约 §8.1/§8.3）：让 agent 知道「自己是谁 / 去哪儿声明完成」。taskKey 由 createTask 生成，
+  // 云端下发时还不存在，所以只能在 spawn 这一刻注入。用法由 prompt 尾的完成协议告诉它（completion-protocol.js）。
+  // 来源无关：所有绑任务的会话都注入（不按 source 分支，不变式 2）；没带完成协议的任务不会去调，行为零变化。
+  // ⚠ 这里只给本机 127.0.0.1 的看板端点，**绝不给任何云端凭据**——agent 带 bypass 跑，swmt_ 碰都不能碰。
+  if (taskKey) {
+    env.SCRUMWS_TASK_KEY = taskKey;
+    // 端口与 server.js:22 同源（同一个 SCRUMWS_PORT env）；改默认值要两处一起改。本机、不出网。
+    env.SCRUMWS_API_BASE = `http://127.0.0.1:${Number(process.env.SCRUMWS_PORT) || 8799}`;
+  }
 
   const id = randomUUID();
   const s = new Session({ id, cwd, model, effort, taskKey, gitBranch });

@@ -116,10 +116,13 @@ export function deleteTask({ taskKey }) {
   return { ok: true, taskKey, safeKey, removed: taskDir };
 }
 
-// 人工确认完成（awaiting-human → done）：人工复查后判定任务其实已完成，落成成功终态。
-// 与 worker 自动 done 区分：outcomeDetail.resolvedBy='user'（卡片「人工完成」标据此显示）。
+// 确认完成（awaiting-human → done）：复查后判定任务其实已完成，落成成功终态。
+// 与 worker 自动 done 区分：outcomeDetail.resolvedBy（卡片「人工完成」标据此显示）。
+//   resolvedBy='user'（缺省）= 人在看板点的；'agent' = agent 自己声明做完了（决策 15，契约 §8.2：prompt 尾的
+//   完成协议教它调本机 /api/task/complete?resolvedBy=agent）。**状态机一个字节不改**：agent 走的是和人完全
+//   一样的那条转换，只是 by / resolvedBy 记成 agent；人仍是最后一道闸（误判可 /api/task/uncomplete 撤回）。
 // 仅对 awaiting-human 看板任务；CLI 无可写 state.json / 无 done 态、processing/queued/plan/done 语义不符，一律拒绝。
-export function completeTask({ taskKey }) {
+export function completeTask({ taskKey, resolvedBy }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
@@ -138,8 +141,10 @@ export function completeTask({ taskKey }) {
   const p2 = (n) => String(n).padStart(2, '0');
   const now = new Date();
   const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
+  // 'agent' = agent 自己声明做完了；其余一律 'user'（人工确认）。白名单取值，别原样透传调用方的串。
+  const by = resolvedBy === 'agent' ? 'agent' : 'user';
   const history = Array.isArray(state.history) ? state.history : [];
-  history.push({ state: 'done', at: nowStr, by: 'user' });
+  history.push({ state: 'done', at: nowStr, by });
   const newState = {
     ...state,
     state: 'done',
@@ -148,7 +153,7 @@ export function completeTask({ taskKey }) {
     enteredAt: nowStr,
     outcomeDetail: {
       ...(state.outcomeDetail || {}),
-      resolvedBy: 'user',
+      resolvedBy: by,
       failureReason: null,
     },
     history,

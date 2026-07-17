@@ -4,11 +4,14 @@ import crypto from 'node:crypto';
 import { P } from '../paths.js';
 
 // 机器身份持久化（$DATA_ROOT/runtime/cloud/identity.json）。
-// ⚠ 字段是穷举：{ machineUid, cloudUrl, machineId, token, workspaceId, workspaceName, enrolledAt }。
+// ⚠ 字段是穷举：{ machineUid, cloudUrl, machineId, token, workspaceId, workspaceName, ownerUserId, enrolledAt }。
 // 注册密钥 swrk_ 绝不进这里——它是入场券，只在 enroll 那一次请求体里出现，用完即弃（契约 §7.1）。
 // machineUid 与 enroll 解耦：未 enroll 时也只有 {machineUid}；改机器名不该变成新机器。
+// ownerUserId = 机器主人（首次 enroll 时生成配对码的那个人，决策 12：重注册不改）。它是 owner-only 闸门
+// （gate.js computeAutoExec）的唯一判据，**只在 enroll 时钉死、绝不由心跳刷新**：心跳刷新等于给云端一条
+// 随时重新指定「谁是机器主人」的通道 → 闸门判据被云端单方面掌控。要改归属必须走一次配对码（真人动作，契约 §7.5）。
 /** @typedef {{machineUid:string, cloudUrl?:string, machineId?:string, token?:string,
- *             workspaceId?:string, workspaceName?:string, enrolledAt?:string}} Identity */
+ *             workspaceId?:string, workspaceName?:string, ownerUserId?:string|null, enrolledAt?:string}} Identity */
 
 const CLOUD_DIR = path.join(P.tmpDir, 'cloud');
 const IDENTITY_FILE = path.join(CLOUD_DIR, 'identity.json');

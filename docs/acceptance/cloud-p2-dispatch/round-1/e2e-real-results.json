@@ -1,0 +1,72 @@
+[
+  {
+    "ok": true,
+    "n": "C01 迁移 001+002 落地：task 有 auto_run/dispatch/dispatched_at/reject_reason 四列，且 origin 未删",
+    "ev": "information_schema 命中列：auto_run, dispatch, dispatched_at, origin, reject_reason"
+  },
+  {
+    "ok": true,
+    "n": "C02 真 cloud/src/server.js 起在 8791（非 mock）",
+    "ev": "GET /api/health 200 · GET / → 200 <!DOCTYPE html>… (index.html)"
+  },
+  {
+    "ok": true,
+    "n": "C03 bootstrap 两用户 + 各自登录（同 workspace scrumws）",
+    "ev": "A=孙鹏(59e1b6d6…) · B=同事乙(5993954b…)"
+  },
+  {
+    "ok": true,
+    "n": "C04 enroll→机器 online（真心跳）+ identity.ownerUserId=会话用户（owner-only 闸门判据）",
+    "ev": "machineId=a5576f35… status=online owner=孙鹏 identity.ownerUserId=59e1b6d6…"
+  },
+  {
+    "ok": true,
+    "n": "C05(剧本3) 白名单默认空 → 云端任务被本地拒收，云端见 rejected+原因，本地零任务零 link",
+    "ev": "云端 dispatch=rejected rejectReason=\"工作目录不在本机白名单：D:\\project\\scrumws-desktop\\.claude\\worktrees\\cloud-control-plane\\.sandbox\\p2e-stub\\work\" · 本地 links={} runner-state=[]"
+  },
+  {
+    "ok": true,
+    "n": "C06 白名单外 cwd 被拒（work-evil 与白名单 work 前缀相邻，未被误放行）",
+    "ev": "rejectReason=\"工作目录不在本机白名单：D:\\project\\scrumws-desktop\\.claude\\worktrees\\cloud-control-plane\\.sandbox\\p2e-stub\\work-evil\""
+  },
+  {
+    "ok": true,
+    "n": "C07(剧本4+5a) 白名单内 + owner-only + 自己派 + autoRun → autoExec 直接跑（不落 plan），云端 delivered+回填 localTaskKey",
+    "ev": "云端 dispatch=delivered localTaskKey=cloud:20260718014855-395 · 本地 state=processing（≠plan）"
+  },
+  {
+    "ok": true,
+    "n": "C08(剧本5b) owner-only + 别人(B)派 + autoRun → 落 plan 等人确认（云端上报 createdBy=B ≠ 机器主人 A）",
+    "ev": "intent.createdBy=B · 本地 state=plan · 云端 dispatch=delivered"
+  },
+  {
+    "ok": true,
+    "n": "C09(剧本6) 自然幂等：delivered 意图不再被取件（GET intents 只回 pending），每意图恰一个本地任务，localTaskKey 稳定",
+    "ev": "等 2 轮 tick：runner-state 数 2→2（不增）· link 无重复 taskKey · iOwn.localTaskKey 恒=cloud:20260718014855-395"
+  },
+  {
+    "ok": true,
+    "n": "C10(剧本7·决策15) 真云端派的自动执行任务 spawn 命中 --disallowedTools AskUserQuestion(挂 bypass) + 注入 SCRUMWS_TASK_KEY/API_BASE",
+    "ev": "1/1 次 spawn · argv 片段=[\"--include-partial-messages\",\"--dangerously-skip-permissions\",\"--disallowedTools\",\"AskUserQuestion\",\"--model\",\"claude-opus-4-7\"] · env={\"SCRUMWS_TASK_KEY\":\"cloud:20260718014855-395\",\"SCRUMWS_API_BASE\":\"http://127.0.0.1:8797\"}"
+  },
+  {
+    "ok": true,
+    "n": "C11(剧本7·上行半) awaiting-human→done(by=agent) 且对账把 by=agent 上行到云端 task_history",
+    "ev": "本地 state=done resolvedBy=agent · 云端 status.state=done history 末条 by=agent"
+  },
+  {
+    "ok": true,
+    "n": "C12 取消已下发意图 → 409 ALREADY_DISPATCHED（已下发的撤回是 P3，本期只挡）",
+    "ev": "HTTP 409 code=ALREADY_DISPATCHED dispatch=delivered"
+  },
+  {
+    "ok": true,
+    "n": "C13a(剧本8·核心) 云端派的任务真在机器上执行代码：真 claude 在白名单目录跑起来，数出 3 个文件",
+    "ev": "本地 taskKey=cloud:20260718015014-382 · 迁移轨迹=[0s]processing→[26s]awaiting-human · claude 输出=\"任务完成。答案：**当前工作目录下有 3 个文件**。\" · 云端对账 status.state=awaiting-human"
+  },
+  {
+    "ok": false,
+    "n": "C13b(剧本8·决策15) 真 agent 单轮内自我声明完成——被 completeTask 的 awaiting-human 卫语句拒（当时 state=processing），任务卡 awaiting-human 永不 done",
+    "ev": "真实证据：agent 执行了 complete 调用但收到 {\"ok\":false,\"error\":\"只有 awaiting-human…（当前 processing）\"} → 终态 state=awaiting-human resolvedBy=undefined（决策15 端到端未生效，根因见 round-1.md）"
+  }
+]

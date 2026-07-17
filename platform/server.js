@@ -14,6 +14,7 @@ import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer
 import * as scheduler from './lib/scheduler.js';
 import { startConnector, connectorStatus, enroll, unenroll } from './lib/cloud/connector.js';
 import { ensureMachineUid } from './lib/cloud/identity.js';
+import { acceptAutoRunMode } from './lib/cloud/gate.js';
 import { createApiKey, updateApiKey, listApiKeys, setApiKeyDisabled, deleteApiKey, verifyApiKey } from './lib/api-keys.js';
 import { createExternalTask, externalTaskStatus } from './lib/external-ingest.js';
 import { P } from './lib/paths.js';
@@ -558,11 +559,12 @@ const server = http.createServer(async (req, res) => {
       const r = cancelTask({ taskKey });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
-    // 人工确认完成（awaiting-human → done）；来源无关：completeTask 内部按「有无任务包」分派（未物化 CLI → watchlist.doneAt）
+    // 确认完成（awaiting-human → done）；来源无关：completeTask 内部按「有无任务包」分派（未物化 CLI → watchlist.doneAt）。
+    // resolvedBy=agent（决策 15）：agent 经注入的完成协议自己声明做完；缺省 / 其它值 → user（人工确认）。取值白名单在 completeTask 内。
     if (req.method === 'POST' && pathname === '/api/task/complete') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
-      const r = completeTask({ taskKey });
+      const r = completeTask({ taskKey, resolvedBy: searchParams.get('resolvedBy') });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
     // 取消完成（done → awaiting-human）；来源无关：uncompleteTask 内部按「有无任务包」分派
@@ -773,6 +775,26 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/cloud/remote-config') {
       const cfg = readConfig();
       return sendJson(res, 200, { ok: true, cloudRemoteControl: !!cfg.cloudRemoteControl, cloudAllowedCwds: Array.isArray(cfg.cloudAllowedCwds) ? cfg.cloudAllowedCwds : [] });
+    }
+    // 云端派活的自动执行闸门档位（决策 8，契约 §7.1）。判定权威在 gate.js，本端点只读写 runner-config
+    // 的 acceptAutoRun 键；acceptAutoRunMode 保证「缺省 / 脏值 → owner-only」与闸门判定同一口径。
+    // cwd 白名单（cloudAllowedCwds）与手机中继共用一份，走 /api/cloud/remote-config，不在此重复。
+    if (req.method === 'POST' && pathname === '/api/cloud/dispatch-config') {
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        if (!['off', 'owner-only', 'on'].includes(payload?.acceptAutoRun)) {
+          return sendJson(res, 400, { ok: false, error: 'acceptAutoRun 需为 off / owner-only / on 之一' });
+        }
+        writeConfig({ acceptAutoRun: payload.acceptAutoRun });
+        sendJson(res, 200, { ok: true, acceptAutoRun: payload.acceptAutoRun });
+      });
+      return;
+    }
+    if (pathname === '/api/cloud/dispatch-config') {
+      return sendJson(res, 200, { ok: true, acceptAutoRun: acceptAutoRunMode(readConfig()) });
     }
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'unknown api' });
     return serveStatic(req, res);
