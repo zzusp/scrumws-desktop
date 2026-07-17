@@ -12,12 +12,12 @@
   {
     "ok": true,
     "n": "C03 bootstrap 两用户 + 各自登录（同 workspace scrumws）",
-    "ev": "A=孙鹏(59e1b6d6…) · B=同事乙(5993954b…)"
+    "ev": "A=孙鹏(5d333103…) · B=同事乙(c3a2a221…)"
   },
   {
     "ok": true,
     "n": "C04 enroll→机器 online（真心跳）+ identity.ownerUserId=会话用户（owner-only 闸门判据）",
-    "ev": "machineId=a5576f35… status=online owner=孙鹏 identity.ownerUserId=59e1b6d6…"
+    "ev": "machineId=79c4a2a3… status=online owner=孙鹏 identity.ownerUserId=5d333103…"
   },
   {
     "ok": true,
@@ -32,7 +32,7 @@
   {
     "ok": true,
     "n": "C07(剧本4+5a) 白名单内 + owner-only + 自己派 + autoRun → autoExec 直接跑（不落 plan），云端 delivered+回填 localTaskKey",
-    "ev": "云端 dispatch=delivered localTaskKey=cloud:20260718014855-395 · 本地 state=processing（≠plan）"
+    "ev": "云端 dispatch=delivered localTaskKey=cloud:20260718021240-158 · 本地 state=processing（≠plan）"
   },
   {
     "ok": true,
@@ -42,12 +42,12 @@
   {
     "ok": true,
     "n": "C09(剧本6) 自然幂等：delivered 意图不再被取件（GET intents 只回 pending），每意图恰一个本地任务，localTaskKey 稳定",
-    "ev": "等 2 轮 tick：runner-state 数 2→2（不增）· link 无重复 taskKey · iOwn.localTaskKey 恒=cloud:20260718014855-395"
+    "ev": "等 2 轮 tick：runner-state 数 2→2（不增）· link 无重复 taskKey · iOwn.localTaskKey 恒=cloud:20260718021240-158"
   },
   {
     "ok": true,
     "n": "C10(剧本7·决策15) 真云端派的自动执行任务 spawn 命中 --disallowedTools AskUserQuestion(挂 bypass) + 注入 SCRUMWS_TASK_KEY/API_BASE",
-    "ev": "1/1 次 spawn · argv 片段=[\"--include-partial-messages\",\"--dangerously-skip-permissions\",\"--disallowedTools\",\"AskUserQuestion\",\"--model\",\"claude-opus-4-7\"] · env={\"SCRUMWS_TASK_KEY\":\"cloud:20260718014855-395\",\"SCRUMWS_API_BASE\":\"http://127.0.0.1:8797\"}"
+    "ev": "1/1 次 spawn · argv 片段=[\"--include-partial-messages\",\"--dangerously-skip-permissions\",\"--disallowedTools\",\"AskUserQuestion\",\"--model\",\"claude-opus-4-7\"] · env={\"SCRUMWS_TASK_KEY\":\"cloud:20260718021240-158\",\"SCRUMWS_API_BASE\":\"http://127.0.0.1:8797\"}"
   },
   {
     "ok": true,
@@ -62,11 +62,11 @@
   {
     "ok": true,
     "n": "C13a(剧本8·核心) 云端派的任务真在机器上执行代码：真 claude 在白名单目录跑起来，数出 3 个文件",
-    "ev": "本地 taskKey=cloud:20260718015014-382 · 迁移轨迹=[0s]processing→[26s]awaiting-human · claude 输出=\"任务完成。答案：**当前工作目录下有 3 个文件**。\" · 云端对账 status.state=awaiting-human"
+    "ev": "本地 taskKey=cloud:20260718021358-171 · 迁移轨迹=[0s]processing→[20s]done · claude 输出=\"任务已完成，当前工作目录包含 3 个文件。\" · 云端对账 status.state=done"
   },
   {
-    "ok": false,
-    "n": "C13b(剧本8·决策15) 真 agent 单轮内自我声明完成——被 completeTask 的 awaiting-human 卫语句拒（当时 state=processing），任务卡 awaiting-human 永不 done",
-    "ev": "真实证据：agent 执行了 complete 调用但收到 {\"ok\":false,\"error\":\"只有 awaiting-human…（当前 processing）\"} → 终态 state=awaiting-human resolvedBy=undefined（决策15 端到端未生效，根因见 round-1.md）"
+    "ok": true,
+    "n": "C13b(剧本8·决策15) 真 agent 自我声明完成 → done(by=agent)",
+    "ev": "终态 state=done resolvedBy=agent trail=[0s]processing→[20s]done"
   }
 ]

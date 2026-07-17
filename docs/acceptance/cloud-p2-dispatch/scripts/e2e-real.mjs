@@ -128,7 +128,15 @@ async function waitFor(what, pred, timeoutMs = TICK_MS * 3 + 10000) {
 }
 
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
-const links = (sb) => readJson(path.join(sb, 'runtime', 'cloud', 'links.json')) || {};
+// link 存储 = #67 采纳的目录格式（runtime/cloud/links/<intentId>.json，一个 intent 一个文件）。
+// 汇成 { [intentId]: 条目 } 供断言（原单文件 links.json 已废，见 links.js 与 #67 reconcile）。
+const links = (sb) => {
+  const dir = path.join(sb, 'runtime', 'cloud', 'links');
+  let names; try { names = fs.readdirSync(dir); } catch { return {}; }
+  const out = {};
+  for (const n of names) { if (n.endsWith('.json')) { const o = readJson(path.join(dir, n)); if (o) out[n.slice(0, -5)] = o; } }
+  return out;
+};
 const identityOf = (sb) => readJson(path.join(sb, 'runtime', 'cloud', 'identity.json'));
 const runnerDirs = (sb) => { try { return fs.readdirSync(path.join(sb, 'runtime', 'runner-state')); } catch { return []; } };
 const taskState = (sb, taskKey) => readJson(path.join(sb, 'runtime', 'runner-state', String(taskKey).replace(/:/g, '__'), 'state.json'));

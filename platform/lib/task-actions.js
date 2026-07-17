@@ -134,6 +134,16 @@ export function completeTask({ taskKey, resolvedBy }) {
   const stateFile = path.join(taskDir, 'state.json');
   let state = {};
   try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { }
+  // 决策 15 延迟落地：agent 在**单轮 -p 会话里**声明完成时，任务还是 processing（result 事件尚未把它翻
+  // awaiting-human）。此时不拒——落一个 agentRequestedDone 标记；task-runner 的收敛处理器（result/closed）在
+  // 将翻 awaiting-human 前认这个标记、改落 done(by=agent)。终态转换仍发生在本轮收敛边界（与人在 awaiting-human
+  // 点完成同一时刻），只是判定人换成 agent 的预声明——契约 §8.2「状态机结构不变」由此守住。
+  if (resolvedBy === 'agent' && state.state === 'processing') {
+    const merged = { ...state, outcomeDetail: { ...(state.outcomeDetail || {}), agentRequestedDone: true } };
+    try { fs.writeFileSync(stateFile, JSON.stringify(merged, null, 2), 'utf8'); }
+    catch (e) { return { ok: false, error: `写 state.json 失败: ${e.message}` }; }
+    return { ok: true, taskKey, deferred: true };
+  }
   if (state.state !== 'awaiting-human') {
     return { ok: false, error: `只有 awaiting-human 任务可人工确认完成（当前 ${state.state || '未知'}）` };
   }

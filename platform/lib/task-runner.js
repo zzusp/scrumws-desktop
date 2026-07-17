@@ -59,6 +59,27 @@ function setTaskState(taskKey, patch, by) {
   writeJson(stateFile, next);
 }
 
+// 本轮收敛落桶（决策 15 延迟落地）：
+//   · agent 本轮已声明完成（processing 时调过 complete?resolvedBy=agent，落了 outcomeDetail.agentRequestedDone）
+//     → 落 done(by=agent)，消费掉标记；
+//   · 否则 → awaiting-human（原行为不变）。
+// result 落完 done 后，紧随的 closed 会再调一次 —— 已是 done 就直接返回，绝不把 done 覆盖回 awaiting-human。
+// 会话 error 不走这里（error 优先，不认预声明）。
+function convergeAwaitingOrDone(taskKey) {
+  const sd = readJson(path.join(taskDirOf(taskKey), 'state.json')) || {};
+  if (sd.state === 'done') return;
+  const od = sd.outcomeDetail || {};
+  if (od.agentRequestedDone) {
+    const { agentRequestedDone, ...restOd } = od;   // 标记用过即消费
+    setTaskState(taskKey, {
+      state: 'done', outcome: 'success', resolvedAt: fmt(new Date()),
+      outcomeDetail: { ...restOd, resolvedBy: 'agent', failureReason: null },
+    }, 'agent');
+  } else {
+    setTaskState(taskKey, { state: 'awaiting-human', outcome: null, resolvedAt: fmt(new Date()) }, 'session');
+  }
+}
+
 function writeLease(taskKey, pid) {
   const now = fmt(new Date());
   writeJson(path.join(taskDirOf(taskKey), 'lease.json'), { taskKey, pid: pid || 0, claimedAt: now, heartbeatAt: now });
@@ -119,11 +140,11 @@ function bind(taskKey, id) {
           return;                        // 不落 awaiting-human、不 removeLease：本轮继续
         }
         leakRetry.delete(taskKey);
-        setTaskState(taskKey, { state: 'awaiting-human', outcome: null, resolvedAt: fmt(new Date()) }, 'session');
+        convergeAwaitingOrDone(taskKey); // 决策 15：agent 本轮已声明完成 → 落 done(agent)，否则 awaiting-human
         removeLease(taskKey);            // 一轮收敛：进程常驻但不算 processing
         scheduleDrain();                 // 名额释放 → 放行等待中的 queued 任务
       } else if (ev.type === 'closed') {
-        setTaskState(taskKey, { state: 'awaiting-human', outcome: null, resolvedAt: fmt(new Date()) }, 'session');
+        convergeAwaitingOrDone(taskKey); // 幂等：result 已落 done 时不再覆盖回 awaiting-human
         removeLease(taskKey);
         leakRetry.delete(taskKey);
         registry.delete(taskKey);
