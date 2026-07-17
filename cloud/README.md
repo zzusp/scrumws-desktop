@@ -209,8 +209,14 @@ node ..\docs\acceptance\cloud-control-plane\scripts\verify-cloud-api.mjs `
 
 ## 部署注意（都是硬前提，不是最佳实践）
 
-1. **强制 HTTPS**。服务走公网，机器令牌若走明文 HTTP 等于裸奔。
-   会话 cookie 恒带 `Secure`（浏览器把 `http://localhost` 视为安全上下文，故本地联调不受影响）。
+1. **HTTPS 不强制，但默认要**（`CLOUD_INSECURE_COOKIE`）。
+   - 默认：会话 cookie 带 `Secure` → 必须 HTTPS（`http://localhost` 是浏览器特例的安全上下文，本地联调不受影响）。
+   - `CLOUD_INSECURE_COOKIE=1`：摘掉 `Secure`，裸 HTTP 可用。**仅限内网/可信链路。**
+     代价是 `swuk_` 登录密钥与 `swmt_` 机器令牌明文过网，路径上任何人抓到即可完全冒充；
+     P1 只读时危害止于「看到全团队任务」，**P2 起 = 可给所有机器派活**。
+   - 为什么默认开而不是默认关：浏览器**拒绝在非安全上下文存 `Secure` cookie**。默认开时，
+     公网忘配反代会坏得**响亮**（登录返回 200 但 cookie 没存下 → 下一个请求 401，登不进去）；
+     默认关则是**无声泄露凭据**。宁可坏得吵，不要静悄悄地漏。启动日志会打出当前姿态。
 2. **`trustProxy` 当前未开**（`src/server.js`）：开了就等于信任任意客户端的 `X-Forwarded-For`，
    限流的 key 会被伪造。代价是**前置 TLS 反代时，限流会按反代 IP 聚合成全局 10/5min**。
    收口反代方案时要一起定：要么在反代层做限流，要么开 `trustProxy` 并确保它只信任自己那一跳。

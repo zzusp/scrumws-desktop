@@ -68,6 +68,15 @@ async function main() {
 
   // 0.0.0.0：云端服务必须对外可达（与本地看板 8799 只绑 127.0.0.1 的规矩相反，那是两种东西）
   await app.listen({ port: PORT, host: '0.0.0.0' });
+
+  // 安全姿态必须在启动日志里可见：这个开关一旦设错，症状是「凭据明文过网」——
+  // 不报错、不影响功能，运行期没有任何迹象。只有开机这一行能让人发现设错了。
+  if (process.env.CLOUD_INSECURE_COOKIE === '1') {
+    app.log.warn(
+      '[cloud] CLOUD_INSECURE_COOKIE=1：会话 cookie 已摘掉 Secure，允许裸 HTTP。' +
+      ' swuk_ 登录密钥与 swmt_ 机器令牌将明文过网 —— 仅限内网/可信链路，公网部署务必关掉并前置 TLS 反代。'
+    );
+  }
 }
 
 main().catch((err) => {

@@ -148,14 +148,25 @@ function readSessionCookie(req) {
 
 /**
  * 契约 §3.2：HttpOnly; Secure; SameSite=Lax，名 swsession。
- * Secure 恒开 —— 服务强制 HTTPS（§6）。浏览器把 http://localhost 视为安全上下文，
- * 故本地联调（http://127.0.0.1:8790）依然能存下这个 cookie。
+ *
+ * Secure 默认开，但**不强制 HTTPS**：置 CLOUD_INSECURE_COOKIE=1 可摘掉它，让服务在裸 HTTP 上可用。
+ *
+ * 为什么做成开关而不是直接删：浏览器**拒绝在非安全上下文存 Secure cookie**，所以 Secure 恒开时
+ * 一旦部到 http://<公网IP>:8790，登录会**静默坏掉**——POST /api/auth/login 返回 200，
+ * 但 cookie 没存下，下一个请求就 401。而 http://127.0.0.1 是安全上下文（浏览器特例），
+ * 本地联调永远复现不出来。默认开 = 公网忘配反代时坏得响亮（登不进去），而不是无声泄露凭据。
+ *
+ * 摘掉它的代价（内网可接受，公网不可）：swuk_ 登录密钥与 swmt_ 机器令牌明文过网，
+ * 路径上任何人抓到即可完全冒充。P1 只读时危害止于「看到全团队任务」；P2 起 = 可给所有机器派活。
  */
+const INSECURE_COOKIE = process.env.CLOUD_INSECURE_COOKIE === '1';
+const COOKIE_ATTRS = `Path=/; HttpOnly;${INSECURE_COOKIE ? '' : ' Secure;'} SameSite=Lax`;
+
 export function setSessionCookie(reply, token) {
-  reply.header('set-cookie', `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_TTL_SEC}`);
+  reply.header('set-cookie', `${SESSION_COOKIE}=${token}; ${COOKIE_ATTRS}; Max-Age=${SESSION_TTL_SEC}`);
 }
 export function clearSessionCookie(reply) {
-  reply.header('set-cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`);
+  reply.header('set-cookie', `${SESSION_COOKIE}=; ${COOKIE_ATTRS}; Max-Age=0`);
 }
 
 export const publicUser = (u) => ({ id: u.user_id ?? u.id, name: u.name, email: u.email ?? null, avatarUrl: u.avatar_url ?? null });
