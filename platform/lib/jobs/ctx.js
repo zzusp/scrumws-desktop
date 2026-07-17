@@ -5,7 +5,7 @@ import { fmt, parse } from '../timeutil.js';
 import { leaseAlive } from '../lease.js';
 
 // 平台守护 Runner Checker 的 job ctx 库：只提供通用文件读写 + 判活给孤儿收纳器用。
-// （2026-07-12 去派发器 → 交互会话统一为任务后，dws 授权熔断 / quota-block 那套分身链残留已删。）
+// （2026-07-12 去派发器 → 交互会话统一为任务后，dws 授权熔断 / quota-block 那套看板任务链残留已删。）
 
 export function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }

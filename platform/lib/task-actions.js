@@ -118,7 +118,7 @@ export function deleteTask({ taskKey }) {
 
 // 人工确认完成（awaiting-human → done）：人工复查后判定任务其实已完成，落成成功终态。
 // 与 worker 自动 done 区分：outcomeDetail.resolvedBy='user'（卡片「人工完成」标据此显示）。
-// 仅对 awaiting-human 分身任务；CLI 无可写 state.json / 无 done 态、processing/queued/plan/done 语义不符，一律拒绝。
+// 仅对 awaiting-human 看板任务；CLI 无可写 state.json / 无 done 态、processing/queued/plan/done 语义不符，一律拒绝。
 export function completeTask({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
@@ -160,7 +160,7 @@ export function completeTask({ taskKey }) {
 }
 
 // 取消完成（done → awaiting-human）：completeTask 的逆操作，清 outcome/resolvedBy 退回待人工处理。
-// CLI 会话走 watchlist.doneAt（server 按来源分派到 uncompleteCliTask），此处只处理分身任务包。
+// CLI 会话走 watchlist.doneAt（server 按来源分派到 uncompleteCliTask），此处只处理看板任务包。
 export function uncompleteTask({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');

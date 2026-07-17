@@ -351,7 +351,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // processing 并发上限（设置页）：同时运行的分身任务上限。body {max}；夹到 [0, 50]，0=不限。
+    // processing 并发上限（设置页）：同时运行的看板任务上限。body {max}；夹到 [0, 50]，0=不限。
     // 存 runner-config.json 后立即排空一次（上调即放行等待的 queued）。
     if (req.method === 'POST' && pathname === '/api/config/max-runners') {
       let body = '';
@@ -692,7 +692,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // 取消归档（archive 复用 /api/archive）；按来源分派：CLI 清 watchlist.archivedAt / 分身目录移回 runner-state
+    // 取消归档（archive 复用 /api/archive）；按来源分派：CLI 清 watchlist.archivedAt / 看板任务目录移回 runner-state
     if (req.method === 'POST' && pathname === '/api/unarchive') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
@@ -760,7 +760,7 @@ export function start() {
   return new Promise((resolve, reject) => {
     server.on('error', reject);
     server.listen(PORT, HOST, () => {
-      console.log(`claude 活儿总览（分身 + 本机 CLI）→ http://${HOST}:${PORT}`);
+      console.log(`ScrumWS 任务看板（看板任务 + 本机 CLI）→ http://${HOST}:${PORT}`);
       // 调度器在端口拿到后再启动：撞端口的第二实例不会碰 scheduler.lock
       const mode = scheduler.start();
       // 账号用量定时拉取、云端上报都只在主（持锁）实例启：副实例「只看不调度」，

@@ -434,7 +434,7 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
   };
 
   // 动态时间线：CLI 无持久 state 流转日志（state 每次 collect 现场从进程信号推导），
-  // 用现成真实时间戳合成流转序列，与分身同一 {state,at,by} 结构（前端时间线零改动即渲染）。
+  // 用现成真实时间戳合成流转序列，与看板任务同一 {state,at,by} 结构（前端时间线零改动即渲染）。
   // 会话开跑(首条 jsonl 事件 → processing) → 收敛到等输入(末次活动 → awaiting-human) → 人工完成/归档(by:user)。
   // 在跑(processing)时不追 awaiting（仍停在开跑那条）；单事件会话(created==lastActivity)同理不重复追加。
   const history = [];

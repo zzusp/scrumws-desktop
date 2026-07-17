@@ -39,7 +39,7 @@ function tailLine(file, bytes = 8192) {
 }
 // lease alive：单份实现在 lease.js（pid 为主 + HardTTL，与 scripts/lib/runner-common.ps1 同语义）
 
-// 卡片「最近更新时间」：取所有活动时间戳的最大值（runner 分身与 CLI 卡片同字段），供各桶统一按最新更新倒序
+// 卡片「最近更新时间」：取所有活动时间戳的最大值（runner 看板任务与 CLI 卡片同字段），供各桶统一按最新更新倒序
 function taskUpdatedMs(t) {
   const lastHist = Array.isArray(t.history) && t.history.length ? t.history[t.history.length - 1].at : null;
   return Math.max(
@@ -109,7 +109,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
     ? Math.max(0, (parse(endAt)?.getTime() ?? 0) - (parse(startAt)?.getTime() ?? 0))
     : null;
 
-  // chat 侧真人 cc: 提取已随分身链移除；交互任务标题走 task.title（字段保留 [] 供前端 schema 兼容）
+  // chat 侧真人 cc: 提取已随看板任务链移除；交互任务标题走 task.title（字段保留 [] 供前端 schema 兼容）
   const humanCc = [];
 
   // 标题优先级：用户 customTitle（rename 写入）> task.title > taskKey
@@ -221,7 +221,7 @@ function collectAll(now) {
   }
 
   // 统一「最近活动」字段（复用 taskUpdatedMs，与排序同源）：卡片显示 + 各桶按其倒序。
-  // runner 分身与 CLI 会话共用同一时间戳全集，卡片跨来源一致展示「最后一次活动时间」。
+  // runner 看板任务与 CLI 会话共用同一时间戳全集，卡片跨来源一致展示「最后一次活动时间」。
   for (const b of Object.values(buckets)) {
     for (const t of b) {
       const ms = taskUpdatedMs(t);

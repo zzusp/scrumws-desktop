@@ -1,6 +1,6 @@
 # scrumws-desktop
 
-小小鹏分身运行看板的**桌面端**（Electron）。由 `D:\baibu-agent\dashboard\`（零依赖 node:http web 看板 + 进程内调度平台）迁移而来：平台核逻辑与磁盘契约不变，宿主从「schtasks 拉起的 node 进程 + 浏览器」换成「托盘常驻桌面 app」，UI 按 [multica](https://github.com/multica-ai/multica) 风格重构。
+**ScrumWS 任务看板** · 桌面端（Electron）。本机 claude 任务的一站式看板：任务从计划（plan）、排队（queued）、执行（Mode B 交互会话，直起 claude 跨平台）到人机回环（awaiting-human）/ 完成 / 归档的全状态管理；外加本机 CLI 会话总览、外部系统 API 接入（API 密钥）与云端控制面上报。托盘常驻，UI 按 [multica](https://github.com/multica-ai/multica) 风格构建。
 
 ## 结构
 
@@ -15,7 +15,7 @@ docs/        # spec/（盘点+风格指南）、acceptance/（desktop-migration 
 ## 运行
 
 ```powershell
-npm start                 # 桌面 app（默认端口 8799、dataRoot=D:\baibu-agent、调度器关闭）
+npm start                 # 桌面 app（默认端口 8799、dataRoot=~/.scrumws、调度器开启）
 npm run start:web         # 无壳 standalone（开发对拍）
 npm run dist:win          # 本地打包 Windows 安装包（electron-builder）
 npm run dist:mac          # 打包 macOS dmg/zip（仅在 macOS 上可用）
