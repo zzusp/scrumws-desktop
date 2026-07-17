@@ -174,6 +174,7 @@ svg.ic{flex:none;width:18px;height:18px;stroke:currentColor;fill:none;stroke-wid
 /* ---------- 表单（16px 起：<16px 的输入框 iOS 聚焦会自动放大页面）---------- */
 .fld{display:block;margin-bottom:14px}
 .fld-l{display:block;font-size:12px;font-weight:600;color:var(--mut);margin-bottom:6px}
+.fld-hint{display:block;font-size:11px;color:var(--dim);line-height:1.55;margin-top:6px}
 .fi{display:block;width:100%;font-family:var(--sans);font-size:16px;color:var(--ink);
   background:var(--card);border:1px solid var(--input);border-radius:var(--r-md);
   min-height:48px;padding:11px 14px;outline:none;transition:border-color .12s,box-shadow .12s;line-height:1.5}
@@ -268,6 +269,9 @@ a.mitem:active{transform:scale(.985)}
 .dt-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px}
 .dt-meta{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:8px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dt-sched{display:inline-flex;align-items:center;gap:5px;margin-top:9px;font-size:12px;font-weight:600;
+  color:var(--amber);background:var(--amberS);border-radius:999px;padding:4px 11px}
+.dt-sched svg.ic{width:14px;height:14px}
 details.dt-prompt{margin-top:12px;border-top:1px solid var(--hair);padding-top:10px}
 details.dt-prompt summary{font-size:12.5px;font-weight:600;color:var(--mut);cursor:pointer;
   min-height:32px;display:flex;align-items:center;list-style:none}
@@ -326,9 +330,11 @@ details[open].dt-prompt summary::before{transform:rotate(90deg)}
   background:var(--tb-bg);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
   border-top:1px solid var(--hair);padding:10px 14px calc(10px + env(safe-area-inset-bottom))}
 .bbar-in{max-width:640px;margin:0 auto}
-.actrow{display:flex;gap:8px;margin-bottom:8px}
+/* 动作条（中断/完成/确认执行…）：右对齐紧凑 pill，不再全宽填充块（过大不好看）。
+   仍够点（38px 高 + 舒适横向 padding），但视觉从「一整条」收成「一颗按钮」。 */
+.actrow{display:flex;gap:8px;margin-bottom:9px;justify-content:flex-end}
 .actrow:empty{display:none;margin:0}
-.actrow .btn{flex:1}
+.actrow .btn{flex:0 0 auto;min-height:38px;padding:7px 22px;font-size:13.5px;border-radius:999px}
 .msgrow{display:flex;gap:8px;align-items:flex-end}
 .msgrow textarea{flex:1;min-height:var(--tap);max-height:120px;padding:11px 14px;resize:none;
   border-radius:calc(var(--tap)/2);overflow-y:auto}

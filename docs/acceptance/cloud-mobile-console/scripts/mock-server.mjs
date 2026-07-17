@@ -102,6 +102,7 @@ function mkTask(o) {
     prompt: o.prompt ?? `【mock】${o.title}\n\n目标：…\n约束：…\n验收：…`,
     model: o.model ?? 'claude-opus-4-8', effort: o.effort ?? 'xhigh',
     worktree: !!o.branch, baseBranch: o.branch ? 'master' : null,
+    scheduledAt: o.scheduledAt ?? null,
     sessionId: crypto.randomUUID(), rounds: o.rounds ?? 1, numTurns: o.turns ?? 12,
     totalCostUsd: o.cost ?? 0.42,
     usage: { input_tokens: 183422, output_tokens: 20981, cache_read_input_tokens: 1204449, cache_creation_input_tokens: 88213 },
@@ -227,17 +228,20 @@ function handleRpc(res, verb, args) {
       const ts = new Date();
       const p = (n) => String(n).padStart(2, '0');
       const taskKey = `mobile:${ts.getFullYear()}-${p(ts.getMonth() + 1)}-${p(ts.getDate())}T${p(ts.getHours())}-${p(ts.getMinutes())}-${p(ts.getSeconds())}`;
+      // 有定时 = 必落 plan（对齐真实 createTask：scheduledAt 强制 plan、到点由调度器提升执行）
+      const scheduled = String(args?.scheduledAt || '').trim();
+      const asPlan = !!args.plan || !!scheduled;
       const nt = mkTask({
         taskKey, title: args.title || String(args.prompt).slice(0, 40), source: 'mobile',
-        state: args.plan ? 'plan' : 'queued', cwd,
-        model: args.model, effort: args.effort,
+        state: asPlan ? 'plan' : 'queued', cwd,
+        model: args.model, effort: args.effort, scheduledAt: scheduled || null,
         branch: args.worktree ? `worktree-mobile-${p(ts.getHours())}${p(ts.getMinutes())}` : null,
         prompt: args.prompt, blocks: [],
-        history: [{ state: args.plan ? 'plan' : 'queued', at: iso(Date.now()), by: 'mobile' }],
+        history: [{ state: asPlan ? 'plan' : 'queued', at: iso(Date.now()), by: 'mobile' }],
       });
       nt.lastActivityMs = Date.now();
       addTask(nt);
-      if (!args.plan) {
+      if (!asPlan) {
         // 模拟 worker 认领起跑：2s 后转 processing，watch 会开始推块
         setTimeout(() => {
           if (nt.state !== 'queued') return;
