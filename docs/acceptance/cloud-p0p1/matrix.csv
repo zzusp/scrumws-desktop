@@ -41,3 +41,8 @@ C38,负例·红线,刷新后拼 join token → 明确提示 + 手动路径 + 不
 C39,自研组件,cloud/public 零原生组件（<select> / alert / confirm / prompt）,—,PASS,静态剥注释断言 + 运行时探针双证；顺带改造掉既有 2 处 <select>
 C40,自研组件,下拉：键盘 ↑↓/Enter/Esc/Tab + ARIA + 点外关闭 + 浮层盖出容器,—,PASS,role=listbox / aria-expanded / position:fixed 挂 body
 C41,主题,亮暗双主题 token 生效（含下拉浮层暗色不露系统白底）,—,PASS,暗色浮层 oklch(0.21 0.006 285.9)；round-2/02-dropdown-open-dark.png
+C28,量化·复测,§9b.1 在真实数据根规模(51卡/25张CLI卡)复测 collectState 裸成本,PASS,round-3.md §4；P50=112.2ms，是沙箱 4.9ms 的 23 倍
+C29,量化·复测,single-flight 在真实规模下：20 并发只扫 1 次,PASS,round-3.md §4；墙钟 109.6ms，省掉 2.2s 连续扫描
+C30,量化·复测,写代次在真实规模下：TTL 内命中(+0) / invalidate 后重扫(+1),PASS,round-3.md §4
+C31,量化·复测,connector 白嫖：UI 扫完后 connector tick +0 次扫描,PASS,round-3.md §4；取数 0.0ms
+C32,纠错,round-1 的「0.5ms/包、300包=152ms」外推被证伪并就地标注,PASS,实测 2.2ms/卡；round-1.md:271 已加纠正块
