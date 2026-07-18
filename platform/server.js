@@ -10,7 +10,7 @@ import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions, stopTaskInSession, readTaskOutput } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
-import { codexMessagesToModeBSeed, readCodexCliSessionHistory } from './lib/collect-codex-cli.js';
+import { codexMessagesToModeBSeed, readCodexAttachedSession, readCodexCliSessionHistory } from './lib/collect-codex-cli.js';
 import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
 import { startConnector, connectorStatus, enroll, unenroll } from './lib/cloud/connector.js';
@@ -368,6 +368,8 @@ const server = http.createServer(async (req, res) => {
           seed = ccMessagesToModeBSeed(hist.messages);
           options = { provider, cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model };
         } else {
+          const att = readCodexAttachedSession(sessionId);
+          if (att) return sendJson(res, 409, { ok: false, error: `session 正被其他 Codex 客户端占用（pid=${att.pid}），请在原窗口回复；关闭后即可从看板续接` });
           hist = readCodexCliSessionHistory(sessionId, payload?.jsonlPath);
           if (!hist.ok) return sendJson(res, 400, hist);
           seed = codexMessagesToModeBSeed(hist.messages);
