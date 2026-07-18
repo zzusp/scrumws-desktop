@@ -2,18 +2,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
 import { P } from './paths.js';
 import { fmt, parse, ago } from './timeutil.js';
 import { CHECKER, checkerIntervalSec } from './jobs/checker-meta.js';
 import * as scheduler from './scheduler.js';
-import { readConfig } from './runner-config.js';
+import { normalizeModelContextLimits, providerConfig, readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
 import { collectCliSessions, readAttachedSessions, backgroundTaskCountBySid } from './collect-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { listSessions } from './session-manager.js';
 import { modelContextLimits, usageSnapshot } from './claude-usage.js';
 import { getDailyUsage } from './daily-usage.js';
+import { detectProviders, listProviderDefinitions, normalizeProvider } from './providers/registry.js';
 
 // ---------- 通用小工具 ----------
 function pidAlive(pid) {
@@ -132,6 +132,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
     cwd: task?.cwd || null,                   // 任务配置的工作目录（新建/编辑时写入 task.json）；awaiting 卡片非失败态展示
     effort: task?.effort || null,             // 推理档位（新建/编辑写入）；详情侧栏展示
     model: task?.model || null,               // 任务配置的模型（云端对账指纹需感知其变化）
+    provider: normalizeProvider(task?.provider), // 旧任务缺失 provider 一律解释为 Claude
     // prompt 指纹：原文最长 100000 字符，塞进卡片会撑爆 /api/state（前端全量轮询）——只放 40 字节
     // 指纹，云端对账据此感知 prompt 改动，原文由 connector 单独读 task.json 上传。两者都取自已读入的
     // task 对象，零额外 I/O。
@@ -213,6 +214,7 @@ function collectAll(now) {
   // CLI session 卡片（用户显式加入 watchlist 的本机 claude 会话；不写 runner-state/，纯反读 jsonl）
   // 三态映射：processing / awaiting-human / archived（大于 30min 自动落归档区，不占活跃桶）
   for (const cli of collectCliSessions(now)) {
+    cli.provider = 'claude';
     // 收养会话按 taskKey 反查活会话 id（getTaskSessionId 内含 session-manager 兜底）→ 详情据此进 live 模式
     cli.mbSessionId = getTaskSessionId(cli.taskKey);
     if (cli.state === 'archived') { cli.isArchive = true; buckets.archived.push(cli); }
@@ -234,43 +236,32 @@ function collectAll(now) {
   return buckets;
 }
 
-// ---------- Claude Code 运行时探测（版本 / 路径 / 在线，缓存 5min）----------
-// online 语义：本机能解析并执行 `claude --version` = 在线可用；失败（未装/PATH 缺失）= 离线。
-// 探测走后台 execFile 不阻塞 /api/state；模块加载即触发首探，TTL 到点后台重探，读缓存返回。
-// 不硬编码 .cmd：Windows 下配 shell 由 PATHEXT 解析，原生装(claude.exe) / npm 全局装(claude.cmd) 皆可命中
-const CLAUDE_BIN = 'claude';
-const WHICH_CMD = process.platform === 'win32' ? 'where' : 'which';
+// ---------- Provider CLI 运行时探测（版本 / 路径 / 在线，缓存 5min）----------
+// registry 内对每个 provider 独立捕获错误；一个 CLI 未安装不会使另一个 provider 离线或让 /api/state 失败。
 const RT_DETECT_TTL = 5 * 60 * 1000;
-let claudeRt = { detectedAt: 0, online: null, version: null, binPath: null };   // online:null=检测中
-let rtDetecting = false;
+let providerRuntime = listProviderDefinitions().map((p) => ({ ...p, available: null, version: null, path: null, error: null }));
+let providerRuntimeAt = 0;
+let providerRuntimeInflight = null;
 
-function detectClaudeRuntime() {
-  if (rtDetecting) return;
-  if (claudeRt.detectedAt && Date.now() - claudeRt.detectedAt < RT_DETECT_TTL) return;
-  rtDetecting = true;
-  // Windows 须走 shell：CVE-2024-27980 后 Node 拒绝无 shell spawn .cmd（同步抛 EINVAL 崩溃启动）；shell 亦让 PATHEXT 解析 claude.exe/.cmd
-  execFile(CLAUDE_BIN, ['--version'], { timeout: 5000, windowsHide: true, shell: process.platform === 'win32' }, (err, stdout) => {
-    if (err) {
-      claudeRt = { detectedAt: Date.now(), online: false, version: null, binPath: null };
-      rtDetecting = false;
-      return;
-    }
-    // "2.1.207 (Claude Code)" → 取版本号；无法匹配则原样 trim
-    const version = (String(stdout).trim().match(/\d+\.\d+\.\d+[\w.-]*/) || [String(stdout).trim() || null])[0];
-    execFile(WHICH_CMD, ['claude'], { timeout: 5000, windowsHide: true }, (e2, out2) => {
-      const binPath = e2 ? null : (String(out2).split(/\r?\n/).map((l) => l.trim()).find(Boolean) || null);
-      claudeRt = { detectedAt: Date.now(), online: true, version, binPath };
-      rtDetecting = false;
-    });
-  });
+export async function getProviderRuntime({ force = false } = {}) {
+  if (!force && providerRuntimeAt && Date.now() - providerRuntimeAt < RT_DETECT_TTL) return providerRuntime;
+  if (!providerRuntimeInflight) {
+    providerRuntimeInflight = detectProviders()
+      .then((items) => {
+        providerRuntime = items;
+        providerRuntimeAt = Date.now();
+        return providerRuntime;
+      })
+      .finally(() => { providerRuntimeInflight = null; });
+  }
+  return providerRuntimeInflight;
 }
-detectClaudeRuntime();   // 模块加载即触发首探
 
 // ---------- 运行时用量汇总（跨任务聚合 meta）----------
 // totalCostUsd/rounds/numTurns：累计口径（CC result 事件累计值，逐轮覆盖式写盘，跨任务求和即总量）。
 // tokens：取各任务已记录的 meta.usage（末轮快照，CC result.usage 为单轮口径）——真实记录值，非估算。
 // CLI 会话 v1 不计 token（usage=null），单独计数标注，不混入。
-function computeRuntimeUsage(buckets) {
+function computeRuntimeUsage(buckets, provider) {
   const agg = {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
     totalCostUsd: 0, rounds: 0, numTurns: 0, tasksWithUsage: 0, cliCount: 0,
@@ -280,6 +271,7 @@ function computeRuntimeUsage(buckets) {
     ...buckets.done, ...buckets['awaiting-human'], ...buckets.archived, ...buckets.other,
   ];
   for (const t of all) {
+    if (normalizeProvider(t.provider) !== provider) continue;
     // 被旁观的 CLI 会话（t.cli；meta 无真实 usage/cost）单独计数、不进用量聚合；物化后的 CLI 任务无 t.cli、
     // 有真实 usage meta，与其它托管任务一并聚合（按 t.cli 判、不按 source——任务来源不变量）
     if (t.cli) { agg.cliCount++; continue; }
@@ -301,39 +293,65 @@ function computeRuntimeUsage(buckets) {
 }
 
 // ---------- 运行时卡片（本机 Claude Code 执行环境 + 活跃会话计数）----------
-function buildRuntime(buckets) {
+async function buildRuntime(buckets) {
   // 活跃会话：看板持有的 Mode B 会话（未收敛）+ 终端 CLI 会话（CC 注册表活进程），按 sessionId 去重
   const boardLive = listSessions().filter((s) => s.state !== 'closed' && s.state !== 'error');
-  const boardSids = new Set(boardLive.map((s) => s.claudeSessionId).filter(Boolean));
+  const boardSids = new Set(boardLive
+    .filter((s) => normalizeProvider(s.provider) === 'claude')
+    .map((s) => s.sessionId || s.claudeSessionId)
+    .filter(Boolean));
   const attached = readAttachedSessions();
   let attachedCli = 0;
   for (const sid of attached.keys()) if (!boardSids.has(sid)) attachedCli++;
 
-  detectClaudeRuntime();   // TTL 到点则后台重探（读缓存，不阻塞）
+  const discovered = await getProviderRuntime();
   const snap = usageSnapshot();   // 账号级用量（session/本周）+ 定时拉取实况（纯读定时器缓存，不 spawn）
   // scrumws 平台任务的 sessionId 集合（有任务包的托管任务 meta.sessionId，不含被旁观的 cli watchlist 会话）
   // → 日用量柱状图「平台子集」过滤。按 t.cli 判：物化后的 CLI 任务无 t.cli、算平台任务（任务来源不变量）
   const platformSids = new Set();
   for (const b of Object.values(buckets)) for (const t of b) {
-    if (!t.cli && t.meta?.sessionId) platformSids.add(t.meta.sessionId);
+    if (!t.cli && t.provider === 'claude' && t.meta?.sessionId) platformSids.add(t.meta.sessionId);
   }
+  const processingByProvider = new Map();
+  for (const task of buckets.processing) {
+    const provider = normalizeProvider(task.provider);
+    processingByProvider.set(provider, (processingByProvider.get(provider) || 0) + 1);
+  }
+  const providerCards = discovered.map((runtime) => {
+    const provider = runtime.id;
+    const board = boardLive.filter((s) => normalizeProvider(s.provider) === provider).length;
+    const cli = provider === 'claude' ? attachedCli : 0;
+    return {
+      ...runtime,
+      online: runtime.available,
+      binPath: runtime.path,
+      sessions: {
+        total: board + cli,
+        board,
+        cli,
+        processing: processingByProvider.get(provider) || 0,
+      },
+      usage: computeRuntimeUsage(buckets, provider),
+      claudeUsage: provider === 'claude' ? snap.data : null,
+      usagePoll: provider === 'claude' ? snap.poll : null,
+      dailyUsage: provider === 'claude' ? getDailyUsage(platformSids) : null,
+    };
+  });
+  const claude = providerCards.find((p) => p.id === 'claude');
   return {
-    tool: 'Claude Code',
+    tool: claude?.label || 'Claude Code',
     host: os.hostname(),
     platform: process.platform,
-    online: claudeRt.online,
-    version: claudeRt.version,
-    binPath: claudeRt.binPath,
-    sessions: {
-      total: boardLive.length + attachedCli,
-      board: boardLive.length,
-      cli: attachedCli,
-      processing: buckets.processing.length,
-    },
-    usage: computeRuntimeUsage(buckets),
-    claudeUsage: snap.data,     // 账号级用量（经官方 CLI /usage）：{ ok, subscription, session, weekAll } | null
-    usagePoll: snap.poll,       // 定时拉取实况：{ intervalSec, lastRunAt, nextRunAt, lastOk, lastError }
-    dailyUsage: getDailyUsage(platformSids),   // 近 30 天每天用量（token）：[{ date, input, output, cache, total, platform }] | null（首次扫描中）。柱状图取后 7 天(total+platform)，表格按 tab 取后 7/15/30 天
+    providers: providerCards,
+    // 顶层字段保留为 Claude 兼容视图；新页面应按 providers[] 独立渲染。
+    online: claude?.online ?? null,
+    version: claude?.version || null,
+    binPath: claude?.binPath || null,
+    sessions: claude?.sessions || { total: 0, board: 0, cli: 0, processing: 0 },
+    usage: claude?.usage || computeRuntimeUsage(buckets, 'claude'),
+    claudeUsage: claude?.claudeUsage || null,
+    usagePoll: claude?.usagePoll || snap.poll,
+    dailyUsage: claude?.dailyUsage || null,
   };
 }
 
@@ -437,7 +455,7 @@ export async function collectState() {
     now: fmt(now),
     scheduler: { mode: sched.mode, lockPid: sched.lockPid },
     checker,
-    runtime: buildRuntime(buckets),
+    runtime: await buildRuntime(buckets),
     lifecycle: {
       plan: buckets.plan,
       processing: buckets.processing,
@@ -447,9 +465,10 @@ export async function collectState() {
       archived: buckets.archived,
     },
     runnerConfig: {
+      ...providerConfig(cfg),
       maxConcurrentRunners: cfg.maxConcurrentRunners ?? 5,
       usagePollSec: cfg.usagePollSec ?? 600,          // 账号用量定时拉取「基准」间隔（秒，默认 10min；每次实际叠加随机抖动 ×[0.6,1.6)）
-      modelContextLimits: modelContextLimits(),       // 生效的 model→上下文上限映射（内置默认 + 用户配置）：设置页据此回填、详情页环形取分母
+      modelContextLimits: normalizeModelContextLimits(modelContextLimits()), // provider:model；旧裸 key 归 Claude
     },
   };
   // 扫描成功才写缓存 + 广播（抛异常时旧缓存保留——陈旧好过没有）

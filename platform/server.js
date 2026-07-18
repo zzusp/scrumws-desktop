@@ -1,9 +1,9 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getState, invalidateState } from './lib/collect.js';
+import { getProviderRuntime, getState, invalidateState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
-import { readConfig, writeConfig } from './lib/runner-config.js';
+import { normalizeModelContextLimits, providerConfig, readConfig, writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask, rewindTaskMessage } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
@@ -18,6 +18,7 @@ import { acceptAutoRunMode } from './lib/cloud/gate.js';
 import { createApiKey, updateApiKey, listApiKeys, setApiKeyDisabled, deleteApiKey, verifyApiKey } from './lib/api-keys.js';
 import { createExternalTask, externalTaskStatus } from './lib/external-ingest.js';
 import { P } from './lib/paths.js';
+import { getProviderDefinition, normalizeProvider } from './lib/providers/registry.js';
 
 const HOST = '127.0.0.1'; // owner 本机自查，不对外
 const PORT = Number(process.env.SCRUMWS_PORT) || 8799;
@@ -168,8 +169,17 @@ function startSessionStream(req, res, id) {
   };
   // fresh 任务的 Session.gitBranch 为空（createSession 未传、live 流事件也不带）→ 连接时从该 session 的
   // CC jsonl 补「最新分支」，与非 live 的 worker-log 同源，详情侧栏 git 两条路径显示一致（收养/resume 已带则保留）。
-  const info = s.info();
-  if (!info.gitBranch && info.claudeSessionId) info.gitBranch = latestGitBranchBySid(info.claudeSessionId);
+  const rawInfo = s.info();
+  const provider = normalizeProvider(rawInfo.provider);
+  const definition = getProviderDefinition(provider);
+  const { claudeSessionId: legacyClaudeSessionId, ...restInfo } = rawInfo;
+  const info = {
+    ...restInfo,
+    provider,
+    sessionId: rawInfo.sessionId || legacyClaudeSessionId || null,
+    capabilities: { ...(definition?.capabilities || {}) },
+  };
+  if (!info.gitBranch && provider === 'claude' && info.sessionId) info.gitBranch = latestGitBranchBySid(info.sessionId);
   try { res.write(`event: info\ndata: ${JSON.stringify(info)}\n\n`); } catch { /* 早断 */ }
   for (const ev of s.transcript) send(ev);      // 回放已 settled 消息
   try { res.write('event: synced\ndata: {}\n\n'); } catch { /* 早断 */ }
@@ -189,13 +199,36 @@ const server = http.createServer(async (req, res) => {
     // 缓存 + single-flight：3s 内的并发请求（多标签页 / modal 关闭补拉）合并成一次扫描；
     // UI 最快也只有 5s 一轮，故永不被降级，对外行为不变
     if (pathname === '/api/state') return sendJson(res, 200, await getState({ maxAgeMs: 3000 }));
+    if (pathname === '/api/providers') {
+      const runtime = await getProviderRuntime();
+      return sendJson(res, 200, {
+        ok: true,
+        ...providerConfig(),
+        providers: runtime.map((item) => ({
+          ...item,
+          online: item.available,
+          binPath: item.path,
+          runtime: { available: item.available, online: item.available, version: item.version, binPath: item.path, error: item.error },
+        })),
+      });
+    }
     // Claude Code 账号级用量（详情页卡片 + 运行时面板）：session / 本周滚动窗；经官方 CLI `/usage` 查、模块内缓存
-    if (pathname === '/api/claude-usage') return sendJson(res, 200, await getClaudeUsage());
+    if (pathname === '/api/claude-usage') {
+      const provider = normalizeProvider(searchParams.get('provider'));
+      if (provider !== 'claude') return sendJson(res, 400, { ok: false, provider, error: '该 provider 不支持 accountUsage' });
+      return sendJson(res, 200, { ...(await getClaudeUsage()), provider: 'claude' });
+    }
     // 模型上下文窗口上限（详情页上下文用量环形的分母）：读设置页配置的 model→max_input_tokens 映射，不打 API
     if (pathname === '/api/model-context') {
       const model = searchParams.get('model');
       if (!model) return sendJson(res, 400, { ok: false, error: 'model required' });
-      return sendJson(res, 200, await getModelContextLimit(model));
+      const provider = normalizeProvider(searchParams.get('provider'));
+      if (provider !== 'claude') return sendJson(res, 400, { ok: false, provider, model, error: '该 provider 暂无 model context 配置能力' });
+      const configured = Number(normalizeModelContextLimits(readConfig().modelContextLimits)[`${provider}:${model}`]);
+      if (Number.isFinite(configured) && configured > 0) {
+        return sendJson(res, 200, { ok: true, provider, model, maxInputTokens: configured });
+      }
+      return sendJson(res, 200, { ...(await getModelContextLimit(model)), provider });
     }
     if (pathname === '/api/worker-log/stream') {
       const taskKey = searchParams.get('taskKey');
@@ -267,6 +300,11 @@ const server = http.createServer(async (req, res) => {
       const id = searchParams.get('id');
       const taskId = searchParams.get('taskId');
       if (!id || !taskId) return sendJson(res, 400, { ok: false, error: 'id + taskId required' });
+      const session = getSession(id);
+      const provider = normalizeProvider(session?.info()?.provider);
+      if (session && !getProviderDefinition(provider)?.capabilities.backgroundTasks) {
+        return sendJson(res, 400, { ok: false, provider, error: `${getProviderDefinition(provider)?.label || provider} 不支持后台任务` });
+      }
       return sendJson(res, 200, stopTaskInSession(id, taskId));
     }
     // 看后台任务输出（详情「后台任务」栏的「查看」）
@@ -274,9 +312,26 @@ const server = http.createServer(async (req, res) => {
       const id = searchParams.get('id');
       const taskId = searchParams.get('taskId');
       if (!id || !taskId) return sendJson(res, 400, { ok: false, error: 'id + taskId required' });
+      const session = getSession(id);
+      const provider = normalizeProvider(session?.info()?.provider);
+      if (session && !getProviderDefinition(provider)?.capabilities.backgroundTasks) {
+        return sendJson(res, 400, { ok: false, provider, error: `${getProviderDefinition(provider)?.label || provider} 不支持后台任务` });
+      }
       return sendJson(res, 200, readTaskOutput(id, taskId));
     }
-    if (pathname === '/api/session/list') return sendJson(res, 200, { ok: true, sessions: listSessions() });
+    if (pathname === '/api/session/list') {
+      const sessions = listSessions().map((raw) => {
+        const provider = normalizeProvider(raw.provider);
+        const { claudeSessionId, ...rest } = raw;
+        return {
+          ...rest,
+          provider,
+          sessionId: raw.sessionId || claudeSessionId || null,
+          capabilities: { ...(getProviderDefinition(provider)?.capabilities || {}) },
+        };
+      });
+      return sendJson(res, 200, { ok: true, sessions });
+    }
     // S10 收养：把终端起的 CLI 会话续接成看板 Mode B 交互会话（--resume + 预置历史）。body {sessionId, model?}
     if (req.method === 'POST' && pathname === '/api/session/adopt') {
       let body = '';
@@ -284,6 +339,8 @@ const server = http.createServer(async (req, res) => {
       req.on('end', () => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const provider = normalizeProvider(payload?.provider);
+        if (provider !== 'claude') return sendJson(res, 400, { ok: false, error: '只有 Claude Code 支持收养本机 CLI 会话' });
         const sessionId = payload?.sessionId;
         // guard：该 session 仍被活终端进程持有 → 拒绝续接。两个 claude 抢同一 session 会撞车，被收养的 Mode B
         // 会话拿不到 system/init 永久卡 starting，把看板卡片钉死在 processing（对齐 replyCli/rewindCli 的 guard ①）。
@@ -294,7 +351,7 @@ const server = http.createServer(async (req, res) => {
         // 历史消息 → Mode B 事件形状（content block 已带 _ts）
         const seed = ccMessagesToModeBSeed(hist.messages);
         // CLI 会话续接 = bypass 权限（终端里本就是 bypass permissions 态，续到看板不该逐工具再授权）
-        const r = createSession({ cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null, bypass: true });
+        const r = createSession({ provider: 'claude', cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null, bypass: true });
         sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
       });
       return;
@@ -315,8 +372,9 @@ const server = http.createServer(async (req, res) => {
           if (!String(k).trim() || !Number.isFinite(n) || n <= 0) return sendJson(res, 400, { ok: false, error: `无效项：${k} → ${v}（值需为正整数 token 数）` });
           clean[String(k).trim()] = Math.round(n);
         }
-        writeConfig({ modelContextLimits: clean });
-        sendJson(res, 200, { ok: true, modelContextLimits: clean });
+        const normalized = normalizeModelContextLimits(clean);
+        writeConfig({ modelContextLimits: normalized });
+        sendJson(res, 200, { ok: true, modelContextLimits: normalized });
       });
       return;
     }
@@ -436,7 +494,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // 新增任务（看板页面专用，2026-07-18 同源收口）：body = {source?, title, prompt, model?, effort?,
+    // 新增任务（看板页面专用，2026-07-18 同源收口）：body = {source?, provider?, title, prompt, model?, effort?,
     //   description?, plan?, cwd?, scheduledAt?, worktree?, baseBranch?, dynamicWorkflow?}。
     // 仅接受看板页面自己的浏览器请求——同源 fetch POST 必带 Origin 标头且指向本服务；
     // 程序化/外部调用（无/异源 Origin）一律 403，必须走 /api/external/task/create 的密钥+策略管道。
@@ -540,6 +598,7 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         key: {
           label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt,
+          provider: normalizeProvider(k.provider),
           allowedModels: k.allowedModels, allowedEfforts: k.allowedEfforts, allowedCwds: k.allowedCwds,
           allowQueued: k.allowQueued,
         },

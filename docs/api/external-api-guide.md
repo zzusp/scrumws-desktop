@@ -12,7 +12,7 @@
 
 ## 快速开始（4 步）
 
-1. **拿密钥**：让桌面端使用者在「API 密钥」菜单页点「＋ 生成密钥」——填备注、来源（source）、勾选可用模型 / effort、填可访问目录、按需勾「允许直接执行」。生成后把明文（`swak_…`）交给你；日后遗失可在列表行内「复制」再次取回。
+1. **拿密钥**：让桌面端使用者在「API 密钥」菜单页点「＋ 生成密钥」——选择 Claude Code 或 Codex provider，填备注、来源（source）、勾选可用模型 / effort、填可访问目录、按需勾「允许直接执行」。一把密钥只绑定一个 provider。生成后把明文（`swak_…`）交给你；日后遗失可在列表行内「复制」再次取回。
 2. **自省**（可选但推荐）：`GET /api/external/whoami` 确认密钥可用并拿到自己的权限范围，据此决定调用参数。
 3. **发起任务**：`POST /api/external/task/create`（带 `externalKey` 幂等键，重试/重复检测不会重复建任务）。
 4. **查询状态**：`GET /api/external/task/status`（按 `taskKey` 或 `externalKey`）。
@@ -24,7 +24,7 @@ curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8799/api/external/whoam
 # ② 发起（幂等）
 curl -s -X POST http://127.0.0.1:8799/api/external/task/create \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"title":"标题","prompt":"给 claude 的指令","externalKey":"来源侧唯一事件id"}'
+  -d '{"title":"标题","prompt":"给 Agent 的指令","externalKey":"来源侧唯一事件id"}'
 # ③ 查询
 curl -s -H "Authorization: Bearer $KEY" \
   'http://127.0.0.1:8799/api/external/task/status?externalKey=来源侧唯一事件id'
@@ -48,11 +48,12 @@ Authorization: Bearer swak_…
 
 | 配置 | 语义 | 对调用方的影响 |
 |---|---|---|
+| `provider` | 固定执行引擎：`claude` / `codex` | 请求不能跨 provider 覆盖；`whoami` 会返回该值 |
 | `source` | 来源标签 | 该密钥建的任务一律记为此来源（**请求体里传 `source` 无效**）；查询也只能查到本来源的任务 |
 | `allowedModels` | 可用模型白名单（必选） | 请求省略 `model` → 用白名单**首项**；传白名单外的值 → `400 model 不在该密钥允许范围：…` |
 | `allowedEfforts` | 可用 effort 白名单（必选） | 同上（省略取首项 / 越界 400） |
 | `allowedCwds` | 可访问目录白名单（必选，绝对路径） | 任务 `cwd` 须**等于某项或在其之下**（Windows 大小写不敏感）；省略取首项；越界 400 |
-| `allowQueued` | 允许直接执行（默认关） | 关：显式传 `plan:false` → `400 该密钥不允许直接排队执行…`（只能建 plan 任务，看板确认后执行）；开：`plan:false` 直进 queued **立即自动起 claude 会话执行** |
+| `allowQueued` | 允许直接执行（默认关） | 关：显式传 `plan:false` → `400 该密钥不允许直接排队执行…`（只能建 plan 任务，看板确认后执行）；开：`plan:false` 直进 queued **立即自动起对应 provider 会话执行** |
 
 密钥配置可在「API 密钥」页随时**编辑**（即时生效，无需换钥）。**推荐调用方启动时先调 `whoami` 拿权限范围**，而不是硬编码模型/目录——密钥被编辑后调用方无需改代码。
 
@@ -64,12 +65,13 @@ Authorization: Bearer swak_…
 
 ```json
 { "ok": true, "key": {
-    "label": "钉钉群消息派发器", "source": "chat", "prefix": "swak_xH1jnAo", "createdAt": "2026-07-17 21:04:26",
+    "label": "钉钉群消息派发器", "source": "chat", "provider": "claude", "prefix": "swak_xH1jnAo", "createdAt": "2026-07-17 21:04:26",
     "allowedModels": ["claude-opus-4-8"], "allowedEfforts": ["xhigh"],
     "allowedCwds": ["D:\\baibu-agent"], "allowQueued": true } }
 ```
 
 - 各白名单**首项即该密钥的默认值**（请求省略对应字段时采用）。
+- Codex 的空字符串模型表示“使用本机 Codex CLI 默认模型”，例如 `"allowedModels":[""]`。
 - 无副作用、可随意调（也会刷新「API 密钥」页的「最近活跃」）。
 
 ### `POST /api/external/task/create` — 发起任务
@@ -79,11 +81,12 @@ Body（JSON，≤32 KB）：
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `title` | string | **是** | 任务标题（看板卡片标题） |
-| `prompt` | string | **是** | 交给 claude 的指令正文 |
+| `prompt` | string | **是** | 交给所绑定 Agent 的指令正文 |
+| `provider` | string | 否 | 不建议传；若传入，必须与密钥绑定 provider 相同，否则 400 |
 | `externalKey` | string | 建议 | 幂等键（≤200 字符，来源侧唯一事件 id，如消息时间戳 / issue 编号）。同 source 同键重复调用**不重复建任务** |
 | `model` | string | 否 | 须在密钥 `allowedModels` 内；省略取首项 |
 | `effort` | string | 否 | 须在密钥 `allowedEfforts` 内；省略取首项 |
-| `cwd` | string | 否 | claude 工作目录绝对路径，须在 `allowedCwds` 范围内（等于某项或其子目录）；省略取首项 |
+| `cwd` | string | 否 | Agent 工作目录绝对路径，须在 `allowedCwds` 范围内（等于某项或其子目录）；省略取首项 |
 | `plan` | boolean | 否 | 缺省 `true` → 落 **plan 桶**（看板人工确认后执行）；`false` → 直进 queued 自动执行（**需密钥开 `allowQueued`**） |
 | `description` | string | 否 | 纯备注（不进 prompt），超 2000 字截断 |
 | `scheduledAt` | string | 否 | 定时执行时刻（本地时间串）；给了则强制先落 plan，到点自动执行 |
@@ -106,7 +109,7 @@ Body（JSON，≤32 KB）：
 `?taskKey=…` 或 `?externalKey=…`（二选一）：
 
 ```json
-{ "ok": true, "taskKey": "chat:20260717103012-482", "source": "chat", "title": "…",
+{ "ok": true, "taskKey": "chat:20260717103012-482", "source": "chat", "provider": "claude", "title": "…",
   "state": "plan", "outcome": null, "createdAt": "2026-07-17 10:30:12", "resolvedAt": null, "externalKey": "…" }
 ```
 
@@ -123,7 +126,7 @@ Body（JSON，≤32 KB）：
 端点写任务包（`runtime/runner-state/<source>__<slug>/` 下的 `task.json` + `state.json`），然后：
 
 - `plan`（缺省）→ 任务落 **plan 桶**等用户在看板点「确认执行」才起会话。
-- `queued`（`plan:false`，需密钥开「允许直接执行」）→ **立即起绑定该任务的 Mode B 交互会话执行**：state=`processing`，`task.prompt` 作首条消息发给 claude；一轮 `result` 收敛 → `awaiting-human`（会话进程常驻，可从看板详情继续多轮）；服务重启等中断 → Runner Checker 收成 `awaiting-human` 带 `resumeSessionId`，看板回复即 `--resume` 续。
+- `queued`（`plan:false`，需密钥开「允许直接执行」）→ **立即起绑定该任务的交互会话执行**：state=`processing`，`task.prompt` 作首条消息发给所选 Agent；统一 `turn_completed` 收敛 → `awaiting-human`（会话进程常驻，可从看板详情继续多轮）；服务重启等中断 → Runner Checker 收成 `awaiting-human`，看板回复按任务 `provider + sessionId` 恢复 Claude session 或 Codex thread。
 - 补充：`runner-config.json` 的 `planSources` 含某来源时，该来源任务**总是**先落 plan（即使传了 `plan:false`）。
 
 ## 错误对照表
@@ -141,7 +144,7 @@ Body（JSON，≤32 KB）：
 | 403 | `本端点仅限看板页面使用…` | 程序化调用打到了看板内部端点 `/api/task/create` → 改走本文密钥通道 |
 | 连接拒绝 | — | 桌面端未运行 → 稍后重试（见下） |
 
-> 任务建好了但一直不跑？`state=plan` 属预期（待看板确认）；`state=queued` 且返回带 `startError` 是起会话失败（如 claude 不可用），修好后在看板「重新发起」。
+> 任务建好了但一直不跑？`state=plan` 属预期（待看板确认）；`state=queued` 且返回带 `startError` 是起会话失败（如对应 CLI 不可用或未登录），修好后在看板「重新发起」。
 
 ## 可靠性建议
 

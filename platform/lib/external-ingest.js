@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
 import { createTask } from './task-actions.js';
+import { normalizeProvider } from './providers/registry.js';
 
 // 外部任务通道（/api/external/*）的业务件：建任务（幂等去重）+ 查状态。
 // 与 /api/task/create 的差异只有三点：source 强制取 API key 绑定值（不信请求体）、缺省落 plan 桶
@@ -39,11 +40,15 @@ function readTaskBrief(taskKey) {
   try { task = JSON.parse(fs.readFileSync(path.join(dir, 'task.json'), 'utf8')); } catch { }
   try { state = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8')); } catch { }
   return {
-    taskKey, source: task.source || null, title: task.title || null,
+    taskKey, source: task.source || null, provider: normalizeProvider(task.provider), title: task.title || null,
     state: state.state || null, outcome: state.outcome ?? null,
     createdAt: task.createdAt || null, resolvedAt: state.resolvedAt ?? null,
     externalKey: task.externalKey || null,
   };
+}
+
+function ledgerKey(key, externalKey) {
+  return `${normalizeProvider(key.provider)}:${key.source}:${externalKey}`;
 }
 
 // per-key 策略执行：密钥必须带 allowedModels / allowedEfforts / allowedCwds 三个白名单——
@@ -85,6 +90,10 @@ function resolveAgainstPolicy(key, p) {
 // 直接返回原任务（existed:true），任务包已被删则掉台账重建。source/plan/策略字段之外原样透传 createTask 校验。
 export function createExternalTask(key, payload) {
   const p = payload || {};
+  const provider = normalizeProvider(key.provider);
+  if (p.provider != null && normalizeProvider(p.provider) !== provider) {
+    return { ok: false, error: 'provider 由 API key 绑定，不能在请求中跨 provider 覆盖' };
+  }
   const externalKey = String(p.externalKey || '').trim();
   if (externalKey.length > 200) return { ok: false, error: 'externalKey 超长（≤200 字符）' };
   const pol = resolveAgainstPolicy(key, p);
@@ -96,15 +105,17 @@ export function createExternalTask(key, payload) {
 
   if (externalKey) {
     const ledger = readLedger();
-    const hit = ledger[`${key.source}:${externalKey}`];
+    // Claude 兼读旧版未带 provider 的台账 key；新写一律 provider-qualified。
+    const hit = ledger[ledgerKey(key, externalKey)] || (provider === 'claude' ? ledger[`${key.source}:${externalKey}`] : null);
     if (hit?.taskKey) {
       const brief = readTaskBrief(hit.taskKey);
-      if (brief) return { ok: true, existed: true, taskKey: hit.taskKey, state: brief.state };
+      if (brief && brief.provider === provider) return { ok: true, existed: true, taskKey: hit.taskKey, state: brief.state };
     }
   }
 
   const r = createTask({
     source: key.source,
+    provider,
     title: p.title, prompt: p.prompt, model: pol.model, description: p.description,
     plan: p.plan === false ? false : true,
     cwd: pol.cwd, effort: pol.effort, scheduledAt: p.scheduledAt,
@@ -115,7 +126,7 @@ export function createExternalTask(key, payload) {
 
   if (externalKey) {
     const ledger = readLedger();
-    ledger[`${key.source}:${externalKey}`] = { taskKey: r.taskKey, createdAt: new Date().toISOString().slice(0, 19).replace('T', ' ') };
+    ledger[ledgerKey(key, externalKey)] = { taskKey: r.taskKey, createdAt: new Date().toISOString().slice(0, 19).replace('T', ' ') };
     writeLedger(ledger);
   }
   return { ...r, existed: false };
@@ -128,11 +139,13 @@ export function externalTaskStatus(key, { taskKey, externalKey }) {
   const ek = String(externalKey || '').trim();
   if (!tk && !ek) return { ok: false, code: 400, error: 'taskKey 或 externalKey 必传其一' };
   if (!tk) {
-    tk = readLedger()[`${key.source}:${ek}`]?.taskKey || '';
+    const ledger = readLedger();
+    const provider = normalizeProvider(key.provider);
+    tk = (ledger[ledgerKey(key, ek)] || (provider === 'claude' ? ledger[`${key.source}:${ek}`] : null))?.taskKey || '';
     if (!tk) return { ok: false, code: 404, error: 'task not found' };
   }
   if (!/^[A-Za-z0-9:_#/-]+$/.test(tk)) return { ok: false, code: 400, error: 'invalid taskKey' };
   const brief = readTaskBrief(tk);
-  if (!brief || brief.source !== key.source) return { ok: false, code: 404, error: 'task not found' };
+  if (!brief || brief.source !== key.source || brief.provider !== normalizeProvider(key.provider)) return { ok: false, code: 404, error: 'task not found' };
   return { ok: true, ...brief };
 }

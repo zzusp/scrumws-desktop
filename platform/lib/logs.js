@@ -7,6 +7,88 @@ function readJson(f) {
   try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; }
 }
 
+const DEFAULT_PROVIDER = 'claude';
+const SESSION_JOURNAL_FILE = 'session-events.jsonl';
+const JOURNALED_SESSION_EVENT_TYPES = new Set([
+  'session_initialized',
+  'message',
+  'turn_usage',
+  'turn_completed',
+  'error',
+  'closed',
+]);
+
+function taskPackageDir(taskKey) {
+  const safeKey = safeKeyOf(taskKey);
+  if (!safeKey) return null;
+  const active = path.join(P.runnerRoot, safeKey);
+  if (fs.existsSync(active)) return active;
+  const archived = path.join(P.archiveRoot, safeKey);
+  return fs.existsSync(archived) ? archived : null;
+}
+
+function readSessionJournalFromDir(dir) {
+  const events = [];
+  const file = path.join(dir, SESSION_JOURNAL_FILE);
+  if (!fs.existsSync(file)) return { file, events };
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        const event = JSON.parse(text);
+        if (event && JOURNALED_SESSION_EVENT_TYPES.has(event.type)) events.push(event);
+      } catch { /* 单行损坏不影响其余历史 */ }
+    }
+  } catch { /* 不可读时按空 journal 处理，调用方仍可回落 provider 原生日志 */ }
+  return { file, events };
+}
+
+// 任务包 canonical transcript journal：只接受 settled 统一事件。
+// message_delta 是高频实时事件，不能落盘；approval/background 等瞬态控制事件也不属于恢复 transcript。
+export function appendSessionJournalEvent(taskKey, event) {
+  if (!event || !JOURNALED_SESSION_EVENT_TYPES.has(event.type)) return false;
+  const dir = taskPackageDir(taskKey);
+  if (!dir || dir.startsWith(P.archiveRoot + path.sep)) return false;
+  const record = { ...event, at: event.at || new Date().toISOString() };
+  try {
+    fs.appendFileSync(path.join(dir, SESSION_JOURNAL_FILE), `${JSON.stringify(record)}\n`, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readSessionJournal(taskKey) {
+  const dir = taskPackageDir(taskKey);
+  if (!dir) return { ok: false, error: 'task not found', taskKey, events: [] };
+  const task = readJson(path.join(dir, 'task.json')) || {};
+  const { file, events } = readSessionJournalFromDir(dir);
+  return {
+    ok: true,
+    taskKey,
+    provider: task.provider || DEFAULT_PROVIDER,
+    file,
+    events,
+  };
+}
+
+// dead session resume 时只 seed settled message；旧 turn_completed/closed 不能回放进新 live 会话，
+// 否则 SSE 一连上就会被历史终态误判为本轮已结束。
+export function readTaskSessionSeed(taskKey, provider, sessionId) {
+  const resolvedProvider = provider || DEFAULT_PROVIDER;
+  if (resolvedProvider === DEFAULT_PROVIDER) {
+    const history = readCcSessionForAdopt(sessionId);
+    return history.ok
+      ? { ...history, provider: resolvedProvider, seedTranscript: ccMessagesToModeBSeed(history.messages) }
+      : { ...history, provider: resolvedProvider, seedTranscript: [] };
+  }
+  const journal = readSessionJournal(taskKey);
+  if (!journal.ok) return { ...journal, provider: resolvedProvider, seedTranscript: [] };
+  const seedTranscript = journal.events.filter((event) => event.type === 'message');
+  return { ok: true, provider: resolvedProvider, seedTranscript, messages: seedTranscript.map((event) => event.message) };
+}
+
 // lazy import 避免顶层循环依赖（logs.js 被 collect.js 引用，而 collect-cli.js/cli-watchlist.js 独立子树）
 import * as _cliWatchlist from './cli-watchlist.js';
 import * as _collectCli from './collect-cli.js';
@@ -356,6 +438,7 @@ function readCliWorkerLog(taskKey) {
   // CLI 无 rounds 概念：整段 messages 装到 round=1
   const round = {
     round: 1,
+    provider: DEFAULT_PROVIDER,
     sessionId: sid,
     at: null,
     startedAt: parsed.messages[0]?.at || null,
@@ -380,6 +463,7 @@ function readCliWorkerLog(taskKey) {
     ok: true,
     taskKey,
     safeKey: `cli__${sid}`,
+    provider: DEFAULT_PROVIDER,
     isArchive: false,
     // SSE 判收敛（server.js payload.state!=='processing' → done）+ 前端指纹用；随进程信号收敛即刷新详情
     state: active ? 'processing' : 'awaiting-human',
@@ -387,6 +471,166 @@ function readCliWorkerLog(taskKey) {
     hasInflight: active,
     runnerLogTail: null,
     checkerLogTail: null,
+  };
+}
+
+function journalMessageToWorkerMessage(event) {
+  const message = event?.message || {};
+  const content = Array.isArray(message.content)
+    ? message.content
+    : (typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : []);
+  return {
+    role: message.role || null,
+    at: message.at || event.at || null,
+    uuid: message.uuid || null,
+    messageId: message.id || null,
+    model: message.model || null,
+    content,
+    usage: message.usage || null,
+    isMeta: !!message.isMeta,
+  };
+}
+
+function readJournalWorkerLog({ taskKey, safeKey, dir, archiveDir, task, meta, maxSessions }) {
+  const provider = task?.provider || DEFAULT_PROVIDER;
+  const state = readJson(path.join(dir, 'state.json'));
+  const lease = readJson(path.join(dir, 'lease.json'));
+  const { events } = readSessionJournalFromDir(dir);
+  const rounds = [];
+  let current = null;
+  let currentSessionId = meta?.sessionId || null;
+  let currentModel = task?.model || null;
+
+  const ensureRound = (event) => {
+    if (current) return current;
+    current = {
+      round: rounds.length + 1,
+      provider,
+      sessionId: event?.sessionId || currentSessionId,
+      at: event?.at || null,
+      startedAt: event?.at || null,
+      endedAt: null,
+      intent: null,
+      metaUsage: null,
+      metaCostUsd: null,
+      ccSummary: {
+        sessionId: event?.sessionId || currentSessionId,
+        numTurns: null,
+        totalCostUsd: null,
+        tokens: null,
+        contextSize: null,
+        model: currentModel,
+        workMs: null,
+      },
+      messages: [],
+      humanCc: [],
+      systemInit: null,
+      cwd: task?.cwd || null,
+      gitBranch: null,
+      status: null,
+    };
+    return current;
+  };
+  const finishRound = (event, status) => {
+    if (!current) return;
+    current.sessionId = event?.sessionId || current.sessionId || currentSessionId;
+    current.ccSummary.sessionId = current.sessionId;
+    current.endedAt = event?.at || current.endedAt;
+    current.status = status || current.status;
+    if (event?.usage) {
+      current.metaUsage = event.usage;
+      current.ccSummary.tokens = event.usage;
+    }
+    if (event?.contextWindow != null) current.ccSummary.contextSize = event.contextWindow;
+    if (typeof event?.costUsd === 'number') {
+      current.metaCostUsd = event.costUsd;
+      current.ccSummary.totalCostUsd = event.costUsd;
+    }
+    if (Number.isFinite(Number(event?.numTurns))) current.ccSummary.numTurns = Number(event.numTurns);
+    if (current.startedAt && current.endedAt) {
+      const started = new Date(current.startedAt).getTime();
+      const ended = new Date(current.endedAt).getTime();
+      if (Number.isFinite(started) && Number.isFinite(ended) && ended > started) current.ccSummary.workMs = ended - started;
+    }
+    rounds.push(current);
+    current = null;
+  };
+
+  for (const event of events) {
+    switch (event.type) {
+      case 'session_initialized':
+        currentSessionId = event.sessionId || currentSessionId;
+        currentModel = event.model || currentModel;
+        if (current) {
+          current.sessionId = currentSessionId;
+          current.ccSummary.sessionId = currentSessionId;
+          current.ccSummary.model = currentModel;
+        }
+        break;
+      case 'message': {
+        const round = ensureRound(event);
+        const message = journalMessageToWorkerMessage(event);
+        round.messages.push(message);
+        if (!round.startedAt) round.startedAt = message.at || event.at || null;
+        if (!round.at) round.at = round.startedAt;
+        if (message.model) {
+          currentModel = message.model;
+          round.ccSummary.model = message.model;
+        }
+        if (message.usage) round.ccSummary.tokens = message.usage;
+        break;
+      }
+      case 'turn_usage': {
+        const round = ensureRound(event);
+        round.metaUsage = event.usage || round.metaUsage;
+        round.ccSummary.tokens = event.usage || round.ccSummary.tokens;
+        round.ccSummary.contextSize = event.contextWindow ?? round.ccSummary.contextSize;
+        break;
+      }
+      case 'turn_completed': {
+        ensureRound(event);
+        finishRound(event, event.status || 'completed');
+        break;
+      }
+      case 'error': {
+        const round = ensureRound(event);
+        round.error = event.error || 'session error';
+        round.status = 'failed';
+        break;
+      }
+      case 'closed':
+        finishRound(event, current?.status || 'closed');
+        break;
+      default:
+        break;
+    }
+  }
+  if (current) finishRound(null, current.status);
+  const visibleRounds = maxSessions > 0 ? rounds.slice(-maxSessions) : rounds;
+
+  const isInflight = state?.state === 'processing' && leaseAlive(lease) && dir !== archiveDir;
+  if (isInflight && visibleRounds.length) {
+    const last = visibleRounds[visibleRounds.length - 1];
+    if (!last.status || last.status === 'closed') last.inflight = true;
+  }
+
+  const runnerLogFile = path.join(dir, 'runner.log');
+  const checkerLogFile = path.join(dir, 'checker.log');
+  const readLast = (file, count) => {
+    if (!fs.existsSync(file)) return null;
+    return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((line) => line.trim()).slice(-count).join('\n');
+  };
+  return {
+    ok: true,
+    taskKey,
+    safeKey,
+    provider,
+    isArchive: dir === archiveDir,
+    state: state?.state || null,
+    rounds: visibleRounds,
+    hasInflight: isInflight && visibleRounds.some((round) => round.inflight),
+    runnerLogTail: readLast(runnerLogFile, 50),
+    checkerLogTail: readLast(checkerLogFile, 20),
   };
 }
 
@@ -403,10 +647,18 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
   else if (fs.existsSync(archiveDir)) dir = archiveDir;
   if (!dir) return { ok: false, error: 'task not found', taskKey };
 
+  const task = readJson(path.join(dir, 'task.json')) || {};
   const metaFile = path.join(dir, 'meta.json');
   let meta = null;
   try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch { }
-  const sessionHistory = Array.isArray(meta?.sessionHistory) ? meta.sessionHistory : (meta?.sessionId ? [{ sessionId: meta.sessionId, round: 1 }] : []);
+  const provider = task.provider || DEFAULT_PROVIDER;
+  if (provider !== DEFAULT_PROVIDER) {
+    return readJournalWorkerLog({ taskKey, safeKey, dir, archiveDir, task, meta, maxSessions });
+  }
+  const sessionHistory = (Array.isArray(meta?.sessionHistory)
+    ? meta.sessionHistory
+    : (meta?.sessionId ? [{ sessionId: meta.sessionId, round: 1 }] : []))
+    .filter((entry) => (entry?.provider || DEFAULT_PROVIDER) === provider);
 
   // 读 rounds.jsonl 拿每 session 的 startedAt/endedAt（用于过滤"本轮 cc:"）
   // 注意：多次 worker spawn 都从 round=1 开始，rounds.jsonl 里 round 号会重复；用 sessionId 做 key 才唯一
@@ -440,7 +692,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
       if (found) jsonlFile = found.jsonlPath;
     }
     if (!fs.existsSync(jsonlFile)) {
-      rounds.push({ round: s.round || null, sessionId: s.sessionId, at: s.at || null, body: '（CC jsonl 文件不存在，可能已被清或历史久远）' });
+      rounds.push({ round: s.round || null, provider, sessionId: s.sessionId, at: s.at || null, body: '（CC jsonl 文件不存在，可能已被清或历史久远）' });
       continue;
     }
     let text = '';
@@ -448,7 +700,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
       // 读整个 jsonl（一般 <5MB）
       text = fs.readFileSync(jsonlFile, 'utf8');
     } catch (e) {
-      rounds.push({ round: s.round || null, sessionId: s.sessionId, at: s.at || null, error: `读取失败: ${e.message}` });
+      rounds.push({ round: s.round || null, provider, sessionId: s.sessionId, at: s.at || null, error: `读取失败: ${e.message}` });
       continue;
     }
     const parsed = parseCcSession(text);
@@ -461,6 +713,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
     prevEndedAt = roundEnd || prevEndedAt;
     rounds.push({
       round: s.round || null,
+      provider,
       sessionId: s.sessionId,
       at: s.at || null,
       startedAt: roundStart,
@@ -530,6 +783,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
         if (messages.length > 0 || rounds.length === 0) {
           inflight = {
             round: inflightRoundNum,
+            provider,
             sessionId: inflightSid,
             at: null,
             startedAt: lease?.claimedAt || null,
@@ -568,6 +822,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
     ok: true,
     taskKey,
     safeKey,
+    provider,
     isArchive: dir === archiveDir,
     state: state?.state || null,   // SSE 判收敛 / 前端指纹用（state 已在上方从 state.json 读出）
     rounds,

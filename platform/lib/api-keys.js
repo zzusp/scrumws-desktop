@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { P } from './paths.js';
-import { ALLOWED_MODELS, ALLOWED_EFFORTS } from './task-actions.js';
+import { getProviderDefinition, normalizeProvider, validateProviderSelection } from './providers/registry.js';
 
 // 外部任务 API 的密钥件（swak_ = ScrumWS Api Key）。铸造/存储模式对齐 cloud/src/auth.js：
 // 随机 32B base64url、明文只在创建响应里回一次、落盘只存 sha256。每个 key 绑定一个 source——
@@ -47,28 +47,52 @@ function normStrArr(v, max = 20) {
   return out;
 }
 
+// Codex 的空 model/effort 表示“沿用 CLI 默认”，在 API key 策略白名单中是有意义的值。
+function normPolicyArr(v, allowEmpty, max = 20) {
+  if (!Array.isArray(v)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of v) {
+    const s = String(raw ?? '').trim();
+    if ((!s && !allowEmpty) || s.length > 200 || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 // 配置校验（create / update 共用）：label 必填；source 规则与 createTask.source 一致；
-// 策略白名单**三项必选**（全不选 = 没有权限）：allowedModels / allowedEfforts 须为全局白名单子集、
+// 策略白名单**三项必选**（全不选 = 没有权限）：allowedModels / allowedEfforts 在绑定 provider 内校验、
 // allowedCwds 须为绝对路径（请求省略对应字段时取首项为默认）；allowQueued（默认 false）= 是否允许
 // plan:false 直进 queued 自动执行（关闭时该密钥只能建 plan 任务，须看板确认）。
-function validateKeyConfig({ label, source, allowedModels, allowedEfforts, allowedCwds, allowQueued }) {
+function validateKeyConfig({ label, source, provider, allowedModels, allowedEfforts, allowedCwds, allowQueued }) {
   const lab = String(label || '').trim().slice(0, 100);
   const src = String(source || '').trim();
+  const providerId = normalizeProvider(provider);
+  const definition = getProviderDefinition(providerId);
   if (!lab) return { ok: false, error: 'label required' };
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
-  const models = normStrArr(allowedModels);
+  if (!definition) return { ok: false, error: `未知 provider：${providerId}` };
+  const models = normPolicyArr(allowedModels, definition.allowCustomModel);
   if (!models.length) return { ok: false, error: 'allowedModels 必选：至少勾选一个可用模型（第一个为该密钥默认）' };
-  for (const m of models) if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `allowedModels 含非白名单模型：${m}（可用：${Array.from(ALLOWED_MODELS).join(', ')}）` };
-  const efforts = normStrArr(allowedEfforts);
+  for (const m of models) {
+    const selected = validateProviderSelection({ provider: providerId, model: m });
+    if (!selected.ok) return { ok: false, error: `allowedModels 非法：${selected.error}` };
+  }
+  const efforts = normPolicyArr(allowedEfforts, providerId === 'codex');
   if (!efforts.length) return { ok: false, error: 'allowedEfforts 必选：至少勾选一个可用 effort（第一个为该密钥默认）' };
-  for (const e of efforts) if (!ALLOWED_EFFORTS.has(e)) return { ok: false, error: `allowedEfforts 含非法档位：${e}（可用：${Array.from(ALLOWED_EFFORTS).join(', ')}）` };
+  for (const e of efforts) {
+    const selected = validateProviderSelection({ provider: providerId, effort: e });
+    if (!selected.ok) return { ok: false, error: `allowedEfforts 非法：${selected.error}` };
+  }
   const cwds = [];
   for (const c of normStrArr(allowedCwds)) {
     if (!path.isAbsolute(c)) return { ok: false, error: `allowedCwds 须为绝对路径：${c}` };
     cwds.push(path.resolve(c));
   }
   if (!cwds.length) return { ok: false, error: 'allowedCwds 必填：至少一个可访问目录（绝对路径；第一行为该密钥默认）' };
-  return { ok: true, cfg: { label: lab, source: src, allowedModels: models, allowedEfforts: efforts, allowedCwds: cwds, allowQueued: !!allowQueued } };
+  return { ok: true, cfg: { label: lab, source: src, provider: providerId, allowedModels: models, allowedEfforts: efforts, allowedCwds: cwds, allowQueued: !!allowQueued } };
 }
 
 // 创建 key：返回 {ok, key(存盘条目), plaintext}。
@@ -103,7 +127,7 @@ export function updateApiKey(input) {
   const keys = readKeys();
   const k = keys.find((x) => x.id === id);
   if (!k) return { ok: false, error: 'key not found' };
-  const v = validateKeyConfig(input || {});
+  const v = validateKeyConfig({ ...(input || {}), provider: input?.provider ?? k.provider });
   if (!v.ok) return v;
   Object.assign(k, v.cfg);
   writeKeys(keys);
@@ -114,6 +138,7 @@ export function updateApiKey(input) {
 function publicView(k) {
   return {
     id: k.id, label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt,
+    provider: normalizeProvider(k.provider),
     disabled: !!k.disabled, lastUsedAt: k.lastUsedAt || null,
     allowedModels: Array.isArray(k.allowedModels) ? k.allowedModels : [],
     allowedEfforts: Array.isArray(k.allowedEfforts) ? k.allowedEfforts : [],

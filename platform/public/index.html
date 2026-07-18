@@ -662,6 +662,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .prompt-count{margin-left:auto;font-variant-numeric:tabular-nums}
 
 /* ---------- 运行时视图：运行时卡片 + 用量 stat tiles（参考 multica Runtime Panel）---------- */
+#runtimeCard{display:flex;flex-direction:column;gap:18px}
+#runtimeCard .rt-panel+.rt-panel{border-top:1px solid var(--hair);padding-top:18px}
 .rt-panel{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
 .rt-badge{width:46px;height:46px;border-radius:var(--r-lg);background:var(--primary);color:var(--primary-foreground);display:grid;place-items:center;flex:none}
 .rt-badge svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
@@ -736,7 +738,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
     </a>
 
     <div class="sb-actions">
-      <button class="btn" id="newTaskBtn" title="新建任务（自动起交互式 claude 会话执行：逐字 / 工具权限确认 / 打断 / 多轮续接）">
+      <button class="btn" id="newTaskBtn" title="新建任务（选择 Claude Code 或 Codex，支持逐字 / 工具权限确认 / 打断 / 多轮续接）">
         <svg class="ic" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
         <span class="sb-label">新建任务</span>
       </button>
@@ -894,12 +896,12 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </section>
         </div>
 
-        <!-- ============ 页面 3：运行时（本机 Claude Code 执行环境 + 用量汇总 · 参考 multica Runtime Panel）============ -->
+        <!-- ============ 页面 3：运行时（本机 Agent Provider 执行环境 + Claude 用量汇总）============ -->
         <div id="view-runtime" class="view" style="display:none">
           <section class="card" style="margin-bottom:var(--gap)">
             <div class="sec-head">
               <h2>运行时</h2>
-              <span class="sec-sub">本机 Claude Code 执行环境 · 在线状态与活跃会话</span>
+              <span class="sec-sub">本机 Claude Code / Codex 执行环境 · 独立在线状态与活跃会话</span>
             </div>
             <div id="runtimeCard"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
@@ -944,7 +946,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <section class="card" style="max-width:960px">
             <div class="sec-head" style="position:relative;padding-right:110px">
               <h2>API 密钥</h2>
-              <span class="sec-sub">外部系统经 <code>POST /api/external/task/create</code> 发起、<code>GET /api/external/task/status</code> 查询任务的鉴权凭据 · 每个密钥绑定一个来源（source）与策略白名单 · 默认落 plan 桶（「直执」钥才可 plan:false 直接执行）· 列表仅显示前缀，「复制」取回原文 · 禁用/删除立即生效 · 契约见 docs/api/external-api-guide.md</span>
+              <span class="sec-sub">外部系统经 <code>POST /api/external/task/create</code> 发起、<code>GET /api/external/task/status</code> 查询任务的鉴权凭据 · 每个密钥固定一个 Provider、来源（source）与策略白名单 · 默认落 plan 桶（「直执」钥才可 plan:false 直接执行）· 列表仅显示前缀，「复制」取回原文 · 禁用/删除立即生效 · 契约见 docs/api/external-api-guide.md</span>
               <button class="btn" id="akNewBtn" style="position:absolute;right:0;top:0">＋ 生成密钥</button>
             </div>
             <div id="akPlainBox" style="display:none"></div>
@@ -1017,7 +1019,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <div class="set-row set-static" title="processing 并发上限">
                 <span class="set-main">
                   <span class="set-name">并发上限</span>
-                  <span class="set-desc">控制同时起多少个 claude 会话执行任务；不影响进行中的回复续轮</span>
+                  <span class="set-desc">控制同时起多少个 Agent 会话执行任务；不影响进行中的回复续轮</span>
                 </span>
                 <span class="int-edit">最多 <input type="number" id="maxRunnersInput" class="int-input" min="0" max="50" step="1"> 个</span>
               </div>
@@ -1065,6 +1067,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <div id="modalReplyBox" class="reply-box" style="display:none">
             <div class="reply-header">
               <span id="modalReplyState" class="tag tag-mut">—</span>
+              <span id="modalReplyProvider" class="tag tag-mut">—</span>
               <span id="modalReplyHint">—</span>
             </div>
             <!-- body A：可对话时的输入卡片（textarea + 底部 toolbar 一体化）-->
@@ -1080,8 +1083,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
               <div class="attach-chips" id="modalReplyAttach" style="display:none"></div>
               <!-- 工具条（框外、透明；参考 send.png：左「+」加文件，右 模型/effort 选择器 + 上下文环 + 打断）-->
               <div class="reply-toolbar">
-                <!-- 添加本地文件（参考 send.png 的「+」）：随消息发给 claude，后端拼进文本尾部让 claude 用 Read 读 -->
-                <button type="button" class="attach-btn" id="modalReplyAttachBtn" title="添加本地文件（随消息发给 claude，用 Read 工具读取）" aria-label="添加本地文件">＋</button>
+                <!-- 添加本地文件（参考 send.png 的「+」）：随消息发给当前 provider，后端拼进文本尾部供 agent 读取 -->
+                <button type="button" class="attach-btn" id="modalReplyAttachBtn" title="添加本地文件（随消息发给当前 Agent）" aria-label="添加本地文件">＋</button>
                 <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
                 <select id="modalReplyModel" style="display:none">
                   <option value="claude-opus-4-8" selected>Opus 4.8</option>
@@ -1098,7 +1101,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
                   <option value="max">max</option>
                 </select>
                 <div class="mes-wrap" id="modalReplyMesWrap">
-                  <button type="button" class="mes-btn" id="modalReplyMesBtn" aria-haspopup="true" aria-expanded="false" title="切换 model / effort（默认=任务当前实际值；改动仅 --resume 重挂新会话时生效）">
+                  <button type="button" class="mes-btn" id="modalReplyMesBtn" aria-haspopup="true" aria-expanded="false" title="切换 model / effort（默认=任务当前实际值；改动在下一轮会话生效）">
                     <span class="mes-btn-model">Opus 4.8</span>
                     <span class="mes-btn-effort">xHigh</span>
                     <span class="mes-btn-caret" aria-hidden="true">▾</span>
@@ -1148,6 +1151,13 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <input id="akSourceInput" class="field-input mono" autocomplete="off" placeholder="如：chat / issue">
           </label>
         </div>
+        <label class="field" style="max-width:280px">
+          <span class="f-label">Provider（这把钥匙固定使用的本机 Agent）</span>
+          <select id="akProviderInput" class="field-input">
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+          </select>
+        </label>
         <div style="display:flex;gap:24px;flex-wrap:wrap">
           <div class="field" style="min-width:200px">
             <span class="f-label">可用模型（必选；第一个勾选项为默认）</span>
@@ -1200,22 +1210,29 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <input type="text" id="newTaskTitle" class="field-input" maxlength="200" placeholder="比如：帮我总结 issue #56 的处理进度">
         </label>
         <label class="field">
-          <span class="f-label">Prompt（发给 claude 的内容）</span>
+          <span class="f-label">Prompt（发给所选 Agent 的内容）</span>
           <textarea id="newTaskPrompt" class="field-input" rows="10" placeholder="任务说明、上下文、期望产出..."></textarea>
         </label>
-        <!-- 附加本地文件（可选）：随任务发给 claude，后端拼进 prompt 尾部让 claude 用 Read 读 -->
+        <!-- 附加本地文件（可选）：随任务发给所选 Agent，后端拼进 prompt 尾部供其读取 -->
         <div class="field" style="gap:8px">
           <div class="attach-head">
-            <span class="f-label">附加本地文件（可选 · 随任务发给 claude，用 Read 工具读取）</span>
+            <span class="f-label">附加本地文件（可选 · 随任务发给所选 Agent）</span>
             <button type="button" class="attach-btn wide" id="newTaskAttachBtn" title="选择本地文件">＋ 添加文件</button>
           </div>
           <div class="attach-chips" id="newTaskAttach" style="display:none"></div>
         </div>
         <label class="field">
-          <span class="f-label">描述（可选 · 自己看的备注，不会发给 claude）</span>
+          <span class="f-label">描述（可选 · 自己看的备注，不会发给 Agent）</span>
           <textarea id="newTaskDesc" class="field-input" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…"></textarea>
         </label>
         <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <label class="field" style="flex:none;min-width:150px">
+            <span class="f-label">Provider</span>
+            <select id="newTaskProvider" class="field-input">
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
+          </label>
           <div class="field" style="flex:none">
             <span class="f-label">Model · Effort（模型与推理档位）</span>
             <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
@@ -1243,7 +1260,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             </div>
           </div>
           <!-- 动态工作流：紧邻 Model·Effort 右侧同排（Model·Effort 用 flex:none 不撑满，避免把本项顶到最右）；label 单独一行、控件用同高小盒对齐 mes 按钮 -->
-          <label class="field" style="flex:none" title="开启后允许 claude 在执行时按需展开多智能体工作流（更强但更耗 token）；默认关闭">
+          <label class="field" id="newTaskWorkflowField" style="flex:none" title="Claude Code 专属：允许执行时按需展开多智能体工作流；默认关闭">
             <span class="f-label">动态工作流</span>
             <span class="dyn-toggle">
               <input type="checkbox" id="newTaskDynamicWorkflow" style="accent-color:var(--primary)">
@@ -1252,7 +1269,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </label>
         </div>
         <label class="field">
-          <span class="f-label">工作目录（可选 · claude 在此目录下运行；留空用默认根目录）</span>
+          <span class="f-label">工作目录（可选 · Agent 在此目录下运行；留空用默认根目录）</span>
           <div class="cwd-row">
             <div class="cwd-combo" id="newTaskCwdCombo">
               <input type="text" id="newTaskCwd" class="field-input mono" autocomplete="off" placeholder="填绝对路径，或点右侧 ▾ 选已用过的目录">
@@ -1263,7 +1280,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </div>
         </label>
         <!-- 退回来的、有会话记录的 plan 任务：锁定 工作目录 / worktree（改了会让确认执行的 --resume 找不到原会话），app.js 按 /api/task/detail 的 resumeLocked 切显隐 + 禁用输入 -->
-        <div id="newTaskDirLockHint" style="display:none;margin:-4px 2px 8px;font-size:11px;color:var(--cyan);line-height:1.5">🔒 该任务已执行过：为「续上之前的对话」（<code style="font-family:var(--mono);font-size:10.5px">--resume</code> 绑定原运行目录），工作目录 / worktree 不可修改</div>
+        <div id="newTaskDirLockHint" style="display:none;margin:-4px 2px 8px;font-size:11px;color:var(--cyan);line-height:1.5">🔒 该任务已执行过：为续上原 Agent 会话，Provider、工作目录与 worktree 不可修改</div>
         <!-- req5：工作目录是 git 项目时才显示（app.js 探测 /api/git/detect 后切显隐）——worktree 开关 + 签出基分支（两者独立，不勾选 worktree 也可单独设签出基分支） -->
         <div class="field" id="newTaskWorktreeRow" style="display:none;gap:8px">
           <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);cursor:pointer;user-select:none">

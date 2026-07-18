@@ -9,6 +9,7 @@ import { readCcSessionForAdopt, completeCliSession, uncompleteCliTask } from './
 import { readAttachedSessions, locateJsonlBySid } from './collect-cli.js';
 import { readWatchlist, removeWatchlist } from './cli-watchlist.js';
 import { detectWorktreeBase } from './git.js';
+import { getProviderDefinition, normalizeProvider, resolveProviderSelection, validateProviderSelection } from './providers/registry.js';
 
 // 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
 function genSlug() {
@@ -18,17 +19,6 @@ function genSlug() {
   const rand = Math.floor(Math.random() * 900 + 100);
   return `${ts}-${rand}`;
 }
-
-// 允许的 model 白名单（Q4：用户可选）；export 供 api-keys.js 校验密钥的 allowedModels 子集
-export const ALLOWED_MODELS = new Set([
-  'claude-opus-4-7',
-  'claude-opus-4-8',
-  'claude-sonnet-5',
-  'claude-haiku-4-5-20251001',
-  'claude-fable-5',
-]);
-// claude --effort 合法档位（与 session-manager 同集）；export 理由同上
-export const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 // 规范化「附加本地文件」路径数组：字符串、trim、去空、去重、限量；不校验文件系统存在性
 //（选时由 Electron dialog 保证存在，执行时若已删由 claude Read 自行报错——比 plan 保存时强校验更鲁棒）
@@ -244,7 +234,7 @@ export function materializeCliTask(taskKey, { state = 'plan' } = {}) {
   const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
   try {
     fs.mkdirSync(taskDir, { recursive: true });
-    const taskJson = { taskKey, source: 'cli', title, prompt, mode: 'single', metaMode: 'overwrite', createdAt: nowStr };
+    const taskJson = { taskKey, source: 'cli', provider: 'claude', title, prompt, mode: 'single', metaMode: 'overwrite', createdAt: nowStr };
     if (hist.model) taskJson.model = hist.model;
     const meta = { sessionId: fullSid };
     // 工作目录不变量：task.cwd 只存 base 仓库根。会话跑在 worktree 里时，worktree 路径进 meta.worktreeDir，
@@ -327,15 +317,14 @@ export function replyToTask({ taskKey, message, model, effort, attachments }) {
   let state = null;
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
   if (state?.state === 'processing') return { ok: false, error: '任务正在处理中（state=processing），等它跑完再回复' };
-  if (model && !ALLOWED_MODELS.has(model)) {
-    return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
-  }
+  let task = {};
+  try { task = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')); } catch { }
+  const provider = normalizeProvider(task.provider);
   const eff = String(effort || '').trim();
-  if (eff && !ALLOWED_EFFORTS.has(eff)) {
-    return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
-  }
+  const selection = validateProviderSelection({ provider, model, effort: eff });
+  if (!selection.ok) return selection;
   // 走 Mode B：live 会话在则复用续轮 / 会话已死则 --resume 重挂（task-runner 内写 state=processing + lease）
-  return replyTask(taskKey, msg, model, eff || undefined, normalizeAttachments(attachments));
+  return replyTask(taskKey, msg, selection.model || undefined, selection.effort || undefined, normalizeAttachments(attachments));
 }
 
 // 改写重跑（原地 rewind）：改写某条历史 user 消息、从那里替换重跑（该消息及之后的时间线丢弃，对齐 CC 交互 double-Esc）。
@@ -362,6 +351,12 @@ export function rewindTaskMessage({ taskKey, uuid, message } = {}) {
   let state = null, meta = null;
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
   try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
+  let task = {};
+  try { task = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')); } catch { }
+  const provider = normalizeProvider(task.provider);
+  if (!getProviderDefinition(provider)?.capabilities.rewind) {
+    return { ok: false, error: `${getProviderDefinition(provider)?.label || provider} 不支持 rewind` };
+  }
   if (state?.state === 'processing') return { ok: false, error: '任务正在处理中（state=processing），等它跑完 / 停下再改写重跑' };
   const sid = meta?.sessionId || null;
   if (!sid) return { ok: false, error: '该任务无 sessionId，无法改写重跑（会话从未成功起过，请重新发起）' };
@@ -432,23 +427,32 @@ export function taskCwds() {
 // state 由任务信息决定：plan(需用户确认) / queued(可跑)。**queued 即自动起绑定该任务的 Mode B 会话执行**
 // （→processing，见 task-runner.startTask）；plan 待用户 approve 再起。跨平台，一个入口一套处理逻辑。
 // source（缺省 manual）：任意 [A-Za-z0-9_-] 标签，承载在 taskKey 前缀（<source>:<slug>），仅作展示/回复路由。
-// cwd（可选）：claude 工作目录，校验存在且是目录后写进 task.json.cwd。effort（可选）：reasoning 档位。
+// cwd（可选）：provider 工作目录，校验存在且是目录后写进 task.json.cwd。effort（可选）：reasoning 档位。
 // scheduledAt（可选）：定时执行时刻（本地串），到点由调度器把 plan 提升为执行；给了则强制 plan。
 // worktree/baseBranch（可选）：git 项目下隔离 worktree 运行 + 签出基分支。dynamicWorkflow（可选）：动态工作流开关。
 // externalKey（可选）：外部通道（/api/external/task/create）的幂等键，原样写入 task.json 供追溯；
 // 幂等判定在 external-ingest.js 台账，本函数不做去重。
-export function createTask({ source, title, prompt, model, description, plan, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments, externalKey }) {
+export function createTask({ source, provider, title, prompt, model, description, plan, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments, externalKey }) {
   const src = String(source || 'manual').trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
   const t = String(title || '').trim();
   const p = String(prompt || '').trim();
-  const m = String(model || readConfig().defaultModel || 'claude-opus-4-7').trim();
   const desc = String(description || '').trim().slice(0, 2000);
-  const eff = String(effort || '').trim();
   if (!t) return { ok: false, error: 'title required' };
   if (!p) return { ok: false, error: 'prompt required' };
-  if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
-  if (eff && !ALLOWED_EFFORTS.has(eff)) return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
+  // create 的 provider 缺失始终按 Claude：旧本地调用和未升级云下发不能被本机 defaultProvider 改义。
+  const providerId = normalizeProvider(provider);
+  const selection = resolveProviderSelection({
+    provider: providerId,
+    // Codex 的显式空 model = CLI/账户默认；Claude 空 model 仍按 provider 默认解释。
+    ...(model != null && (String(model).trim() || getProviderDefinition(providerId)?.allowCustomModel) ? { model } : {}),
+    // 显式空 effort = 不传 CLI flag（上游默认）；仅字段缺失时才取 providerDefaults。
+    ...(effort != null ? { effort } : {}),
+    dynamicWorkflow,
+  }, readConfig());
+  if (!selection.ok) return selection;
+  const m = selection.model;
+  const eff = selection.effort;
   // cwd 可选：给了就必须存在且是目录（避免建出跑不起来的任务）
   let cwdFinal = null;
   const cwdRaw = String(cwd || '').trim();
@@ -485,7 +489,7 @@ export function createTask({ source, title, prompt, model, description, plan, cw
     fs.mkdirSync(taskDir, { recursive: true });
     // task.json（description = 纯用户备注，不进 prompt）
     const taskJson = {
-      taskKey, source: src, title: t, prompt: p, model: m,
+      taskKey, source: src, provider: selection.provider, title: t, prompt: p, model: m,
       mode: 'single', metaMode: 'overwrite', createdAt: nowStr,
     };
     if (cwdFinal) taskJson.cwd = cwdFinal;
@@ -511,7 +515,7 @@ export function createTask({ source, title, prompt, model, description, plan, cw
   }
 
   // queued → 立即起绑定该任务的 Mode B 会话执行（→processing）；plan 待 approve。
-  // 起会话失败（如 claude 不可用）不回滚任务，留在 queued 供用户「重新发起」重试。
+  // 起会话失败（如对应 provider CLI 不可用）不回滚任务，留在 queued 供用户「重新发起」重试。
   if (initState === 'queued') {
     const started = tryStartOrQueue(taskKey);   // 受并发上限约束：满则留 queued 等排空
     if (started.ok && started.spawned) return { ok: true, taskKey, state: 'processing', spawned: true, sessionUiId: started.sessionUiId };
@@ -537,6 +541,7 @@ export function readTaskEdit(taskKey) {
     ok: true,
     taskKey,
     source: task.source || String(taskKey).split(':')[0] || 'manual',
+    provider: normalizeProvider(task.provider),
     state: state.state,
     title: task.customTitle || task.title || '',
     prompt: task.prompt || '',
@@ -557,7 +562,7 @@ export function readTaskEdit(taskKey) {
 // 编辑 plan 态任务：改写 task.json 的 title/prompt/model/cwd/description + effort/scheduledAt/worktree/baseBranch/dynamicWorkflow。
 // 仅 plan 且非归档可编辑（已 queued/processing/收敛的任务不给改）。复用 createTask 同套校验（model/effort 白名单、cwd 必须存在目录）。
 // 编辑后 title 落 task.title 且清 customTitle（编辑即权威标题）。
-export function editTask({ taskKey, title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }) {
+export function editTask({ taskKey, provider, title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
@@ -566,24 +571,43 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
   if (state?.state !== 'plan') return { ok: false, error: `只有 plan 态任务可编辑（当前 ${state?.state || '未知'}）` };
 
+  const taskFile = path.join(taskDir, 'task.json');
+  let task = {};
+  try { task = JSON.parse(fs.readFileSync(taskFile, 'utf8')); } catch { }
+  let meta = null;
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
+  const locked = !!meta?.sessionId;
+  const currentProvider = normalizeProvider(task.provider);
+  const requestedProvider = provider == null ? currentProvider : normalizeProvider(provider);
+  if (locked && requestedProvider !== currentProvider) {
+    return { ok: false, error: '该任务已有 sessionId，provider 已锁定，不能切换执行引擎' };
+  }
+
   const t = String(title || '').trim();
   const p = String(prompt || '').trim();
-  const m = String(model || '').trim();
   const desc = String(description || '').trim().slice(0, 2000);
-  const eff = String(effort || '').trim();
   const schedRaw = String(scheduledAt || '').trim();
   const baseBr = String(baseBranch || '').trim();
   const dynFlow = dynamicWorkflow == null ? null : !!dynamicWorkflow;
   if (!t) return { ok: false, error: 'title required' };
   if (!p) return { ok: false, error: 'prompt required' };
-  if (!ALLOWED_MODELS.has(m)) return { ok: false, error: `model 不在白名单：${Array.from(ALLOWED_MODELS).join(', ')}` };
-  if (eff && !ALLOWED_EFFORTS.has(eff)) return { ok: false, error: `effort 不在白名单：${Array.from(ALLOWED_EFFORTS).join(', ')}` };
+  const switchingProvider = requestedProvider !== currentProvider;
+  const targetDefinition = getProviderDefinition(requestedProvider);
+  const selectedModel = model == null
+    ? (switchingProvider ? undefined : task.model)
+    : ((String(model).trim() || targetDefinition?.allowCustomModel) ? model : undefined);
+  const selection = resolveProviderSelection({
+    provider: requestedProvider,
+    model: selectedModel,
+    effort: effort == null ? (switchingProvider ? undefined : task.effort) : effort,
+    dynamicWorkflow: dynFlow,
+  }, readConfig());
+  if (!selection.ok) return selection;
+  const m = selection.model;
+  const eff = selection.effort;
   if (schedRaw && !parse(schedRaw)) return { ok: false, error: `定时时间无法解析：${schedRaw}` };
   // 有会话记录（从 待人工/完成 退回来的）→ 锁定 cwd/worktree/baseBranch：这些决定 --resume 去哪个项目目录找原
   // 会话 jsonl，改了续接就失效。锁定时沿用 task.json 原值、不校验也不改（前端也已禁用这些字段兜底）。
-  let meta = null;
-  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
-  const locked = !!meta?.sessionId;
   // cwd 可选：给了就必须存在且是目录（对齐 createTask，避免改出跑不起来的任务）；锁定时跳过校验（沿用原值）
   let cwdFinal = null;
   if (!locked) {
@@ -596,12 +620,10 @@ export function editTask({ taskKey, title, prompt, model, description, cwd, effo
     }
   }
 
-  const taskFile = path.join(taskDir, 'task.json');
-  let task = {};
-  try { task = JSON.parse(fs.readFileSync(taskFile, 'utf8')); } catch { }
   task.title = t;
   delete task.customTitle;   // 编辑弹窗的标题即权威值，避免 rename 写的 customTitle 遮盖
   task.prompt = p;
+  task.provider = selection.provider;
   task.model = m;
   if (desc) task.description = desc; else delete task.description;
   if (eff) task.effort = eff; else delete task.effort;
