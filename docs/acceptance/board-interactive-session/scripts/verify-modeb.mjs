@@ -26,7 +26,8 @@ const MODEL = (() => {
   const i = argv.indexOf('--model');
   return i >= 0 && argv[i + 1] ? argv[i + 1] : 'claude-haiku-4-5-20251001';
 })();
-const CLAUDE = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+// 让 Windows 按 PATHEXT 同时解析 claude.exe/.cmd；不要硬编码某一种包装格式。
+const CLAUDE = 'claude';
 
 const results = []; // {name, ok, detail}
 const rec = (name, ok, detail = '') => { results.push({ name, ok, detail }); console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}${detail ? ' — ' + detail : ''}`); };
@@ -34,7 +35,7 @@ const rec = (name, ok, detail = '') => { results.push({ name, ok, detail }); con
 function run(file, args, { timeout = 30000, input = null } = {}) {
   return new Promise((resolve) => {
     let out = '', err = '';
-    const p = execFile(file, args, { timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (e, so, se) => {
+    const p = execFile(file, args, { timeout, windowsHide: true, shell: process.platform === 'win32', maxBuffer: 8 * 1024 * 1024 }, (e, so, se) => {
       resolve({ code: e ? (typeof e.code === 'number' ? e.code : -1) : 0, out: so || out, err: se || err });
     });
     if (input != null) { p.stdin.write(input); p.stdin.end(); }
@@ -58,7 +59,7 @@ async function checkFlags() {
 
 async function checkDws() {
   console.log('\n== C. dws 鉴权（旁证，与 claude 模型鉴权相互独立）==');
-  const r = await run(process.platform === 'win32' ? 'dws.cmd' : 'dws', ['auth', 'status', '--format', 'json'], { timeout: 15000 }).catch(() => null);
+  const r = await run('dws', ['auth', 'status', '--format', 'json'], { timeout: 15000 }).catch(() => null);
   if (!r || (r.code !== 0 && !(r.out || '').trim())) { console.log('  dws 不在 PATH 或不可用（本机无分身工具，跳过；不影响 Mode B 跑 claude）'); return; }
   let s = null; try { s = JSON.parse((r.out || '').trim()); } catch {}
   if (s) console.log(`  dws auth: authenticated=${s.authenticated} token_valid=${s.token_valid} refresh_valid=${s.refresh_token_valid}`);
@@ -75,7 +76,7 @@ function smokePermission() {
     const msg = JSON.stringify({ type: 'user', message: { role: 'user', content: `Use the Write tool to create the file ${target} with the exact content: hi` } });
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--permission-prompt-tool', 'stdio', '--model', MODEL];
-    const child = spawn(CLAUDE, args, { windowsHide: true });
+    const child = spawn(CLAUDE, args, { windowsHide: true, shell: process.platform === 'win32' });
     let buf = '', sawCanUseTool = false, sawToolUse = null, flagRejected = false, doneCalled = false;
     const finish = (verdict, detail) => {
       if (doneCalled) return; doneCalled = true;

@@ -22,9 +22,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const r1 = createSession({ cwd, model: MODEL, prompt: '只回复"第一轮完成"这五个字，别做任何工具调用', bypass: true });
 if (!r1.ok) { console.error('createSession1 失败:', r1.error); process.exit(1); }
 console.log('会话1 id:', r1.id);
-await waitFor(r1.id, (ev) => ev.type === 'result', 120000);
-const sid = getSession(r1.id).claudeSessionId;
-const round1msgs = getSession(r1.id).transcript.filter((e) => e.type === 'assistant' || e.type === 'user');
+await waitFor(r1.id, (ev) => ev.type === 'turn_completed', 120000);
+const sid = getSession(r1.id).sessionId;
+const round1msgs = getSession(r1.id).transcript.filter((e) => e.type === 'message');
 console.log('claudeSessionId:', sid, '| round1 消息数:', round1msgs.length);
 
 // 2) 关会话（模拟用户取消 cancelTaskSession → 进程死）
@@ -37,26 +37,25 @@ const hist = readCcSessionForAdopt(sid);
 console.log('readCcSessionForAdopt.ok:', hist.ok, '| 历史消息数:', hist.messages?.length);
 if (!hist.ok) { console.error('FAIL: 历史读回失败:', hist.error); process.exit(1); }
 
-// 4) seed = 历史 + 这条 reply 回显（与 task-runner.replyTask resume 分支同款）
+// 4) seed 只放历史；reply 由 createSession→sendUserMessage 统一记录，避免重复。
 const seed = ccMessagesToModeBSeed(hist.messages);
-seed.push({ type: 'user', message: { content: '继续' } });
-console.log('seed 长度(历史+回显):', seed.length);
+console.log('seed 历史长度:', seed.length);
 
 // 5) resume 会话，验证 transcript 立即含历史（不等 claude 响应，这就是 SSE 一连上回放给详情的内容）
 const r2 = createSession({ cwd, model: MODEL, resume: sid, prompt: '继续', seedTranscript: seed, bypass: true });
 if (!r2.ok) { console.error('createSession2(resume) 失败:', r2.error); process.exit(1); }
 const tr = getSession(r2.id).transcript;
-const last = tr[seed.length - 1];
-const echoOk = last?.type === 'user' && JSON.stringify(last.message?.content || '').includes('继续');
-const historyOk = tr.length >= seed.length && tr.slice(0, seed.length - 1).some((e) => e.type === 'assistant');
-console.log('resume 会话 transcript 长度:', tr.length, '| >= seed:', tr.length >= seed.length);
+const last = tr.at(-1);
+const echoOk = last?.type === 'message' && last.message?.role === 'user' && JSON.stringify(last.message?.content || '').includes('继续');
+const historyOk = tr.length >= seed.length + 1 && tr.slice(0, seed.length).some((e) => e.type === 'message' && e.message?.role === 'assistant');
+console.log('resume 会话 transcript 长度:', tr.length, '| >= seed+1:', tr.length >= seed.length + 1);
 console.log('含历史 assistant 消息:', historyOk, '| 末条=reply回显"继续":', echoOk);
-console.log('claudeSessionId 立即回填:', getSession(r2.id).claudeSessionId === sid);
+console.log('sessionId 立即回填:', getSession(r2.id).sessionId === sid);
 
 closeSession(r2.id);
 await sleep(500);
 
-if (historyOk && echoOk && tr.length >= seed.length) {
+if (historyOk && echoOk && tr.length >= seed.length + 1) {
   console.log('\n✅ PASS：resume 会话 transcript = 完整历史 + reply 回显 → 详情连 live 即回放全部（问题2 修复）');
   process.exit(0);
 } else {

@@ -2,13 +2,13 @@
 // 任务进 queued 即起一个「绑定该任务」的 Mode B 会话当执行器；会话生命周期写回该任务 state.json/lease/meta：
 //   起会话/发消息 → processing；一轮 result(idle) → awaiting-human；closed/error → awaiting-human。
 // 关键：桶完全由 state.json.state 决定（不靠 lease 活死）——idle-but-alive 也稳在 awaiting-human。
-// reply：live 会话在则复用（进程常驻多轮）；会话已死（服务重启）则 claude --resume <sessionId> 重挂。
+// reply：live 会话在则复用（进程常驻多轮）；会话已死（服务重启）则按 task.provider 恢复原会话。
 import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
 import { fmt, parse } from './timeutil.js';
 import { createSession, sendUserMessage, getSession, closeSession, getSessionIdByTaskKey } from './session-manager.js';
-import { readCcSessionForAdopt, ccMessagesToModeBSeed } from './logs.js';
+import { appendSessionJournalEvent, readTaskSessionSeed } from './logs.js';
 import { ensureWorktree, checkoutBranchLatest } from './git.js';
 import { readConfig } from './runner-config.js';
 
@@ -96,46 +96,102 @@ function removeLease(taskKey) {
   lastBeat.delete(taskKey);
 }
 
-// 更新 meta（sessionId 供 --resume + rounds/usage/lastRoundAt 供详情/看板显示）
-function updateMeta(taskKey, sessionId, resultEv) {
+// 更新 meta（sessionId 供 provider resume + rounds/usage/lastRoundAt 供详情/看板显示）。
+// task.provider 是恢复路由唯一事实源；旧 history 缺 provider 只解释为 claude。
+function updateMeta(taskKey, provider, sessionId, resultEv) {
   const f = path.join(taskDirOf(taskKey), 'meta.json');
   const m = readJson(f) || {};
   if (sessionId) {
     m.sessionId = sessionId;
     const hist = Array.isArray(m.sessionHistory) ? m.sessionHistory : [];
-    if (!hist.find((h) => h.sessionId === sessionId)) hist.push({ sessionId, round: hist.length + 1, at: fmt(new Date()) });
+    if (!hist.find((h) => h.sessionId === sessionId && (h.provider || 'claude') === provider)) {
+      hist.push({ provider, sessionId, round: hist.length + 1, at: fmt(new Date()) });
+    }
     m.sessionHistory = hist;
   }
   if (resultEv) {
     m.rounds = (m.rounds || 0) + 1;
-    m.numTurns = Number(resultEv.num_turns) || m.numTurns || 0;
-    if (typeof resultEv.total_cost_usd === 'number') m.totalCostUsd = resultEv.total_cost_usd;
+    m.numTurns = Number(resultEv.numTurns) || m.numTurns || 0;
+    if (typeof resultEv.costUsd === 'number') m.totalCostUsd = resultEv.costUsd;
     if (resultEv.usage) m.usage = resultEv.usage;
     m.lastRoundAt = fmt(new Date());
   }
   writeJson(f, m);
 }
 
+function updateTurnUsage(taskKey, usage) {
+  if (!usage) return;
+  const f = path.join(taskDirOf(taskKey), 'meta.json');
+  const meta = readJson(f) || {};
+  meta.usage = usage;
+  writeJson(f, meta);
+}
+
+// sendUserMessage 会把统一 user message 写入 Session.transcript，但为避免 UI 乐观回显重复不会 emit。
+// task-runner 在成功发送后取该 settled event 补 journal，不自行拼第二套 message 形状。
+function journalLatestUserMessage(taskKey, id) {
+  const session = getSession(id);
+  const event = [...(session?.transcript || [])].reverse()
+    .find((candidate) => candidate?.type === 'message' && candidate.message?.role === 'user');
+  if (event) appendSessionJournalEvent(taskKey, event);
+}
+
 // 订阅会话 emitter → 写任务盘（settled 事件驱动，逐 token partial 不写盘只节流保活）
-function bind(taskKey, id) {
+function bind(taskKey, id, provider) {
   registry.set(taskKey, id);
   const s = getSession(id);
   if (!s) return;
   const onEvent = (ev) => {
     try {
-      if (ev.type === 'system' && ev.subtype === 'init') {
-        if (ev.session_id) updateMeta(taskKey, ev.session_id, null);
+      if (ev.type === 'session_initialized') {
+        appendSessionJournalEvent(taskKey, ev);
+        if (ev.sessionId) updateMeta(taskKey, provider, ev.sessionId, null);
         writeLease(taskKey, s.child?.pid || 0);   // 拿到真 pid 后补写 lease
-      } else if (ev.type === 'assistant' || ev.type === 'user' || ev.type === 'stream_event') {
+      } else if (ev.type === 'message') {
+        appendSessionJournalEvent(taskKey, ev);
         beatLease(taskKey);
-      } else if (ev.type === 'result') {
-        updateMeta(taskKey, s.claudeSessionId, ev);
+      } else if (ev.type === 'message_delta') {
+        // 高频 delta 只保活并实时透传，不写 session-events.jsonl。
+        beatLease(taskKey);
+      } else if (ev.type === 'turn_usage') {
+        appendSessionJournalEvent(taskKey, ev);
+        updateTurnUsage(taskKey, ev.usage);
+        beatLease(taskKey);
+      } else if (ev.type === 'turn_completed') {
+        appendSessionJournalEvent(taskKey, ev);
+        updateMeta(taskKey, provider, ev.sessionId || s.sessionId || null, ev);
+        if (ev.status === 'failed') {
+          const sd = readJson(path.join(taskDirOf(taskKey), 'state.json')) || {};
+          setTaskState(taskKey, {
+            state: 'awaiting-human', outcome: 'failed', resolvedAt: fmt(new Date()),
+            outcomeDetail: { ...(sd.outcomeDetail || {}), failureReason: ev.error || 'session turn failed' },
+          }, 'session');
+          removeLease(taskKey);
+          leakRetry.delete(taskKey);
+          scheduleDrain();
+          return;
+        }
+        if (ev.status === 'interrupted') {
+          const sd = readJson(path.join(taskDirOf(taskKey), 'state.json')) || {};
+          if (sd.outcome !== 'cancelled') {
+            setTaskState(taskKey, {
+              state: 'awaiting-human', outcome: 'cancelled', resolvedAt: fmt(new Date()),
+              outcomeDetail: { ...(sd.outcomeDetail || {}), failureReason: ev.error || 'turn interrupted' },
+            }, 'session');
+          }
+          removeLease(taskKey);
+          leakRetry.delete(taskKey);
+          scheduleDrain();
+          return;
+        }
         // 泄漏空转拦截：本轮把工具调用输出成了文本、无真 tool_use → 自动补重试、保持 processing，不翻牌
-        const lastAsst = [...s.transcript].reverse().find((e) => e.type === 'assistant');
+        const lastAsst = [...s.transcript].reverse()
+          .find((event) => event.type === 'message' && event.message?.role === 'assistant');
         const n = leakRetry.get(taskKey) || 0;
-        if (isLeakedToolTurn(lastAsst?.message?.content) && n < LEAK_RETRY_MAX) {
+        if (provider === 'claude' && isLeakedToolTurn(lastAsst?.message?.content) && n < LEAK_RETRY_MAX) {
           leakRetry.set(taskKey, n + 1);
-          sendUserMessage(id, '上一条把工具调用输出成了文本（court<invoke…>），并未真正执行。请用结构化工具重新发起这次调用。');
+          const retry = sendUserMessage(id, '上一条把工具调用输出成了文本（court<invoke…>），并未真正执行。请用结构化工具重新发起这次调用。');
+          if (retry.ok) journalLatestUserMessage(taskKey, id);
           beatLease(taskKey);
           return;                        // 不落 awaiting-human、不 removeLease：本轮继续
         }
@@ -144,7 +200,9 @@ function bind(taskKey, id) {
         removeLease(taskKey);            // 一轮收敛：进程常驻但不算 processing
         scheduleDrain();                 // 名额释放 → 放行等待中的 queued 任务
       } else if (ev.type === 'closed') {
-        convergeAwaitingOrDone(taskKey); // 幂等：result 已落 done 时不再覆盖回 awaiting-human
+        appendSessionJournalEvent(taskKey, ev);
+        const state = readJson(path.join(taskDirOf(taskKey), 'state.json'));
+        if (state?.state === 'processing') convergeAwaitingOrDone(taskKey);
         removeLease(taskKey);
         leakRetry.delete(taskKey);
         registry.delete(taskKey);
@@ -152,6 +210,7 @@ function bind(taskKey, id) {
         s.emitter.off('event', onEvent);
         scheduleDrain();
       } else if (ev.type === 'error') {
+        appendSessionJournalEvent(taskKey, ev);
         const sd = readJson(path.join(taskDirOf(taskKey), 'state.json')) || {};
         setTaskState(taskKey, {
           state: 'awaiting-human', outcome: 'failed', resolvedAt: fmt(new Date()),
@@ -164,6 +223,14 @@ function bind(taskKey, id) {
   };
   s.emitter.on('event', onEvent);
   boundHandlers.set(taskKey, onEvent);   // 记引用供 parkTaskSession 精准解绑
+  // createSession 先启动 adapter 再返回；极快的本地 CLI 可能在 bind 前已完成 init。
+  // JS 回调不会在本同步段中间插入：订阅后检查一次 state，即可无竞态补回错过的统一 init。
+  if ((s.state === 'running' || s.state === 'idle') && s.sessionId) {
+    const init = { type: 'session_initialized', provider, sessionId: s.sessionId, model: s.model || null, at: new Date().toISOString() };
+    appendSessionJournalEvent(taskKey, init);
+    updateMeta(taskKey, provider, s.sessionId, null);
+    writeLease(taskKey, s.child?.pid || 0);
+  }
 }
 
 // 立即置 processing + 写占位 lease（同步落盘，/api/state 秒级可见；system.init 到达后补真 pid）
@@ -267,7 +334,7 @@ function resolveRunCwd(taskKey, task) {
 }
 
 // 起任务执行会话（queued/approve/restart → 起绑定会话，task.prompt 作本轮消息）。
-// resume-aware：该任务此前跑过并落了会话（meta.sessionId）→ --resume 续上之前的对话（喂回历史 seed +
+// resume-aware：该任务此前跑过并落了会话（meta.sessionId）→ 由对应 provider 续上之前的对话（喂回历史 seed +
 // task.prompt 作续轮消息，与 replyTask resume 分支同构，用于「退回 plan 再执行」续对话）；从未跑过 →
 // 全新起会话。二者仅差 resume/seed，落盘（bind/markProcessing）一致。现有 caller 都无 sessionId、行为不变。
 export function startTask(taskKey) {
@@ -277,23 +344,38 @@ export function startTask(taskKey) {
   if (getTaskSessionId(taskKey)) return { ok: false, error: '该任务已有活跃会话在跑' };
   const rc = resolveRunCwd(taskKey, task);
   if (rc.error) return { ok: false, error: rc.error };
+  const provider = task.provider || 'claude';
   const sid = readJson(path.join(dir, 'meta.json'))?.sessionId || null;
+  const sessionOptions = {
+    provider,
+    taskKey,
+    cwd: rc.cwd || undefined,
+    model: task.model || undefined,
+    effort: task.effort || undefined,
+    resume: sid || undefined,
+    prompt: task.prompt,
+    attachments: task.attachments,
+    bypass: true,
+  };
+  if (provider === 'claude') sessionOptions.dynamicWorkflow = task.dynamicWorkflow;
   let r;
   if (sid) {
-    const hist = readCcSessionForAdopt(sid);
+    const history = readTaskSessionSeed(taskKey, provider, sid);
     // seed 只含历史；本轮 prompt 由 createSession→sendUserMessage 自记进 transcript（不再往 seed 尾追，避免重复）
-    const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
-    r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, resume: sid, prompt: task.prompt, attachments: task.attachments, seedTranscript: seed, bypass: true });
+    sessionOptions.seedTranscript = history.ok ? history.seedTranscript : [];
+    if (provider === 'claude' && history.ok) sessionOptions.gitBranch = history.gitBranch || undefined;
+    r = createSession(sessionOptions);
   } else {
-    r = createSession({ taskKey, cwd: rc.cwd || undefined, model: task.model || undefined, effort: task.effort || undefined, dynamicWorkflow: task.dynamicWorkflow, prompt: task.prompt, attachments: task.attachments, bypass: true });
+    r = createSession(sessionOptions);
   }
   if (!r.ok) return r;
-  bind(taskKey, r.id);
+  bind(taskKey, r.id, provider);
+  journalLatestUserMessage(taskKey, r.id);
   markProcessing(taskKey, r.id);
   return { ok: true, taskKey, sessionUiId: r.id, resumed: sid || undefined };
 }
 
-// 回复任务：live 会话在则复用（多轮）；已死则 --resume 重挂。model/effort 覆盖仅在 --resume 重挂时生效
+// 回复任务：live 会话在则复用（多轮）；已死则按 provider 恢复。model/effort 覆盖仅在恢复重挂时生效
 // （live 会话的 model/effort 在 spawn 时已定、无法中途改）。
 export function replyTask(taskKey, message, model, effort, attachments) {
   const msg = String(message || '').trim();
@@ -302,6 +384,7 @@ export function replyTask(taskKey, message, model, effort, attachments) {
   if (liveId) {
     const r = sendUserMessage(liveId, msg, attachments);
     if (!r.ok) return r;
+    journalLatestUserMessage(taskKey, liveId);
     markProcessing(taskKey, liveId);
     return { ok: true, taskKey, sessionUiId: liveId, reused: true };
   }
@@ -310,17 +393,35 @@ export function replyTask(taskKey, message, model, effort, attachments) {
   const meta = readJson(path.join(dir, 'meta.json'));
   const state = readJson(path.join(dir, 'state.json'));
   const sid = meta?.sessionId || state?.outcomeDetail?.resumeSessionId || null;
-  if (!sid) return { ok: false, error: '无 sessionId 可 --resume（会话从未成功起过，请重新发起）' };
-  // 会话进程已死（用户取消 / 服务重启）→ --resume 重挂。喂回历史 transcript 作 seed，
+  if (!sid) return { ok: false, error: '无 sessionId 可恢复（会话从未成功起过，请重新发起）' };
+  const provider = task?.provider || 'claude';
+  // 会话进程已死（用户取消 / 服务重启）→ 按 provider 重挂。喂回历史 transcript 作 seed，
   // 否则详情连上 live 会话时 transcript 只有新一轮、历史全丢（与 adopt 同款 seed 机制）。
   // 本轮 reply 由 createSession→sendUserMessage 自记进 transcript（不再往 seed 尾追，避免重复）。
-  const hist = readCcSessionForAdopt(sid);
-  const seed = hist.ok ? ccMessagesToModeBSeed(hist.messages) : [];
+  const history = readTaskSessionSeed(taskKey, provider, sid);
+  const seed = history.ok ? history.seedTranscript : [];
   const rc = resolveRunCwd(taskKey, task || {});
   if (rc.error) return { ok: false, error: rc.error };
-  const r = createSession({ taskKey, cwd: rc.cwd || undefined, gitBranch: hist.ok ? hist.gitBranch : undefined, model: model || task?.model || undefined, effort: effort || task?.effort || undefined, dynamicWorkflow: task?.dynamicWorkflow, resume: sid, prompt: msg, attachments, seedTranscript: seed, bypass: true });
+  const options = {
+    provider,
+    taskKey,
+    cwd: rc.cwd || undefined,
+    model: model || task?.model || undefined,
+    effort: effort || task?.effort || undefined,
+    resume: sid,
+    prompt: msg,
+    attachments,
+    seedTranscript: seed,
+    bypass: true,
+  };
+  if (provider === 'claude') {
+    options.gitBranch = history.ok ? history.gitBranch || undefined : undefined;
+    options.dynamicWorkflow = task?.dynamicWorkflow;
+  }
+  const r = createSession(options);
   if (!r.ok) return r;
-  bind(taskKey, r.id);
+  bind(taskKey, r.id, provider);
+  journalLatestUserMessage(taskKey, r.id);
   markProcessing(taskKey, r.id);
   return { ok: true, taskKey, sessionUiId: r.id, resumed: sid };
 }
@@ -344,7 +445,7 @@ export function cancelTaskSession(taskKey) {
 // 停手会话（退回 plan 用）：关掉可能仍活着的 idle Mode B 会话进程 + 删 lease，但**不改 state**（交调用方落 plan）。
 // 关键：先精准解绑本任务的 onEvent（用 boundHandlers 记的引用），否则 closeSession 触发的 'closed' 事件
 // 会把 state 翻回 awaiting-human、盖掉调用方随后落的 plan；不 removeAllListeners 以免误伤详情页 SSE 订阅。
-// 保留 meta.sessionId 不动 → 之后 startTask 据它 --resume 续上之前的对话。
+// 保留 meta.sessionId 不动 → 之后 startTask 据它让对应 provider 续上之前的对话。
 export function parkTaskSession(taskKey) {
   const id = registry.get(taskKey);
   const onEvent = boundHandlers.get(taskKey);

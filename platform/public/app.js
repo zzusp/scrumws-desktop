@@ -35,6 +35,21 @@ tickClock(); setInterval(() => { tickClock(); tickLiveTimers(); }, 1000);
 
 // ---- 状态 ----
 let stateData = null;
+let providerCatalog = [];
+function providerDef(id) {
+  const providerId = String(id || 'claude').toLowerCase();
+  return providerCatalog.find((p) => p.id === providerId) || null;
+}
+async function ensureProviderCatalog() {
+  if (providerCatalog.length) return providerCatalog;
+  const stateProviders = Array.isArray(stateData?.runtime?.providers) ? stateData.runtime.providers : null;
+  if (stateProviders?.length) { providerCatalog = stateProviders; return providerCatalog; }
+  try {
+    const r = await api('/api/providers');
+    providerCatalog = Array.isArray(r) ? r : (Array.isArray(r?.providers) ? r.providers : []);
+  } catch { providerCatalog = []; }
+  return providerCatalog;
+}
 // modal 打开时暂停看板刷新 —— 用户焦点在 modal 上、看板轮询 5s 刷 detail；关闭时立即 refreshState + 重置计时
 let modalOpen = false;
 let modalPollTimer = null;
@@ -157,43 +172,47 @@ function renderRuntime(rt) {
   const grid = $('usageGrid');
   if (!card || !grid) return;
   if (!rt) { card.innerHTML = '<div style="color:var(--dim);font-size:12.5px">运行时数据不可用</div>'; grid.innerHTML = ''; return; }
-  // ---- 运行时卡片 ----
-  const online = rt.online;
-  const statusCls = online == null ? 'detecting' : online ? 'on' : 'off';
-  const statusTxt = online == null ? '检测中…' : online ? '在线' : '离线';
-  const dotCls = online == null ? 'rt-detecting' : online ? 'rt-on' : 'rt-off';
-  const s = rt.sessions || {};
+  // ---- provider 运行时卡片 ----
   const plat = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' }[rt.platform] || rt.platform || '—';
   const kv = (k, v, title) => `<div class="rt-kv"><span class="k">${k}</span><span class="v"${title ? ` title="${escapeAttr(title)}"` : ''}>${v}</span></div>`;
   const dim = (t) => `<span style="color:var(--dim)">${t}</span>`;
-  card.innerHTML = `
+  const runtimes = Array.isArray(rt.providers) && rt.providers.length ? rt.providers : [rt];
+  card.innerHTML = runtimes.map((runtime) => {
+    const online = runtime.online;
+    const statusCls = online == null ? 'detecting' : online ? 'on' : 'off';
+    const statusTxt = online == null ? '检测中…' : online ? '在线' : '离线';
+    const dotCls = online == null ? 'rt-detecting' : online ? 'rt-on' : 'rt-off';
+    const s = runtime.sessions || {};
+    return `
     <div class="rt-panel">
       <div class="rt-badge"><svg viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></div>
       <div class="rt-info">
-        <div class="rt-name">${escapeHtml(rt.tool || 'Claude Code')}<span class="rt-status ${statusCls}"><span class="rt-dot ${dotCls}"></span>${statusTxt}</span></div>
+        <div class="rt-name">${escapeHtml(runtime.label || runtime.tool || 'Agent')}<span class="rt-status ${statusCls}"><span class="rt-dot ${dotCls}"></span>${statusTxt}</span></div>
         <div class="rt-kvs">
           ${kv('主机', escapeHtml(rt.host || '—'))}
           ${kv('平台', escapeHtml(plat))}
-          ${kv('版本', rt.version ? escapeHtml(rt.version) : dim('未知'))}
-          ${kv('路径', rt.binPath ? escapeHtml(rt.binPath) : dim('—'), rt.binPath || '')}
+          ${kv('版本', runtime.version ? escapeHtml(runtime.version) : dim('未知'))}
+          ${kv('路径', runtime.binPath ? escapeHtml(runtime.binPath) : dim('—'), runtime.binPath || '')}
         </div>
       </div>
       <div class="rt-sessions">
         <div class="rt-sess-num">${s.total ?? 0}</div>
         <div class="rt-sess-label">活跃会话</div>
-        <div class="rt-sess-sub">板内 ${s.board ?? 0} · 终端 ${s.cli ?? 0}</div>
+        <div class="rt-sess-sub">板内 ${s.board ?? 0}${runtime.id === 'claude' || s.cli ? ` · 终端 ${s.cli ?? 0}` : ''}</div>
       </div>
     </div>`;
+  }).join('');
+  const claudeRuntime = runtimes.find((runtime) => runtime.id === 'claude') || rt;
   // ---- 用量汇总：CC 全局每日 token 表格（7/15/30 天切换）----
-  dailyUsageData = Array.isArray(rt.dailyUsage) ? rt.dailyUsage : null;
+  dailyUsageData = Array.isArray(claudeRuntime.dailyUsage) ? claudeRuntime.dailyUsage : null;
   renderUsageTable();
   // ---- 账号用量卡（5h/7d 滚动窗）与每日用量趋势卡（7 天柱状图）：并排两张独立卡，各占一半宽度 ----
   const ccAccountGrid = $('ccAccountUsageGrid');
-  if (ccAccountGrid) ccAccountGrid.innerHTML = ccAccountUsageBarsHtml(rt.claudeUsage, rt.usagePoll);
+  if (ccAccountGrid) ccAccountGrid.innerHTML = ccAccountUsageBarsHtml(claudeRuntime.claudeUsage, claudeRuntime.usagePoll);
   const ccGrid = $('ccUsageGrid');
   if (ccGrid) {
     ccGrid.innerHTML = `<div class="du-wrap"><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
-    renderDailyChart(rt.dailyUsage);
+    renderDailyChart(claudeRuntime.dailyUsage);
   }
 }
 
@@ -372,7 +391,7 @@ function cardActionButtons(t, section) {
   const isObservedCli = !!t.cli;
   const isPlan = section === 'plan';
   const _k = escapeAttr(t.taskKey);
-  const descBtn = `<button class="btn" onclick="editTaskDesc('${_k}')" title="自己看的备注，不发给 claude">✎ 描述</button>`;
+  const descBtn = `<button class="btn" onclick="editTaskDesc('${_k}')" title="自己看的备注，不发给 Agent">✎ 描述</button>`;
   const editBtn = `<button class="btn" onclick="openEditTask('${_k}')" title="编辑任务（标题 / prompt / 模型 / 工作目录 / 描述）">✎ 编辑</button>`;
   const removeBtn = `<button class="btn" style="color:var(--coralT)" onclick="deleteTaskAction('${_k}')" title="删除该计划任务（不可恢复）">✕ 移除</button>`;
   const archiveBtn = `<button class="btn" onclick="archiveTask('${_k}')" title="收进已归档区">▾ 归档</button>`;
@@ -719,7 +738,7 @@ async function editTaskDesc(taskKey) {
   const t = findTaskInState(taskKey);
   const v = await customPrompt({
     title: '任务描述',
-    message: '<span style="color:var(--mut);font-size:11px">自己看的备注 · 不会发给 claude · 清空保存 = 删除</span>',
+    message: '<span style="color:var(--mut);font-size:11px">自己看的备注 · 不会发给 Agent · 清空保存 = 删除</span>',
     initial: t?.description || '',
     placeholder: '记录任务背景 / 想达成什么 / 归档前的进展…',
   });
@@ -866,7 +885,7 @@ async function loadTaskDetail(taskKey) {
   }
   if (mb) mbDetach();                    // 从 live 任务切到只读任务：断开旧 live SSE
   // 标题现在渲染在右侧「任务信息」块内（renderTaskSide），详情页顶部 header 已移除（req4）
-  $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">正在拼 CC jsonl…</div>';
+  $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">正在读取 Agent 会话记录…</div>';
   lastModalFp = null;
   try {
     const r = await api(`/api/worker-log?taskKey=${encodeURIComponent(taskKey)}`);
@@ -1149,11 +1168,11 @@ function replyBoxFp(t) {
 function currentActualModelEffort(taskKey) {
   const t = findTaskInState(taskKey);
   if (t?.mbSessionId && mb && mb.id === t.mbSessionId && mb.info) {
-    return { model: mb.info.model || null, effort: mb.info.effort || t?.effort || null };
+    return { provider: mb.info.provider || t?.provider || 'claude', model: mb.info.model || null, effort: mb.info.effort || t?.effort || null };
   }
   const rounds = (currentModalData?.rounds || []).filter((x) => !x.error);
   const lastOk = rounds[rounds.length - 1] || null;
-  return { model: lastOk?.ccSummary?.model || lastOk?.systemInit?.model || null, effort: t?.effort || null };
+  return { provider: t?.provider || 'claude', model: lastOk?.ccSummary?.model || lastOk?.systemInit?.model || null, effort: t?.effort || null };
 }
 
 // ---- 继续对话区：三态状态机（可对话 / 处理中 / 需重发 / 不可用）----
@@ -1171,6 +1190,9 @@ function updateReplyBoxAvailability(taskKey) {
   const restartBtn = $('modalRestartBtn');
   const toast = $('modalReplyErr');
   const t = findTaskInState(taskKey);
+  const taskProvider = providerDef(t?.provider || 'claude');
+  const providerBadge = $('modalReplyProvider');
+  if (providerBadge) providerBadge.textContent = taskProvider?.label || t?.provider || 'Claude Code';
   lastReplyFp = replyBoxFp(t);   // 每次装配都刷新基线，常驻轮询据此判定后续是否需要重装
   const hasSid = !!(t?.meta?.sessionId);
   const processing = t?.state === 'processing';
@@ -1189,6 +1211,8 @@ function updateReplyBoxAvailability(taskKey) {
   restartBody.style.display = 'none';
   // 徽章 class 归零（保留 .tag 基类）
   stateTag.className = 'tag tag-mut';
+  stateTag.style.display = '';
+  hint.style.display = '';
   // 状态头默认显示；实时会话（Mode B）分支会隐藏整条（见下方 mbSessionId 分支）
   if (stateTag.parentElement) stateTag.parentElement.style.display = '';
   // 清旧事件监听（防止上次 modal 的旧 handler 残留）
@@ -1205,14 +1229,16 @@ function updateReplyBoxAvailability(taskKey) {
     replyBody.style.display = 'flex';
     text.disabled = false; send.disabled = false;
     // 实时会话不显示状态头（"生成中·可插话/打断 / 看板持有的实时会话… / token 读数"整条去掉）——直接常开输入 + 打断
-    if (stateTag.parentElement) stateTag.parentElement.style.display = 'none';
+    if (stateTag.parentElement) stateTag.parentElement.style.display = '';
+    stateTag.style.display = 'none';
+    hint.style.display = 'none';
     if (mb && mb.id === t.mbSessionId) {
       const running = mb.state === 'running' || mb.state === 'starting';
       // 打断只在「正在生成」时有意义：非 running 用 display 隐藏（而非灰化占位），一轮收敛即消失。
       if (interruptBtn) { interruptBtn.style.display = running ? '' : 'none'; interruptBtn.onclick = () => mbInterrupt(); }
     }
     updateReplyCount(text.value.length, countEl);
-    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.model, me.effort); }
+    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.provider, me.model, me.effort); }
     send.onclick = () => mbSend();
     text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); mbSend(); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);
@@ -1242,7 +1268,7 @@ function updateReplyBoxAvailability(taskKey) {
     text.disabled = false; send.disabled = false;
     text.value = '';
     updateReplyCount(0, countEl);
-    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.model, me.effort); }
+    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.provider, me.model, me.effort); }
     send.onclick = () => sendCliContinue(taskKey);
     text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendCliContinue(taskKey); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);
@@ -1252,12 +1278,14 @@ function updateReplyBoxAvailability(taskKey) {
 
   if (canReply) {
     // 隐掉状态头（「可继续对话 / 同 session --resume，cache_read 命中省 token」提示）——直接常开输入即可，无需这条说明
-    if (stateTag.parentElement) stateTag.parentElement.style.display = 'none';
+    if (stateTag.parentElement) stateTag.parentElement.style.display = '';
+    stateTag.style.display = 'none';
+    hint.style.display = 'none';
     replyBody.style.display = 'flex';   // composer 是 flex-direction:column
     text.disabled = false; send.disabled = false;
     text.value = '';
     updateReplyCount(0, countEl);
-    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.model, me.effort); }
+    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.provider, me.model, me.effort); }
     send.onclick = () => sendReply(taskKey);
     text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendReply(taskKey); } };
     text.oninput = () => updateReplyCount(text.value.length, countEl);
@@ -1547,20 +1575,22 @@ function compactTokens(n) {
   return String(n);
 }
 
-// Claude Code 卡片：sessionId / 模型(拼 effort，如 "claude-sonnet-5 · medium") / 动态工作流 + 账号用量(session/本周)
-function claudeCodeCardHtml(t, model) {
+// Agent 卡片：provider / session / 模型；Claude 独有能力按 catalog 显示，不为 Codex 伪造等价能力。
+function agentCardHtml(t, model) {
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const provider = t.provider || 'claude';
+  const def = providerDef(provider);
   const sessionId = t.meta?.sessionId || null;
-  const modelVal = t.effort ? `${model} · ${t.effort}` : model;
+  const modelVal = model && model !== '—' ? (t.effort ? `${model} · ${t.effort}` : model) : (t.effort ? `CLI 默认 · ${t.effort}` : 'CLI 默认');
   // 账号用量：读 /api/state 已缓存的 runtime.claudeUsage（订阅账号才有 session/本周），无则不显示
   const cu = stateData?.runtime?.claudeUsage;
-  const usageHtml = (cu && cu.ok && cu.subscription) ? ccUsageBody(cu) : '';
+  const usageHtml = provider === 'claude' && cu && cu.ok && cu.subscription ? ccUsageBody(cu) : '';
   return `
     <div class="side-block">
-      <h3>Claude Code</h3>
+      <h3>${escapeHtml(def?.label || provider)}</h3>
       ${kv('session', sessionId ? escapeHtml(sessionId) : '<span style="color:var(--dim)">—</span>')}
       ${kv('模型', escapeHtml(modelVal))}
-      ${t.dynamicWorkflow != null ? kv('动态工作流', t.dynamicWorkflow ? '<span style="color:var(--jade)">开</span>' : '关') : ''}
+      ${def?.capabilities?.dynamicWorkflow && t.dynamicWorkflow != null ? kv('动态工作流', t.dynamicWorkflow ? '<span style="color:var(--jade)">开</span>' : '关') : ''}
       ${usageHtml ? `<div class="cc-usage">${usageHtml}</div>` : ''}
     </div>`;
 }
@@ -1634,6 +1664,8 @@ function contextRingHtml(ctxSize, model, limInfo) {
 function syncContextRing(taskKey) {
   const wrap = document.getElementById('modalCtxRing');
   if (!wrap) return;
+  const task = findTaskInState(taskKey);
+  if ((task?.provider || 'claude') !== 'claude') { wrap.innerHTML = ''; return; }
   const rounds = (currentModalData?.rounds || []).filter((x) => !x.error);
   const lastOk = rounds[rounds.length - 1] || null;
   const ctxSize = lastOk?.ccSummary?.contextSize;
@@ -1656,7 +1688,7 @@ function renderTaskSide(taskKey) {
   // 被旁观的 CLI 会话（带 t.cli）：processing 不给「中断」、归档区给「从看板移除」。物化后无 t.cli，与其它来源一致。
   const isObservedCli = !!t.cli;
   // 模型/cwd/git/工作时长/最近活动：CLI 与看板任务统一从详情 round 取（readWorkerLog 对两类同构产出）——不按来源分叉
-  const model = lastOk?.ccSummary?.model || lastOk?.systemInit?.model || t.meta?.model || '—';
+  const model = lastOk?.ccSummary?.model || lastOk?.systemInit?.model || t.model || t.meta?.model || '—';
   const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
   const kv = (k, v) => `<div class="side-kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
   const tags = [
@@ -1770,12 +1802,12 @@ function renderTaskSide(taskKey) {
       ${failureHtml}
       ${commentHtml}
     </div>
-    ${claudeCodeCardHtml(t, model)}
+    ${agentCardHtml(t, model)}
     <div class="side-block">
       <h3>任务描述 <button class="btn" style="margin-left:auto;font-size:10px;padding:1px 9px" onclick="editTaskDesc('${escapeAttr(t.taskKey)}')">✎ 编辑</button></h3>
       ${descText
         ? `<div style="font-size:12.5px;color:var(--ink2);line-height:1.7;white-space:pre-wrap;word-break:break-word">${escapeHtml(descText)}</div>`
-        : '<div style="font-size:11.5px;color:var(--dim)">暂无 · 自己看的备注，不会发给 claude</div>'}
+        : '<div style="font-size:11.5px;color:var(--dim)">暂无 · 自己看的备注，不会发给 Agent</div>'}
     </div>
     ${btns.length ? `<div class="side-block"><h3>操作</h3><div class="side-actions">${btns.join('')}</div></div>` : ''}
     ${tlHtml ? `<div class="side-block"><h3>动态</h3><div class="timeline">${tlHtml}</div></div>` : ''}
@@ -2221,7 +2253,8 @@ function renderUserTurn(m) {
   // 该任务有可 rewind 的会话（t.cli 观察态 ∪ 有 meta.sessionId 的托管任务）+ 非归档。uuid 只在磁盘/seed 消息上有，
   // live 流的最新消息无 uuid（不给按钮，本也不该 rewind 刚发的消息）。不按 source 前缀特判——按真实能力门控。
   const _rwT = findTaskInState(modalPollTaskKey);
-  const canRewind = m.uuid && !!(_rwT?.cli || _rwT?.meta?.sessionId) && !_rwT?.isArchive;
+  const canRewind = m.uuid && !!(_rwT?.cli || _rwT?.meta?.sessionId) && !_rwT?.isArchive
+    && !!providerDef(_rwT?.provider || 'claude')?.capabilities?.rewind;
   const rewindBtn = canRewind
     ? `<div class="msg-rewind"><button class="btn" style="font-size:10px;padding:2px 9px;color:var(--dim)" onclick="rewindMessage('${escapeAttr(m.uuid)}')" title="改写这条消息并从这里重跑（这条及之后的时间线被替换，原时间线丢弃）">⑂ 改写重跑</button></div>`
     : '';
@@ -2394,8 +2427,8 @@ async function refreshApiKeys() {
 function akFillForm(k) {
   $('akLabelInput').value = k.label;
   $('akSourceInput').value = k.source;
-  document.querySelectorAll('#akModelsBox input').forEach((x) => { x.checked = k.allowedModels.includes(x.value); });
-  document.querySelectorAll('#akEffortsBox input').forEach((x) => { x.checked = k.allowedEfforts.includes(x.value); });
+  $('akProviderInput').value = k.provider || 'claude';
+  renderAkProviderPolicy(k.provider || 'claude', k.allowedModels || [], k.allowedEfforts || []);
   $('akCwdsInput').value = k.allowedCwds.join('\n');
   $('akAllowQueued').checked = !!k.allowQueued;
 }
@@ -2404,7 +2437,16 @@ function akClearForm() {
   $('akSourceInput').value = '';
   $('akCwdsInput').value = '';
   $('akAllowQueued').checked = false;
-  document.querySelectorAll('#akModelsBox input:checked, #akEffortsBox input:checked').forEach((x) => { x.checked = false; });
+  $('akProviderInput').value = 'claude';
+  renderAkProviderPolicy('claude');
+}
+
+function renderAkProviderPolicy(provider, selectedModels = [], selectedEfforts = []) {
+  const def = providerDef(provider) || providerDef('claude');
+  const models = providerModels(def).filter((m) => m.value !== '__custom__');
+  $('akModelsBox').innerHTML = models.map((m) => `<label><input type="checkbox" value="${escapeAttr(m.value)}"${selectedModels.includes(m.value) ? ' checked' : ''}> ${escapeHtml(m.name)}</label>`).join('')
+    + (def?.allowCustomModel ? `<label style="margin-top:5px">自定义模型（每行一个）<textarea id="akCustomModels" class="field-input mono" rows="2" placeholder="gpt-5.4">${escapeHtml(selectedModels.filter(Boolean).join('\n'))}</textarea></label>` : '');
+  $('akEffortsBox').innerHTML = providerEfforts(def).map((e) => `<label><input type="checkbox" value="${escapeAttr(e.value)}"${selectedEfforts.includes(e.value) ? ' checked' : ''}> ${escapeHtml(e.name)}</label>`).join('');
 }
 function akOpenModal(k) {
   akEditingId = k ? k.id : null;
@@ -2429,7 +2471,9 @@ function akPolicyCell(k) {
     return '<span class="tag tag-amber" title="旧格式密钥缺策略，建任务会被拒；请删除后重新生成">未配置（无权限）</span>';
   }
   const parts = [];
-  parts.push(`模型 ${k.allowedModels.length === 1 ? escapeHtml(k.allowedModels[0].replace(/^claude-/, '')) : k.allowedModels.length + ' 个'}`);
+  parts.push(escapeHtml(providerDef(k.provider || 'claude')?.label || k.provider || 'Claude Code'));
+  const modelNames = k.allowedModels.map((model) => model || 'CLI 默认');
+  parts.push(`模型 ${modelNames.length === 1 ? escapeHtml(modelNames[0].replace(/^claude-/, '')) : modelNames.length + ' 个'}`);
   parts.push(`effort ${k.allowedEfforts.length === 1 ? escapeHtml(k.allowedEfforts[0]) : k.allowedEfforts.length + ' 档'}`);
   parts.push(`目录 ${k.allowedCwds.length} 个`);
   if (k.allowQueued) parts.push('<span style="color:var(--amber)">直执</span>');
@@ -2437,7 +2481,8 @@ function akPolicyCell(k) {
 }
 function akPolicyTitle(k) {
   const lines = [];
-  lines.push(`可用模型：${k.allowedModels?.length ? k.allowedModels.join(', ') : '（缺）'}`);
+  lines.push(`Provider：${providerDef(k.provider || 'claude')?.label || k.provider || 'Claude Code'}`);
+  lines.push(`可用模型：${k.allowedModels?.length ? k.allowedModels.map((m) => m || 'CLI 默认').join(', ') : '（缺）'}`);
   lines.push(`可用 effort：${k.allowedEfforts?.length ? k.allowedEfforts.join(', ') : '（缺）'}`);
   lines.push(`可访问目录：${k.allowedCwds?.length ? k.allowedCwds.join('；') : '（缺）'}`);
   lines.push(`直接执行：${k.allowQueued ? '允许（plan:false 直进 queued）' : '不允许（只能建 plan 任务）'}`);
@@ -2458,7 +2503,7 @@ function renderApiKeyPlaintext(created) {
   const curl = [
     `curl -s -X POST http://127.0.0.1:${location.port || 8799}/api/external/task/create \\`,
     `  -H 'Authorization: Bearer ${created.plaintext}' -H 'Content-Type: application/json' \\`,
-    `  -d '{"title":"标题","prompt":"给 claude 的指令","externalKey":"来源侧唯一事件id"}'`,
+    `  -d '{"title":"标题","prompt":"给 Agent 的指令","externalKey":"来源侧唯一事件id"}'`,
   ].join('\n');
   box.style.display = '';
   box.innerHTML = `
@@ -2482,7 +2527,11 @@ function initApiKeysPage() {
     err.style.display = 'none';
     const label = $('akLabelInput').value.trim();
     const source = $('akSourceInput').value.trim();
+    const provider = $('akProviderInput').value || 'claude';
     const allowedModels = [...document.querySelectorAll('#akModelsBox input:checked')].map((x) => x.value);
+    for (const model of ($('akCustomModels')?.value || '').split(/\r?\n|,/).map((s) => s.trim()).filter(Boolean)) {
+      if (!allowedModels.includes(model)) allowedModels.push(model);
+    }
     const allowedEfforts = [...document.querySelectorAll('#akEffortsBox input:checked')].map((x) => x.value);
     const allowedCwds = $('akCwdsInput').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     const allowQueued = $('akAllowQueued').checked;
@@ -2499,7 +2548,7 @@ function initApiKeysPage() {
       const r = await api(isEdit ? '/api/apikeys/update' : '/api/apikeys/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: akEditingId || undefined, label, source, allowedModels, allowedEfforts, allowedCwds, allowQueued }),
+        body: JSON.stringify({ id: akEditingId || undefined, label, source, provider, allowedModels, allowedEfforts, allowedCwds, allowQueued }),
       });
       if (!r.ok) { err.textContent = r.error || (isEdit ? '保存失败' : '生成失败'); err.style.display = 'block'; return; }
       akCloseModal();
@@ -2509,6 +2558,7 @@ function initApiKeysPage() {
     finally { createBtn.disabled = false; }
   });
   $('akNewBtn').addEventListener('click', () => akOpenModal(null));
+  $('akProviderInput').addEventListener('change', () => renderAkProviderPolicy($('akProviderInput').value));
   $('akModalCancelBtn').addEventListener('click', akCloseModal);
   $('akModalX').addEventListener('click', akCloseModal);
   $('akModal').addEventListener('click', (e) => { if (e.target === $('akModal')) akCloseModal(); });
@@ -2824,8 +2874,8 @@ $('newTaskBtn').addEventListener('click', () => {
   $('newTaskDesc').value = '';
   $('newTaskCwd').value = '';              // 工作目录（可选）
   loadNewTaskCwds();                       // 填充「已有工作目录」下拉（现有任务 cwd + 近期 CLI session cwd）
-  newTaskMesCtl?.setModel('claude-opus-4-8');
-  newTaskMesCtl?.setEffort('xhigh');       // 默认 effort=xhigh（对齐 CC 默认档）
+  newTaskMesCtl?.setProvider('claude');
+  syncNewTaskProviderCapabilities();
   resetNewTaskExtras();                    // req4/5/6：定时 / worktree / 动态工作流 归默认
   refreshWorktreeUi('');                   // 无 cwd → 隐藏 worktree 区
   $('newTaskErr').style.display = 'none';
@@ -2846,7 +2896,7 @@ function resetNewTaskExtras() {
 // 退回来的、有会话记录的 plan 任务：锁定 工作目录 / worktree / 基分支（改了会让确认执行的 --resume 找不到原会话）。
 // 前端禁用输入 + 显示锁定说明（后端 editTask 也会保原值兜底）。
 function setDirWorktreeLocked(locked) {
-  for (const id of ['newTaskCwd', 'newTaskCwdCaret', 'newTaskCwdBrowse', 'newTaskWorktree', 'newTaskBaseBranch', 'newTaskBranchCaret']) {
+  for (const id of ['newTaskProvider', 'newTaskCwd', 'newTaskCwdCaret', 'newTaskCwdBrowse', 'newTaskWorktree', 'newTaskBaseBranch', 'newTaskBranchCaret']) {
     const el = $(id); if (el) el.disabled = !!locked;
   }
   const hint = $('newTaskDirLockHint');
@@ -2862,7 +2912,7 @@ async function openEditTask(taskKey) {
   acknowledgeTask(taskKey);             // 看过即清「状态变更」更新点
   editingTaskKey = taskKey;
   $('newTaskModal').querySelector('.modal-head h2').textContent = '编辑任务';
-  $('newTaskModal').querySelector('.modal-hint').textContent = `source=${r.source} · ${taskKey} · plan 态可编辑；prompt 是确认排队后真正发给 claude 的指令`;
+  $('newTaskModal').querySelector('.modal-hint').textContent = `source=${r.source} · ${taskKey} · plan 态可编辑；prompt 是确认排队后真正发给 Agent 的指令`;
   $('newTaskSubmit').textContent = '保存';
   $('newTaskModal').style.display = 'flex';
   $('newTaskTitle').value = r.title || '';
@@ -2870,8 +2920,8 @@ async function openEditTask(taskKey) {
   $('newTaskDesc').value = r.description || '';
   $('newTaskCwd').value = r.cwd || '';
   loadNewTaskCwds();
-  newTaskMesCtl?.setModel(r.model || 'claude-opus-4-8');
-  newTaskMesCtl?.setEffort(r.effort || 'xhigh');                          // 默认 xhigh
+  newTaskMesCtl?.setProvider(r.provider || 'claude', r.model, r.effort);
+  syncNewTaskProviderCapabilities();
   $('newTaskScheduledAt').value = toDatetimeLocal(r.scheduledAt || '');   // req4
   window.__syncDtPicker?.();                                              // 同步日历选择器显示
   $('newTaskDynamicWorkflow').checked = r.dynamicWorkflow === true;       // req6
@@ -3138,16 +3188,17 @@ $('newTaskSubmit').addEventListener('click', async () => {
   const prompt = $('newTaskPrompt').value.trim();
   const description = $('newTaskDesc').value.trim();
   const cwd = $('newTaskCwd').value.trim();
+  const provider = $('newTaskProvider').value || 'claude';
   const model = $('newTaskModel').value;
   const effort = $('newTaskEffort').value;                          // req3
   const scheduledAt = toLocalStamp($('newTaskScheduledAt').value);  // req4
-  const dynamicWorkflow = $('newTaskDynamicWorkflow').checked;      // req6
+  const dynamicWorkflow = providerDef(provider)?.capabilities?.dynamicWorkflow && $('newTaskDynamicWorkflow').checked;
   // req5：worktree 仅在 git 目录（worktree 区可见）且勾选时生效；签出基分支与 worktree 勾选无关，独立生效
   // （不勾选 worktree 时，签出基分支表示直接在工作目录本身签出该分支并拉取最新代码后工作）
   const worktreeVisible = $('newTaskWorktreeRow').style.display !== 'none';
   const worktree = worktreeVisible && $('newTaskWorktree').checked;
   const baseBranch = worktreeVisible ? ($('newTaskBaseBranch').value || '') : '';
-  const attachments = newTaskAttachCtl.get();   // 附加本地文件：随任务发给 claude
+  const attachments = newTaskAttachCtl.get();   // 附加本地文件：随任务发给 Agent
   const errBox = $('newTaskErr');
   const warnBox = $('newTaskWarn');
   errBox.style.display = 'none';
@@ -3163,7 +3214,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
       const r = await api(`/api/task/edit?taskKey=${encodeURIComponent(editing)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, prompt, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }),
+        body: JSON.stringify({ title, prompt, provider, model, description, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }),
       });
       if (!r.ok) { errBox.textContent = r.error || '未知错误'; errBox.style.display = 'block'; return; }
       closeNewTaskModal();
@@ -3174,7 +3225,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
     const r = await api('/api/task/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, prompt, model, description, plan: true, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }),
+      body: JSON.stringify({ title, prompt, provider, model, description, plan: true, cwd, effort, scheduledAt, worktree, baseBranch, dynamicWorkflow, attachments }),
     });
     if (!r.ok) {
       errBox.textContent = r.error || '未知错误';
@@ -3349,10 +3400,9 @@ window.removeCliSession = async (sid) => {
   } catch (e) { customAlert({ title: '移除失败', message: escapeHtml(e.message) }); }
 };
 
-// ---- 模型·effort 合并选择器（claude.ai 风格）：单按钮 → 主菜单（当前模型 + Effort› + 更多模型›）+ 两个二级飞出面板 ----
-// 隐藏的两个 <select>（同 ID）仍是 value 载体，后端读它；这里只把 model / effort 两轴合进一个按钮 + 一个 popover。
-// 显示名对齐参考图（Extra=xhigh、Max=max），但 value 保持 claude --effort 白名单不变（见 session-manager.js ALLOWED_EFFORTS）。
-const BASE_MODELS = [
+// ---- provider 驱动的模型·effort 合并选择器 ----
+// provider catalog 是模型/effort 白名单的唯一来源；这里仅保留 Claude 模型的友好显示文案。
+const CLAUDE_MODEL_META = [
   { value: 'claude-opus-4-8',           name: 'Opus 4.8',  desc: '旗舰推理 · 全局默认' },
   { value: 'claude-fable-5',            name: 'Fable 5',   desc: '最强推理 · 高于 Opus · issue 分析默认', badge: '配额 2×' },
   { value: 'claude-opus-4-7',           name: 'Opus 4.7',  desc: '上一代旗舰' },
@@ -3363,88 +3413,79 @@ const BASE_MODELS = [
 function normalizeModelValue(raw) {
   if (!raw) return '';
   const strip = (s) => s.replace(/-\d{6,}$/, '');
-  const hit = BASE_MODELS.find((m) => m.value === raw)
-    || BASE_MODELS.find((m) => strip(m.value) === strip(raw) || raw.startsWith(strip(m.value)));
+  const hit = CLAUDE_MODEL_META.find((m) => m.value === raw)
+    || CLAUDE_MODEL_META.find((m) => strip(m.value) === strip(raw) || raw.startsWith(strip(m.value)));
   return hit ? hit.value : raw;
 }
-// 档位 = claude CLI --effort 真实枚举（值全部合法）；显示名对齐 CC 菜单（xhigh→xHigh），默认 xhigh
-// 注：ultracode 不是 --effort 值（是「xhigh + 全模型」的会话模式，靠关键词/设置开启），故不入此列表
-const EFFORT_OPTIONS = [
-  { value: 'low',    name: 'Low' },
-  { value: 'medium', name: 'Medium' },
-  { value: 'high',   name: 'High' },
-  { value: 'xhigh',  name: 'xHigh', isDefault: true },
-  { value: 'max',    name: 'Max', info: '最深推理 · 最慢、最耗额度' },
-];
 const EFFORT_HEAD = '更高档位推理更充分，但更慢、也更快消耗额度。';
+
+function providerModels(def) {
+  const values = Array.isArray(def?.models) ? def.models : [];
+  const items = values.map((value) => CLAUDE_MODEL_META.find((m) => m.value === value)
+    || { value, name: value, desc: '' });
+  if (def?.allowCustomModel) {
+    items.unshift({ value: '', name: 'CLI 默认模型', desc: '使用本机 Codex 配置的默认模型' });
+    items.push({ value: '__custom__', name: '自定义模型…', desc: '输入 Codex CLI 支持的模型 ID' });
+  }
+  return items.length ? items : [{ value: '', name: 'CLI 默认模型', desc: '' }];
+}
+function providerEfforts(def) {
+  return (Array.isArray(def?.efforts) ? def.efforts : []).map((value) => ({
+    value,
+    name: value === 'xhigh' ? 'xHigh' : value.charAt(0).toUpperCase() + value.slice(1),
+    isDefault: value === def?.defaultEffort,
+    info: value === 'max' || value === 'ultra' ? '最深推理 · 最慢、最耗额度' : '',
+  }));
+}
 
 // 单实例初始化：modelSelectId / effortSelectId 是隐藏 select（value 载体，后端读它）。
 // 回复条装配时按任务实际 model/effort 播种（见 __seedReplyModel）；新建表单播种默认值。
 // inScroll=true：宿主在 overflow:auto 容器内（新建任务表单）——主菜单改 fixed 定位挂 viewport，按上下空间自动选方向。
-function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortSelectId, inScroll = false }) {
+function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortSelectId, providerSelectId = null, inScroll = false }) {
   const wrap = $(wrapId), btn = $(btnId), menu = $(menuId);
   const modelSel = $(modelSelectId), effortSel = $(effortSelectId);
   if (!wrap || !btn || !menu || !modelSel || !effortSel) return null;
   const btnModel = btn.querySelector('.mes-btn-model');
   const btnEffort = btn.querySelector('.mes-btn-effort');
 
-  const models = BASE_MODELS;
-  const efforts = EFFORT_OPTIONS;
+  const providerSel = providerSelectId ? $(providerSelectId) : null;
+  let def = providerDef(providerSel?.value || 'claude') || {
+    id: 'claude', label: 'Claude Code', models: CLAUDE_MODEL_META.map((m) => m.value), efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultModel: 'claude-opus-4-8', defaultEffort: 'xhigh', allowCustomModel: false,
+  };
+  let models = providerModels(def);
+  let efforts = providerEfforts(def);
+  let subEffort, subModels, slotModelName, slotModelDesc, slotEffortVal;
 
-  const effortItems = efforts.map((e) => `
-    <button type="button" class="mes-item" data-eff="${escapeAttr(e.value)}" role="menuitemradio">
-      <span class="mes-item-lead">
-        <span class="mes-item-name">${escapeHtml(e.name)}</span>
-        ${e.isDefault ? '<span class="mes-item-default">默认</span>' : ''}
-        ${e.info ? `<span class="mes-item-info" title="${escapeAttr(e.info)}">ⓘ</span>` : ''}
-      </span>
-      <span class="mes-item-check" aria-hidden="true">✓</span>
-    </button>`).join('');
-  const modelItems = models.map((m) => `
-    <button type="button" class="mes-item" data-model="${escapeAttr(m.value)}" role="menuitemradio">
-      <span class="mes-item-lead">
-        <span class="mes-item-name">${escapeHtml(m.name)}</span>
-        ${m.badge ? `<span class="mes-item-tag">${escapeHtml(m.badge)}</span>` : ''}
-      </span>
-      <span class="mes-item-check" aria-hidden="true">✓</span>
-    </button>`).join('');
+  function rebuildMenu() {
+    const effortItems = efforts.map((e) => `
+      <button type="button" class="mes-item" data-eff="${escapeAttr(e.value)}" role="menuitemradio">
+        <span class="mes-item-lead"><span class="mes-item-name">${escapeHtml(e.name)}</span>${e.isDefault ? '<span class="mes-item-default">默认</span>' : ''}${e.info ? `<span class="mes-item-info" title="${escapeAttr(e.info)}">ⓘ</span>` : ''}</span>
+        <span class="mes-item-check" aria-hidden="true">✓</span>
+      </button>`).join('');
+    const modelItems = models.map((m) => `
+      <button type="button" class="mes-item" data-model="${escapeAttr(m.value)}" role="menuitemradio">
+        <span class="mes-item-lead"><span class="mes-item-name">${escapeHtml(m.name)}</span>${m.badge ? `<span class="mes-item-tag">${escapeHtml(m.badge)}</span>` : ''}</span>
+        <span class="mes-item-check" aria-hidden="true">✓</span>
+      </button>`).join('');
+    menu.innerHTML = `
+      <div class="mes-main">
+        <button type="button" class="mes-row mes-row-model" data-nav="models"><span class="mes-row-main"><span class="mes-row-name" data-slot="model-name"></span><span class="mes-row-desc" data-slot="model-desc"></span></span><span class="mes-check on" aria-hidden="true">✓</span></button>
+        <div class="mes-hair"></div>
+        <button type="button" class="mes-row mes-row-nav" data-nav="effort"><span class="mes-row-label">Effort</span><span class="mes-row-val" data-slot="effort-val"></span><span class="mes-row-arrow" aria-hidden="true">›</span></button>
+        <button type="button" class="mes-row mes-row-nav" data-nav="models"><span class="mes-row-label">更多模型</span><span class="mes-row-arrow" aria-hidden="true">›</span></button>
+      </div>
+      <div class="mes-sub" data-sub="effort"><div class="mes-sub-head">${escapeHtml(EFFORT_HEAD)}</div>${effortItems}</div>
+      <div class="mes-sub" data-sub="models">${modelItems}</div>`;
+    subEffort = menu.querySelector('.mes-sub[data-sub="effort"]');
+    subModels = menu.querySelector('.mes-sub[data-sub="models"]');
+    slotModelName = menu.querySelector('[data-slot="model-name"]');
+    slotModelDesc = menu.querySelector('[data-slot="model-desc"]');
+    slotEffortVal = menu.querySelector('[data-slot="effort-val"]');
+  }
 
-  menu.innerHTML = `
-    <div class="mes-main">
-      <button type="button" class="mes-row mes-row-model" data-nav="models">
-        <span class="mes-row-main">
-          <span class="mes-row-name" data-slot="model-name"></span>
-          <span class="mes-row-desc" data-slot="model-desc"></span>
-        </span>
-        <span class="mes-check on" aria-hidden="true">✓</span>
-      </button>
-      <div class="mes-hair"></div>
-      <button type="button" class="mes-row mes-row-nav" data-nav="effort">
-        <span class="mes-row-label">Effort</span>
-        <span class="mes-row-val" data-slot="effort-val"></span>
-        <span class="mes-row-arrow" aria-hidden="true">›</span>
-      </button>
-      <button type="button" class="mes-row mes-row-nav" data-nav="models">
-        <span class="mes-row-label">更多模型</span>
-        <span class="mes-row-arrow" aria-hidden="true">›</span>
-      </button>
-    </div>
-    <div class="mes-sub" data-sub="effort">
-      <div class="mes-sub-head">${escapeHtml(EFFORT_HEAD)}</div>
-      ${effortItems}
-    </div>
-    <div class="mes-sub" data-sub="models">${modelItems}</div>`;
-
-  const subEffort = menu.querySelector('.mes-sub[data-sub="effort"]');
-  const subModels = menu.querySelector('.mes-sub[data-sub="models"]');
-  const slotModelName = menu.querySelector('[data-slot="model-name"]');
-  const slotModelDesc = menu.querySelector('[data-slot="model-desc"]');
-  const slotEffortVal = menu.querySelector('[data-slot="effort-val"]');
-
-  // 认得的 model → 友好名 + 描述；认不出（未知/带版本）→ 合成条目直接显示原值，绝不静默回落成 Opus
-  const curModel = () => models.find((m) => m.value === modelSel.value)
-    || (modelSel.value ? { value: modelSel.value, name: modelSel.value, desc: '' } : models[0]);
-  const curEffort = () => efforts.find((e) => e.value === effortSel.value) || efforts[0];
+  const curModel = () => models.find((m) => m.value === modelSel.value && m.value !== '__custom__')
+    || (modelSel.value ? { value: modelSel.value, name: modelSel.value, desc: '' } : models.find((m) => m.value === '') || models[0]);
+  const curEffort = () => efforts.find((e) => e.value === effortSel.value) || efforts[0] || { value: '', name: '—' };
 
   function render() {
     const m = curModel(), e = curEffort();
@@ -3463,7 +3504,19 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
     modelSel.value = v; render();
   };
   const setEffort = (v) => { effortSel.value = v; render(); };
-  render();
+  const setProvider = (provider, model, effort) => {
+    def = providerDef(provider) || def;
+    if (providerSel) providerSel.value = def.id;
+    models = providerModels(def);
+    efforts = providerEfforts(def);
+    modelSel.innerHTML = models.filter((m) => m.value !== '__custom__').map((m) => `<option value="${escapeAttr(m.value)}">${escapeHtml(m.name)}</option>`).join('');
+    effortSel.innerHTML = efforts.map((e) => `<option value="${escapeAttr(e.value)}">${escapeHtml(e.name)}</option>`).join('');
+    rebuildMenu();
+    setModel(model != null ? model : def.defaultModel);
+    setEffort(effort || def.defaultEffort);
+  };
+  rebuildMenu();
+  setProvider(def.id, modelSel.value || def.defaultModel, effortSel.value || def.defaultEffort);
 
   // 二级飞出：右侧展开，getBoundingClientRect 溢出右边界则翻左（.flip）
   let openSub = null;
@@ -3511,7 +3564,14 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
     const effItem = e.target.closest('[data-eff]');
     if (effItem) { setEffort(effItem.dataset.eff); closeMenu(); btn.focus(); return; }
     const mdlItem = e.target.closest('[data-model]');
-    if (mdlItem) { setModel(mdlItem.dataset.model); closeMenu(); btn.focus(); return; }
+    if (mdlItem) {
+      if (mdlItem.dataset.model === '__custom__') {
+        closeMenu();
+        customPrompt({ title: '自定义模型', message: '输入本机 Codex CLI 支持的模型 ID', initial: modelSel.value, placeholder: '例如 gpt-5.4' })
+          .then((value) => { if (value != null && value.trim()) setModel(value.trim()); });
+      } else { setModel(mdlItem.dataset.model); closeMenu(); btn.focus(); }
+      return;
+    }
     const nav = e.target.closest('[data-nav]');   // 键盘/点击可达：点导航行也展开
     if (nav) showSub(nav.dataset.nav);
   });
@@ -3521,7 +3581,8 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && menu.classList.contains('open')) { closeMenu(); btn.focus(); }
   });
-  return { setModel, setEffort };
+  providerSel?.addEventListener('change', () => setProvider(providerSel.value));
+  return { setProvider, setModel, setEffort };
 }
 
 let replyMesCtl = null;
@@ -3531,9 +3592,11 @@ function initReplyModelSelector() {
     modelSelectId: 'modalReplyModel', effortSelectId: 'modalReplyEffort', inScroll: false,
   });
   // 装配 composer 时按任务当前实际 model/effort 播种（不再显示「继承」占位）——发送时带的实际值 == 不带时后端继承的同一值，语义等价
-  window.__seedReplyModel = (model, effort) => {
-    replyMesCtl?.setModel(normalizeModelValue(model) || 'claude-opus-4-8');
-    replyMesCtl?.setEffort(effort || 'xhigh');
+  window.__seedReplyModel = (provider, model, effort) => {
+    const def = providerDef(provider) || providerDef('claude');
+    replyMesCtl?.setProvider(def?.id || 'claude', def?.id === 'claude' ? normalizeModelValue(model) : model, effort);
+    const badge = $('modalReplyProvider');
+    if (badge) badge.textContent = def?.label || provider || 'Claude Code';
   };
 }
 
@@ -3541,8 +3604,18 @@ let newTaskMesCtl = null;
 function initNewTaskModelSelector() {
   newTaskMesCtl = initModelEffortSelector({
     wrapId: 'newTaskMesWrap', btnId: 'newTaskMesBtn', menuId: 'newTaskMesMenu',
-    modelSelectId: 'newTaskModel', effortSelectId: 'newTaskEffort', inScroll: true,
+    modelSelectId: 'newTaskModel', effortSelectId: 'newTaskEffort', providerSelectId: 'newTaskProvider', inScroll: true,
   });
+  $('newTaskProvider')?.addEventListener('change', syncNewTaskProviderCapabilities);
+}
+
+function syncNewTaskProviderCapabilities() {
+  const def = providerDef($('newTaskProvider')?.value || 'claude');
+  const field = $('newTaskWorkflowField');
+  const input = $('newTaskDynamicWorkflow');
+  const supported = !!def?.capabilities?.dynamicWorkflow;
+  if (field) field.style.display = supported ? '' : 'none';
+  if (input && !supported) input.checked = false;
 }
 
 // 计时器重排（modal 关闭时 / 改间隔时调用即可按最新间隔重新计时；modal 打开期间轮询由 modalOpen 门控跳过）
@@ -3598,46 +3671,54 @@ function loadSession(id) {
 function mbOnEvent(ev) {
   if (!mb) return;
   switch (ev.type) {
-    case 'stream_event': {
-      const e = ev.event;
-      if (!e) return;
-      if (e.type === 'content_block_delta' && e.delta) {
-        const d = e.delta;
-        if (d.type === 'text_delta') { mb.liveText += d.text || ''; mbScheduleLive(); }
-        // thinking 态：thinking_delta 期间为真；正文/工具入参 delta 一来即结束（供底部实时状态行显示 " · thinking"）
-        if (mb.liveUsage) { if (d.type === 'thinking_delta') mb.liveUsage.thinking = true; else if (d.type === 'text_delta' || d.type === 'input_json_delta') mb.liveUsage.thinking = false; }
-        // 下行估算：累计所有 delta 文本长度（text/thinking/tool 入参），≈ output tokens（thinking 不可见但计费）
-        const dl = (d.text || d.thinking || d.partial_json || '').length;
-        if (dl && mb.liveUsage) { mb.liveUsage.outChars += dl; mbScheduleLive(); }
-      } else if (e.type === 'message_start') {
-        // 上行（input+cache）在开跑即知 → 即时真值；下行待末尾
-        const u = e.message?.usage || {};
-        mb.liveUsage = { up: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), outChars: 0, outReal: null, active: true, thinking: false };
-        if (!mb.turnStartedAt) { mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); }
-        if (!mb.syncing) mbUpdateLiveTokens();
-      } else if (e.type === 'message_delta' && e.usage) {
-        // CC 只在末尾发一次 message_delta（实测：逐 token 增长不可得）→ 拿到本轮下行真值
-        if (mb.liveUsage) { mb.liveUsage.outReal = e.usage.output_tokens ?? null; }
-        // 贴到最近一条 assistant 事件的 message.usage，供每轮 token footer 显示真值
-        for (let i = mb.transcript.length - 1; i >= 0; i--) { if (mb.transcript[i].type === 'assistant' && mb.transcript[i].message) { mb.transcript[i].message.usage = e.usage; break; } }
-        if (!mb.syncing) { mbUpdateLiveTokens(); mbRenderBody(); }
-      }
+    case 'message_delta': {
+      if (!mb.liveUsage) mb.liveUsage = { up: 0, outChars: 0, outReal: null, active: true, thinking: false };
+      if (ev.blockType === 'text') mb.liveText += ev.delta || '';
+      mb.liveUsage.thinking = ev.blockType === 'thinking';
+      mb.liveUsage.outChars += String(ev.delta || '').length;
+      if (!mb.turnStartedAt) { mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); }
+      mbScheduleLive();
       return;
     }
-    case 'assistant': mb.transcript.push(ev); mb.liveText = ''; if (!mb.syncing) mbRenderBody(); return;
-    case 'user': mb.transcript.push(ev); if (!mb.syncing) mbRenderBody(); return;
-    case 'result': mb.liveText = ''; mb.state = 'idle'; mb.turnStartedAt = null; if (mb.liveUsage) { mb.liveUsage.active = false; mb.liveUsage.thinking = false; } if (!mb.syncing) { mbRenderBody(); mbSyncLiveHead(); } return;
-    case 'system':
-      if (ev.subtype === 'init') { if (ev.session_id) mb.info.claudeSessionId = ev.session_id; mb.state = 'running'; if (!mb.syncing) mbSyncLiveHead(); }
-      // 后台任务全表：CC 增删都全量推（起任务推 [x]、任务结束推 []）→ 直接覆盖，不自行增删
-      else if (ev.subtype === 'background_tasks_changed') { mb.bgTasks = Array.isArray(ev.tasks) ? ev.tasks : []; if (!mb.syncing) mbRenderBgTasks(); }
-      return;
-    case 'control_request':
-      if (ev.request && ev.request.subtype === 'can_use_tool') {
-        mb.perms.push({ requestId: ev.request_id, toolName: ev.request.tool_name || 'Tool', input: ev.request.input || {} });
-        if (!mb.syncing) mbRenderBody();
+    case 'message':
+      mb.transcript.push(ev);
+      if (ev.message?.role === 'assistant') {
+        mb.liveText = '';
+        const u = ev.message.usage;
+        if (u) {
+          if (!mb.liveUsage) mb.liveUsage = { up: 0, outChars: 0, outReal: null, active: true, thinking: false };
+          mb.liveUsage.up = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+          mb.liveUsage.outReal = u.output_tokens ?? null;
+        }
       }
+      if (!mb.syncing) mbRenderBody();
       return;
+    case 'turn_usage': {
+      const u = ev.usage || {};
+      if (!mb.liveUsage) mb.liveUsage = { up: 0, outChars: 0, outReal: null, active: true, thinking: false };
+      mb.liveUsage.up = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      mb.liveUsage.outReal = u.output_tokens ?? mb.liveUsage.outReal;
+      mb.info.lastUsage = { ...u, contextWindow: ev.contextWindow ?? null };
+      if (!mb.syncing) mbUpdateLiveTokens();
+      return;
+    }
+    case 'turn_completed':
+      mb.liveText = ''; mb.state = 'idle'; mb.turnStartedAt = null;
+      if (mb.liveUsage) { mb.liveUsage.active = false; mb.liveUsage.thinking = false; }
+      if (!mb.syncing) { mbRenderBody(); mbSyncLiveHead(); }
+      return;
+    case 'session_initialized':
+      if (ev.sessionId) { mb.info.sessionId = ev.sessionId; mb.info.claudeSessionId = ev.provider === 'claude' ? ev.sessionId : null; }
+      if (ev.provider) mb.info.provider = ev.provider;
+      if (ev.model != null) mb.info.model = ev.model;
+      mb.state = 'running'; if (!mb.syncing) mbSyncLiveHead(); return;
+    case 'background_tasks':
+      mb.bgTasks = Array.isArray(ev.tasks) ? ev.tasks : []; if (!mb.syncing) mbRenderBgTasks(); return;
+    case 'approval_requested':
+      mb.perms.push({ requestId: ev.requestId, kind: ev.kind, toolName: ev.toolName || 'Tool', input: ev.input || {}, questions: ev.questions || null });
+      if (!mb.syncing) mbRenderBody(); return;
+    case 'approval_resolved':
+      mb.perms = mb.perms.filter((p) => p.requestId !== ev.requestId); if (!mb.syncing) mbRenderBody(); return;
     case 'closed': mb.state = 'closed'; if (!mb.syncing) { mbSyncLiveHead(); mbRenderBody(); } return;
     case 'error': mb.state = 'error'; mb.lastError = ev.error; if (!mb.syncing) mbSyncLiveHead(); return;
     default: return;
@@ -3718,7 +3799,7 @@ function mbToRounds() {
   const messages = [];
   let curAsst = null;
   for (const ev of mb.transcript) {
-    if (ev.type === 'assistant' && ev.message) {
+    if (ev.type === 'message' && ev.message?.role === 'assistant') {
       const mid = ev.message.id || null;
       if (curAsst && mid && curAsst._mid === mid) {
         for (const c of ev.message.content || []) {
@@ -3731,7 +3812,7 @@ function mbToRounds() {
         curAsst = { role: 'assistant', _mid: mid, at: (ev.message.content || [])[0]?._ts || null, content: [...(ev.message.content || [])], usage: ev.message.usage || null, model: ev.message.model || null };
         messages.push(curAsst);
       }
-    } else if (ev.type === 'user' && ev.message) {
+    } else if (ev.type === 'message' && ev.message?.role === 'user') {
       curAsst = null;
       let content = ev.message.content;
       if (typeof content === 'string') content = [{ type: 'text', text: content }];
@@ -3761,7 +3842,7 @@ function mbToRounds() {
     ? (lastAsstU.input_tokens || 0) + (lastAsstU.cache_read_input_tokens || 0) + (lastAsstU.cache_creation_input_tokens || 0)
     : null;
   return [{
-    round: 1, sessionId: mb.info?.claudeSessionId || null, inflight, messages,
+    round: 1, sessionId: mb.info?.sessionId || mb.info?.claudeSessionId || null, inflight, messages,
     cwd: mb.info?.cwd || null, gitBranch,
     ccSummary: { model: mb.info?.model || null, workMs: workMs > 0 ? workMs : null, contextSize },
     humanCc: [],
@@ -3838,15 +3919,15 @@ function mbRenderBody() {
   // 供右侧 renderTaskSide 读 live 轮次/token/● 实时（live 模式不走 /api/worker-log，currentModalData 由此喂）
   currentModalData = { rounds, hasInflight: mb.state === 'running' || mb.state === 'starting' };
   syncContextRing(modalPollTaskKey);   // 底栏上下文环形跟随 live 上下文变化（多数 live 事件只走 mbRenderBody，不经 renderTaskSide）
-  let html = rounds[0].messages.length ? renderDetailTab({ rounds }, true) : '<div style="color:var(--dim);padding:12px 0">等待 claude 响应…</div>';
+  let html = rounds[0].messages.length ? renderDetailTab({ rounds }, true) : '<div style="color:var(--dim);padding:12px 0">等待 Agent 响应…</div>';
   if (mb.liveText) html += `<div class="cc-line cc-text"><span class="cc-dot">⏺</span><div class="mb-live" id="mbLive">${escapeHtml(mb.liveText)}</div></div>`;
   const running = mb.state === 'running' || mb.state === 'starting';
   if (running) html += `<div class="cc-dur cc-dur-total mb-status" id="mbStatus">${mbStatusHtml()}</div>`;
   for (const p of mb.perms) {
-    html += (p.toolName === 'AskUserQuestion' && Array.isArray(p.input?.questions))
+    html += ((p.kind === 'request_user_input' || p.toolName === 'AskUserQuestion') && (Array.isArray(p.questions) || Array.isArray(p.input?.questions)))
       ? mbAskCardHtml(p)
       : `<div class="perm-card">
-      <div class="pc-tool">🔐 claude 请求使用工具 <span style="color:var(--amber)">${escapeHtml(p.toolName)}</span></div>
+      <div class="pc-tool">🔐 Agent 请求使用工具 <span style="color:var(--amber)">${escapeHtml(p.toolName)}</span></div>
       <pre>${escapeHtml(JSON.stringify(p.input, null, 2).slice(0, 2000))}</pre>
       <div class="pc-actions">
         <button class="btn btn-primary" onclick="mbRespond('${escapeAttr(p.requestId)}', true)">允许</button>
@@ -3860,7 +3941,7 @@ function mbRenderBody() {
 
 // S8：AskUserQuestion 交互卡 —— 渲染问题 + 选项（单选 radio / 多选 checkbox），提交回传 answers
 function mbAskCardHtml(p) {
-  const qs = p.input.questions || [];
+  const qs = p.questions || p.input.questions || [];
   const body = qs.map((q, qi) => {
     const multi = !!q.multiSelect;
     const opts = (q.options || []).map((o) => `
@@ -3876,7 +3957,7 @@ function mbAskCardHtml(p) {
     </div>`;
   }).join('');
   return `<div class="perm-card ask-card" data-req="${escapeAttr(p.requestId)}">
-    <div class="pc-tool">💬 claude 想问你</div>
+    <div class="pc-tool">💬 Agent 想问你</div>
     ${body}
     <div class="pc-actions">
       <button class="btn btn-primary" onclick="mbSubmitAnswers('${escapeAttr(p.requestId)}')">提交</button>
@@ -3937,7 +4018,7 @@ async function mbSend() {
   const tk = mb.info?.taskKey;
   const useTaskReply = tk && !findTaskInState(tk)?.cli;
   const payload = { message: msg };
-  if (attachments.length) payload.attachments = attachments;   // 附加本地文件：后端拼进文本尾部让 claude 用 Read 读
+  if (attachments.length) payload.attachments = attachments;   // 附加本地文件：后端拼进文本尾部让 Agent 读取
   const r = useTaskReply
     ? await api(`/api/task/reply?taskKey=${encodeURIComponent(tk)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch((e) => ({ ok: false, error: e.message }))
     : await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch((e) => ({ ok: false, error: e.message }));
@@ -3956,9 +4037,10 @@ window.mbRespond = async (requestId, allow) => {
 window.mbInterrupt = () => { if (mb) api(`/api/session/interrupt?id=${encodeURIComponent(mb.id)}`, { method: 'POST' }).catch(() => {}); };
 
 // ---- init ----
-initReplyModelSelector();
-initNewTaskModelSelector();
-refreshState().then(() => {
+refreshState().then(async () => {
+  await ensureProviderCatalog();
+  initReplyModelSelector();
+  initNewTaskModelSelector();
   // 老式深链接 ?task=<key>&tab=<tab> 兼容 → 转成 hash 路由
   const q = new URLSearchParams(location.search);
   const deepTask = q.get('task');
