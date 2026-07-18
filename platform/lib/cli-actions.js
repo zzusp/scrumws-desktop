@@ -6,6 +6,7 @@ import os from 'node:os';
 import { fmt } from './timeutil.js';
 import * as watchlist from './cli-watchlist.js';
 import { locateJsonlBySid, isCliSessionActive } from './collect-cli.js';
+import { addCodexCliSession, recentCodexCliSessions, searchCodexCliSessions } from './collect-codex-cli.js';
 import { collectKnownSessionIds } from './logs.js';
 import { detectWorktreeBase } from './git.js';
 
@@ -148,10 +149,11 @@ const HEX_RE = /^[a-f0-9-]{6,}$/i;
 // body: { q: string, limit?: 20 }
 // - q 全为 hex/dash 且 ≥6 字符 → UUID 前缀模式（跨全部项目目录直接命中）
 // - 否则关键字 → 近 30d 内 jsonl 头 32KB grep（避免全文扫）
-export function searchCliSessions({ q, limit = 20 } = {}) {
+export function searchCliSessions({ q, limit = 20, provider = 'all' } = {}) {
   const query = String(q || '').trim();
   if (!query) return { ok: false, error: 'q required' };
   const addedSet = boardSessionIds();
+  if (provider === 'codex') return searchCodexCliSessions({ q, limit, added: addedSet });
   const items = listAllJsonl({ maxAgeDays: 30 });
   const isHex = HEX_RE.test(query);
   let keywords = [];
@@ -181,14 +183,19 @@ export function searchCliSessions({ q, limit = 20 } = {}) {
       alreadyAdded: addedSet.has(it.sid),
     };
   });
-  return { ok: true, candidates: result, total: candidates.length };
+  if (provider === 'claude') return { ok: true, candidates: result.map((item) => ({ ...item, provider: 'claude' })), total: result.length };
+  const codex = searchCodexCliSessions({ q, limit, added: addedSet });
+  const candidatesAll = [...result.map((item) => ({ ...item, provider: 'claude' })), ...(codex.candidates || [])]
+    .sort((a, b) => String(b.mtime || '').localeCompare(String(a.mtime || ''))).slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
+  return { ok: true, candidates: candidatesAll, total: candidatesAll.length };
 }
 
 // GET /api/cli/recent —— 添加弹窗默认列表：近 N 分钟内活跃（jsonl mtime）的 CLI session，免关键字
 // 复用 listAllJsonl（已按 mtime 倒序）+ head 预览，返回结构与 searchCliSessions 的 candidates 一致
-export function recentCliSessions({ withinMinutes = 30, limit = 30 } = {}) {
+export function recentCliSessions({ withinMinutes = 30, limit = 30, provider = 'all' } = {}) {
   const mins = Math.max(1, Math.min(1440, Number(withinMinutes) || 30));
   const addedSet = boardSessionIds();
+  if (provider === 'codex') return recentCodexCliSessions({ withinMinutes, limit, added: addedSet });
   const cutoff = Date.now() - mins * 60 * 1000;
   const items = listAllJsonl({ maxAgeDays: 1 }).filter((it) => it.mtimeMs >= cutoff);
   const picked = items.slice(0, Math.max(1, Math.min(50, Number(limit) || 30)));
@@ -206,7 +213,11 @@ export function recentCliSessions({ withinMinutes = 30, limit = 30 } = {}) {
       alreadyAdded: addedSet.has(it.sid),
     };
   });
-  return { ok: true, candidates, total: candidates.length, withinMinutes: mins };
+  const tagged = candidates.map((item) => ({ ...item, provider: 'claude' }));
+  if (provider === 'claude') return { ok: true, candidates: tagged, total: tagged.length, withinMinutes: mins };
+  const codex = recentCodexCliSessions({ withinMinutes, limit, added: addedSet });
+  const combined = [...tagged, ...(codex.candidates || [])].sort((a, b) => String(b.mtime || '').localeCompare(String(a.mtime || ''))).slice(0, Math.max(1, Math.min(50, Number(limit) || 30)));
+  return { ok: true, candidates: combined, total: combined.length, withinMinutes: mins };
 }
 
 // 近 30 天 CLI session 的 cwd 去重列表（本机常用工作目录来源）—— 新建任务「选已有工作目录」下拉用
@@ -223,11 +234,16 @@ export function sessionCwds({ limit = 60 } = {}) {
 
 // POST /api/cli/add
 // body: { sid: string, customTitle?: string }
-export function addCliSession({ sid, customTitle } = {}) {
+export function addCliSession({ sid, customTitle, provider = 'claude' } = {}) {
   if (!watchlist.isValidSid(sid)) return { ok: false, error: 'invalid sid（需完整 uuid）' };
+  if (provider === 'codex') {
+    const r = addCodexCliSession({ sid, customTitle });
+    return r.ok ? { ok: true, sid, provider: 'codex', taskKey: `cli:${sid.slice(0, 8)}`, entry: r.entry } : r;
+  }
   const located = locateJsonlBySid(sid);
   if (!located) return { ok: false, error: 'jsonl not found（sid 在本机 ~/.claude/projects 下不存在）' };
   const r = watchlist.upsertWatchlist(sid, {
+    provider: 'claude',
     customTitle: customTitle ? String(customTitle).trim().slice(0, 200) : null,
     jsonlPath: located.jsonlPath,
     projectDir: located.projectDir,

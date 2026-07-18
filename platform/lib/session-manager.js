@@ -7,6 +7,7 @@ import {
   resolveProviderSelection,
   validateProviderSelection,
 } from './providers/registry.js';
+import { isProviderEnabled } from './runner-config.js';
 
 const TRANSCRIPT_CAP = 2000;
 const sessions = new Map();
@@ -244,6 +245,9 @@ export function createSession({
   if (!selection.ok) return selection;
   const validated = validateProviderSelection(selection);
   if (!validated.ok) return validated;
+  if (!isProviderEnabled(selection.provider)) {
+    return { ok: false, provider: selection.provider, error: `${selection.definition.label} 运行时已关闭；请先在「运行时」页开启` };
+  }
 
   const id = randomUUID();
   const session = new Session({

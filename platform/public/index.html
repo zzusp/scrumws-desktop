@@ -582,6 +582,23 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .ctx-tip-row span:first-child{color:var(--mut)}
 .ctx-tip-note{font-size:10px;color:var(--dim);line-height:1.5;margin-top:7px}
 /* ==== 模型·effort 合并选择器（claude.ai 风格：单按钮 → 主菜单 + Effort/更多模型 二级飞出）==== */
+.provider-picker{position:relative;min-width:194px}
+.provider-btn{width:100%;justify-content:flex-start;text-align:left}
+.provider-btn-main{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.provider-btn-name{font-weight:650;color:var(--ink);font-size:12.5px}
+.provider-btn-meta{font-family:var(--mono);font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.provider-menu{position:fixed;z-index:1060;width:min(340px,calc(100vw - 24px));padding:5px;background:var(--popover);box-shadow:var(--ring1),var(--shadow);border-radius:var(--r-lg);display:none;animation:rise .15s}
+.provider-menu.open{display:block}
+.provider-option{width:100%;border:0;border-radius:var(--r-md);background:transparent;color:var(--ink2);padding:9px 10px;display:flex;align-items:center;gap:10px;text-align:left;cursor:pointer;font-family:var(--sans)}
+.provider-option:hover,.provider-option:focus-visible{background:var(--accent);outline:none}
+.provider-option[aria-selected="true"]{background:var(--accent)}
+.provider-option:disabled{opacity:.45;cursor:not-allowed}
+.provider-option-mark{color:var(--brand);font-weight:700;opacity:0;flex:none}
+.provider-option[aria-selected="true"] .provider-option-mark{opacity:1}
+.provider-option-copy{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.provider-option-name{font-size:12.5px;font-weight:650;color:var(--ink)}
+.provider-option-desc{font-size:10.5px;color:var(--mut);line-height:1.4}
+.provider-option-state{font-size:10px;font-family:var(--mono);color:var(--dim);flex:none}
 .mes-btn{font-family:var(--sans);font-size:11px;padding:5px 10px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);outline:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;max-width:100%;transition:border-color .15s,background .15s}
 .mes-btn.form-size{font-size:12.5px;padding:8px 12px;align-self:flex-start}
 .mes-btn:hover{background:var(--raise);border-color:var(--hair2)}
@@ -661,7 +678,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .prompt-hint{display:flex;align-items:center;margin-top:7px;font-size:10.5px;color:var(--dim);font-family:var(--mono)}
 .prompt-count{margin-left:auto;font-variant-numeric:tabular-nums}
 
-/* ---------- 运行时视图：运行时卡片 + 用量 stat tiles（参考 multica Runtime Panel）---------- */
+/* ---------- 运行时视图：Provider 卡 + 用量/趋势 ---------- */
 #runtimeCard{display:flex;flex-direction:column;gap:18px}
 #runtimeCard .rt-panel+.rt-panel{border-top:1px solid var(--hair);padding-top:18px}
 .rt-panel{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
@@ -681,10 +698,13 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .rt-kv{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}
 .rt-kv .k{font-size:10px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 .rt-kv .v{font-family:var(--mono);font-size:12px;color:var(--ink2);word-break:break-all;overflow:hidden;text-overflow:ellipsis;max-width:340px}
-.rt-sessions{flex:none;text-align:center;padding:10px 24px;border-radius:var(--r-lg);background:color-mix(in oklab,var(--muted) 45%,transparent);align-self:center}
-.rt-sess-num{font-family:var(--display);font-size:28px;font-weight:700;color:var(--ink);line-height:1;font-variant-numeric:tabular-nums}
-.rt-sess-label{font-size:11px;color:var(--mut);margin-top:6px;font-weight:500}
-.rt-sess-sub{font-size:10px;color:var(--dim);margin-top:3px;font-family:var(--mono)}
+.rt-actions{display:flex;align-items:center;gap:8px;align-self:flex-start}
+.rt-toggle{font-size:11.5px;padding:6px 11px;white-space:nowrap}
+.rt-toggle.stop{color:var(--coralT)}
+.rt-account{width:100%;margin-top:14px;padding-top:13px;border-top:1px solid var(--hair)}
+.rt-account-head{display:flex;align-items:baseline;gap:8px;margin-bottom:10px}
+.rt-account-title{font-size:11px;font-weight:650;color:var(--ink2)}
+.rt-account-note{font-size:10.5px;color:var(--dim)}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
 .stat-tile{padding:14px 16px;border-radius:var(--r-lg);background:var(--card);box-shadow:var(--ring1)}
 .stat-val{font-family:var(--display);font-size:22px;font-weight:700;color:var(--ink);line-height:1.1;font-variant-numeric:tabular-nums;word-break:break-all}
@@ -742,7 +762,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <svg class="ic" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
         <span class="sb-label">新建任务</span>
       </button>
-      <button class="btn" id="addCliBtn" title="把本机跑的 claude CLI session 添加到看板（只读展示，不发起交互）">
+      <button class="btn" id="addCliBtn" title="把本机 CLI 会话添加到看板（只读展示，不发起交互）">
         <svg class="ic" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>
         <span class="sb-label">CLI 会话</span>
       </button>
@@ -901,17 +921,17 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <section class="card" style="margin-bottom:var(--gap)">
             <div class="sec-head">
               <h2>运行时</h2>
-              <span class="sec-sub">本机 Claude Code / Codex 执行环境 · 独立在线状态与活跃会话</span>
+          <span class="sec-sub">本机 Agent 执行环境 · CLI 状态、账号信息与启停控制</span>
             </div>
             <div id="runtimeCard"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
           <div style="display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:var(--gap)">
             <section class="card" style="flex:1 1 0;min-width:280px">
               <div class="sec-head">
-                <h2>账号用量</h2>
-                <span class="sec-sub">订阅账号 5h / 7d 滚动窗用量</span>
+              <h2>新建任务趋势</h2>
+              <span class="sec-sub">最近 7 天每天创建的任务数 · 所有运行时</span>
               </div>
-              <div id="ccAccountUsageGrid"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
+              <div id="taskCreatedGrid"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
             </section>
             <section class="card" style="flex:1 1 0;min-width:280px">
               <div class="sec-head">
@@ -924,7 +944,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <section class="card">
             <div class="sec-head">
               <h2>用量汇总</h2>
-              <span class="sec-sub">Claude Code 全局每日 token 用量（扫本机所有项目 session）· 可切最近 7 / 15 / 30 天</span>
+            <span class="sec-sub">支持账号用量的运行时，每日 token 用量 · 可切最近 7 / 15 / 30 天</span>
             </div>
             <div id="usageGrid"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
           </section>
@@ -1226,13 +1246,16 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <textarea id="newTaskDesc" class="field-input" rows="2" maxlength="2000" placeholder="记录任务背景 / 想达成什么，方便之后在看板上理解这个任务…"></textarea>
         </label>
         <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
-          <label class="field" style="flex:none;min-width:150px">
+          <div class="field" style="flex:none;min-width:194px">
             <span class="f-label">Provider</span>
-            <select id="newTaskProvider" class="field-input">
-              <option value="claude">Claude Code</option>
-              <option value="codex">Codex</option>
-            </select>
-          </label>
+            <input id="newTaskProvider" type="hidden" value="claude">
+            <div id="newTaskProviderPicker" class="provider-picker">
+              <button type="button" id="newTaskProviderBtn" class="mes-btn form-size provider-btn" aria-haspopup="listbox" aria-expanded="false">
+                <span class="provider-btn-main"><span class="provider-btn-name">Claude Code</span><span class="provider-btn-meta">claude</span></span><span class="mes-btn-caret" aria-hidden="true">▾</span>
+              </button>
+              <div id="newTaskProviderMenu" class="provider-menu" role="listbox" aria-label="选择 Provider"></div>
+            </div>
+          </div>
           <div class="field" style="flex:none">
             <span class="f-label">Model · Effort（模型与推理档位）</span>
             <!-- model / effort 合并选择器：两个隐藏 select 只作 value 载体（app.js 读 .value），UI 走 .mes-* 单按钮嵌套菜单 -->
@@ -1331,8 +1354,8 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <span class="modal-x" onclick="closeAddCliModal()">×</span>
       </div>
       <div style="font-size:11.5px;color:var(--mut);margin-bottom:14px;line-height:1.6">
-        默认列出<b>近 30 分钟活跃</b>的本机 claude code 会话；也可输入 <b>session id 前缀</b>（6+ hex）或 <b>会话关键字</b> 搜索 <code style="font-family:var(--mono);background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11px">~/.claude/projects/</code> 下更早的 jsonl。
-        添加后卡片自动出现在看板对应桶（终端或回复在跑=processing，空闲=awaiting-human）。
+        默认列出<b>近 30 分钟活跃</b>的本机 CLI 会话；也可输入 <b>session id 前缀</b>（6+ hex）或 <b>会话关键字</b>搜索。Claude Code 从 <code style="font-family:var(--mono);background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11px">~/.claude/projects/</code> 读取，Codex 从 <code style="font-family:var(--mono);background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11px">~/.codex/sessions/</code> 读取。
+        添加后卡片自动出现在看板对应桶；Codex CLI 会话仅支持只读观察。
       </div>
       <div style="display:flex;gap:8px;margin-bottom:12px;flex:none">
         <input type="text" id="addCliSearch" class="field-input" placeholder="04689bb1 · 或关键字（近 30 天 jsonl 内匹配头 32KB）" style="flex:1">

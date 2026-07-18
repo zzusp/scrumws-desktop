@@ -505,7 +505,7 @@ function collectOneCli(sidEntry, now, attached, replyRunners, board) {
 
 // 收集所有 watchlist 里的 CLI session 卡片
 export function collectCliSessions(now) {
-  const list = listWatchlist();
+  const list = listWatchlist().filter((entry) => entry.provider !== 'codex');
   if (list.length === 0) return [];
   const attached = readAttachedSessions();
   const replyRunners = readActiveReplyRunners(P.tmpDir);

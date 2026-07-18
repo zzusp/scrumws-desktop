@@ -92,6 +92,7 @@ export function readTaskSessionSeed(taskKey, provider, sessionId) {
 // lazy import 避免顶层循环依赖（logs.js 被 collect.js 引用，而 collect-cli.js/cli-watchlist.js 独立子树）
 import * as _cliWatchlist from './cli-watchlist.js';
 import * as _collectCli from './collect-cli.js';
+import * as _collectCodexCli from './collect-codex-cli.js';
 
 // 扫全库 sessionId（runner-state + runner-archive 下每个任务包的 meta.sessionHistory + meta.sessionId），
 // 用于 in-flight 检测："孤儿"jsonl = 出现在 CC 项目目录、但不属于任何已知任务的 session。
@@ -422,6 +423,19 @@ function readCliWorkerLog(taskKey) {
   const entry = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
   if (!entry) return { ok: false, error: 'cli session not in watchlist', taskKey };
   const [sid, meta] = entry;
+  if (meta?.provider === 'codex') {
+    const codex = _collectCodexCli.readCodexCliSession(sid, meta.jsonlPath);
+    if (!codex) return { ok: false, error: 'Codex rollout not found', taskKey };
+    return {
+      ok: true, taskKey, safeKey: `cli__${sid}`, provider: 'codex', isArchive: false,
+      state: meta.archivedAt ? 'archived' : meta.doneAt ? 'done' : 'awaiting-human',
+      rounds: [{ round: 1, provider: 'codex', sessionId: sid, at: null, startedAt: null, endedAt: null,
+        intent: 'cli-read-only', metaUsage: null, metaCostUsd: null, ccSummary: null, messages: [], humanCc: [],
+        systemInit: { model: codex.model || null, cwd: codex.cwd || null, toolsCount: null }, cwd: codex.cwd || null,
+        gitBranch: null, inflight: false }],
+      hasInflight: false, runnerLogTail: null, checkerLogTail: null,
+    };
+  }
   let jsonlPath = meta?.jsonlPath;
   if (!jsonlPath || !fs.existsSync(jsonlPath)) {
     const found = _collectCli.locateJsonlBySid(sid);

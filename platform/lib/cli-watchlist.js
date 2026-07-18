@@ -37,7 +37,7 @@ export function readWatchlist() {
 
 export function listWatchlist() {
   const { sessions } = readRaw();
-  return Object.entries(sessions).map(([sid, meta]) => ({ sid, ...meta }));
+  return Object.entries(sessions).map(([sid, meta]) => ({ sid, provider: meta?.provider || 'claude', ...meta }));
 }
 
 export function hasWatchlist(sid) {
@@ -45,12 +45,13 @@ export function hasWatchlist(sid) {
   return !!readRaw().sessions[sid];
 }
 
-export function upsertWatchlist(sid, { customTitle = null, note = null, jsonlPath = null, projectDir = null } = {}) {
+export function upsertWatchlist(sid, { provider = 'claude', customTitle = null, note = null, jsonlPath = null, projectDir = null } = {}) {
   if (!isValidSid(sid)) return { ok: false, error: 'invalid sid' };
   const w = readRaw();
   const now = fmt(new Date());
   const prev = w.sessions[sid] || {};
   w.sessions[sid] = {
+    provider: provider === 'codex' ? 'codex' : 'claude',
     addedAt: prev.addedAt || now,
     customTitle: customTitle === '' ? null : (customTitle ?? prev.customTitle ?? null),
     note: note === '' ? null : (note ?? prev.note ?? null),
