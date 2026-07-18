@@ -10,6 +10,7 @@ import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
 import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions, stopTaskInSession, readTaskOutput } from './lib/session-manager.js';
 import { readAttachedSessions } from './lib/collect-cli.js';
+import { codexMessagesToModeBSeed, readCodexCliSessionHistory } from './lib/collect-codex-cli.js';
 import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
 import { startConnector, connectorStatus, enroll, unenroll } from './lib/cloud/connector.js';
@@ -347,7 +348,7 @@ const server = http.createServer(async (req, res) => {
       });
       return sendJson(res, 200, { ok: true, sessions });
     }
-    // S10 收养：把终端起的 CLI 会话续接成看板 Mode B 交互会话（--resume + 预置历史）。body {sessionId, model?}
+    // S10 收养：把本机 CLI 会话续接成看板 Mode B 交互会话（provider 原生 resume + 预置历史）。body {provider, sessionId, model?}
     if (req.method === 'POST' && pathname === '/api/session/adopt') {
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 8 * 1024) req.destroy(); });
@@ -355,18 +356,25 @@ const server = http.createServer(async (req, res) => {
         let payload = null;
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
         const provider = normalizeProvider(payload?.provider);
-        if (provider !== 'claude') return sendJson(res, 400, { ok: false, error: '只有 Claude Code 支持收养本机 CLI 会话' });
+        if (!['claude', 'codex'].includes(provider)) return sendJson(res, 400, { ok: false, error: '不支持该运行时的 CLI 会话续接' });
         const sessionId = payload?.sessionId;
-        // guard：该 session 仍被活终端进程持有 → 拒绝续接。两个 claude 抢同一 session 会撞车，被收养的 Mode B
-        // 会话拿不到 system/init 永久卡 starting，把看板卡片钉死在 processing（对齐 replyCli/rewindCli 的 guard ①）。
-        const att = readAttachedSessions().get(sessionId);
-        if (att) return sendJson(res, 409, { ok: false, error: `session 正被终端进程占用（pid=${att.pid}${att.status ? ` · ${att.status}` : ''}），请直接在那个终端窗口里回复；关闭该终端后即可从看板续接` });
-        const hist = readCcSessionForAdopt(sessionId);
-        if (!hist.ok) return sendJson(res, 400, hist);
-        // 历史消息 → Mode B 事件形状（content block 已带 _ts）
-        const seed = ccMessagesToModeBSeed(hist.messages);
-        // CLI 会话续接 = bypass 权限（终端里本就是 bypass permissions 态，续到看板不该逐工具再授权）
-        const r = createSession({ provider: 'claude', cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null, bypass: true });
+        let hist, seed, options;
+        if (provider === 'claude') {
+          // Claude 能从注册表判断原终端是否还持有 session，避免两个进程竞争同一会话。
+          const att = readAttachedSessions().get(sessionId);
+          if (att) return sendJson(res, 409, { ok: false, error: `session 正被终端进程占用（pid=${att.pid}${att.status ? ` · ${att.status}` : ''}），请直接在那个终端窗口里回复；关闭该终端后即可从看板续接` });
+          hist = readCcSessionForAdopt(sessionId);
+          if (!hist.ok) return sendJson(res, 400, hist);
+          seed = ccMessagesToModeBSeed(hist.messages);
+          options = { provider, cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model };
+        } else {
+          hist = readCodexCliSessionHistory(sessionId, payload?.jsonlPath);
+          if (!hist.ok) return sendJson(res, 400, hist);
+          seed = codexMessagesToModeBSeed(hist.messages);
+          options = { provider, cwd: hist.cwd, model: payload?.model || hist.model };
+        }
+        // CLI 会话续接沿用原 CLI 的无交互授权模式；Codex 由 app-server 的 thread/resume 恢复同一 thread。
+        const r = createSession({ ...options, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null, bypass: true });
         sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
       });
       return;

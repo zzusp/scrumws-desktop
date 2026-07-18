@@ -11,7 +11,7 @@ const CLAUDE_MODELS = Object.freeze([
 ]);
 const CLAUDE_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 // 这些是桌面端提供的 Codex 快捷模型；空 model 仍表示交给本机 Codex CLI/账号选择默认模型。
-const CODEX_MODELS = Object.freeze(['gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+const CODEX_MODELS = Object.freeze(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
 const CODEX_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 const DEFINITIONS = Object.freeze({

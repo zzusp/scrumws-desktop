@@ -73,6 +73,61 @@ export function readCodexCliSession(sid, jsonlPath = null) {
   return located?.sid === sid ? located : null;
 }
 
+function textOf(value) {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && typeof value.text === 'string') return value.text;
+  if (Array.isArray(value)) return value.map((part) => typeof part === 'string' ? part : part?.text || '').join('\n');
+  return '';
+}
+
+function toolInput(value) {
+  if (value && typeof value === 'object') return value;
+  if (typeof value !== 'string') return { value: value ?? null };
+  try { return JSON.parse(value); } catch { return { input: value }; }
+}
+
+// rollout 的 event_msg 是可读执行轨迹，response_item 是工具调用/输出；统一成现有详情页的 message shape。
+export function readCodexCliSessionHistory(sid, jsonlPath = null) {
+  const located = readCodexCliSession(sid, jsonlPath);
+  if (!located) return { ok: false, error: 'Codex rollout not found' };
+  let lines;
+  try { lines = fs.readFileSync(located.jsonlPath, 'utf8').split(/\r?\n/); }
+  catch (error) { return { ok: false, error: `读取 Codex rollout 失败: ${error.message}` }; }
+  const messages = [];
+  for (const line of lines) {
+    if (!line) continue;
+    let event; try { event = JSON.parse(line); } catch { continue; }
+    const payload = event.payload || {};
+    const at = event.timestamp || null;
+    if (event.type === 'event_msg' && payload.type === 'user_message') {
+      const text = String(payload.message || '').trim();
+      if (text) messages.push({ role: 'user', at, content: [{ type: 'text', text, _ts: at }] });
+    } else if (event.type === 'event_msg' && payload.type === 'agent_message') {
+      const text = String(payload.message || '').trim();
+      if (text) messages.push({ role: 'assistant', at, content: [{ type: 'text', text, _ts: at }] });
+    } else if (event.type === 'event_msg' && payload.type === 'agent_reasoning') {
+      const text = String(payload.text || '').trim();
+      if (text) messages.push({ role: 'assistant', at, content: [{ type: 'thinking', thinking: text, _ts: at }] });
+    } else if (event.type === 'response_item' && (payload.type === 'custom_tool_call' || payload.type === 'function_call')) {
+      const id = payload.call_id || payload.id;
+      const name = payload.name || 'tool';
+      messages.push({ role: 'assistant', at, content: [{ type: 'tool_use', id, name, input: toolInput(payload.input ?? payload.arguments), _ts: at }] });
+    } else if (event.type === 'response_item' && (payload.type === 'custom_tool_call_output' || payload.type === 'function_call_output')) {
+      const output = Array.isArray(payload.output) ? payload.output.map((part) => textOf(part)).filter(Boolean).join('\n') : textOf(payload.output);
+      messages.push({ role: 'user', at, content: [{ type: 'tool_result', tool_use_id: payload.call_id || payload.id, content: output, is_error: false, _ts: at }] });
+    }
+  }
+  return { ok: true, sid, cwd: located.cwd, model: located.model, messages, jsonlPath: located.jsonlPath };
+}
+
+export function codexMessagesToModeBSeed(messages) {
+  return (messages || []).map((message) => ({
+    type: 'message', provider: 'codex', at: message.at || new Date().toISOString(), message: {
+      role: message.role, content: message.content || [], model: message.model || null,
+    },
+  }));
+}
+
 function candidate(item, alreadyAdded) {
   return {
     provider: 'codex', sid: item.sid, cwd: item.cwd, gitBranch: null,

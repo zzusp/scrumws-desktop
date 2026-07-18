@@ -1,10 +1,10 @@
 case,description,round-1,round-2
-CAT-1,Codex 固定模型和 CLI effort catalog 正确,PASS,
-UI-1,新建任务 Provider 使用自绘 listbox 且禁用运行时不可选,PASS,
+CAT-1,Codex 固定模型和 CLI effort catalog 正确,PASS,PASS
+UI-1,新建任务 Provider 使用自绘 listbox 且禁用运行时不可选,PASS,PASS
 RT-1,provider 启停配置/API/会话创建 guard 正确,PASS,
 RT-2,provider 卡内账号用量且无活跃会话块,PASS,
 RT-3,最近 7 天新建任务折线图数据正确,PASS,
 CLI-1,Claude CLI recent/search/add 保持兼容,PASS,
-CLI-2,Codex rollout recent/search/add/只读卡正确,PASS,
+CLI-2,Codex rollout recent/search/add/执行详情与续接正确,PASS,PASS
 COPY-1,非专属 UI 文案使用通用运行时/CLI 会话称呼,PASS,
-REGRESS-1,既有 provider/external/replan 验收通过,PASS,
+REGRESS-1,既有 provider/external/replan 验收通过,PASS,PASS
