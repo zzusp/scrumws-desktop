@@ -4,9 +4,10 @@ import { P } from './paths.js';
 import { parse } from './timeutil.js';
 import { readConfig } from './runner-config.js';
 import { replyCliSession, rewindCliSession, truncateSessionJsonlByUuid } from './cli-actions.js';
-import { tryStartOrQueue, replyTask, cancelTaskSession, parkTaskSession } from './task-runner.js';
+import { tryStartOrQueue, replyTask, cancelTaskSession, parkTaskSession, getTaskSessionId } from './task-runner.js';
 import { readCcSessionForAdopt, completeCliSession, uncompleteCliTask } from './logs.js';
 import { readAttachedSessions, locateJsonlBySid } from './collect-cli.js';
+import { readCodexAttachedSession } from './collect-codex-cli.js';
 import { readWatchlist, removeWatchlist } from './cli-watchlist.js';
 import { detectWorktreeBase } from './git.js';
 import { getProviderDefinition, normalizeProvider, resolveProviderSelection, validateProviderSelection } from './providers/registry.js';
@@ -320,6 +321,15 @@ export function replyToTask({ taskKey, message, model, effort, attachments }) {
   let task = {};
   try { task = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')); } catch { }
   const provider = normalizeProvider(task.provider);
+  let meta = null;
+  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
+  // 看板已持有的 Mode B 会话允许正常发送；否则拒绝向被其它本机客户端持有的同一 session 并发写入。
+  if (!getTaskSessionId(taskKey) && meta?.sessionId) {
+    const att = provider === 'claude'
+      ? readAttachedSessions().get(meta.sessionId)
+      : provider === 'codex' ? readCodexAttachedSession(meta.sessionId) : null;
+    if (att) return { ok: false, error: `session 正被其他客户端占用（pid=${att.pid}），请在原窗口回复` };
+  }
   const eff = String(effort || '').trim();
   const selection = validateProviderSelection({ provider, model, effort: eff });
   if (!selection.ok) return selection;

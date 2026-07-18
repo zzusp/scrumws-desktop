@@ -9,7 +9,7 @@ import * as scheduler from './scheduler.js';
 import { normalizeModelContextLimits, providerConfig, readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
 import { collectCliSessions, readAttachedSessions, backgroundTaskCountBySid } from './collect-cli.js';
-import { collectCodexCliSessions } from './collect-codex-cli.js';
+import { collectCodexCliSessions, readCodexAttachedSession } from './collect-codex-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { modelContextLimits, usageSnapshot } from './claude-usage.js';
 import { getDailyUsage } from './daily-usage.js';
@@ -68,7 +68,7 @@ export function deriveBackgroundState(state, sessionAlive, sessionId) {
 }
 
 // ---------- 采集单个任务包 ----------
-function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = null) {
+function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSessions = null) {
   const state = readJson(path.join(dir, 'state.json'));
   const task  = readJson(path.join(dir, 'task.json'));
   const meta  = readJson(path.join(dir, 'meta.json'));
@@ -84,6 +84,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
 
   const source = task?.source || (taskKey.includes(':') ? taskKey.split(':')[0] : 'unknown');
   const kind = task?.kind || null;
+  const provider = normalizeProvider(task?.provider);
 
   // lease 信息
   const leaseInfo = lease && leaseAlive(lease, now) ? {
@@ -117,9 +118,15 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
 
   // 内存中活跃 Mode B 会话 id（有=会话进程活，idle-but-alive 也在）
   const mbSessionId = getTaskSessionId(taskKey);
+  const claudeAttached = provider === 'claude' && meta?.sessionId ? attachedSessions?.get(meta.sessionId) || null : null;
+  const codexAttached = provider === 'codex' && meta?.sessionId && !mbSessionId ? readCodexAttachedSession(meta.sessionId) : null;
+  // 看板自身持有 Mode B 会话时可以正常发送；这里只暴露“其他地方”持有同一会话的情形。
+  const externalSession = !mbSessionId && (claudeAttached || codexAttached)
+    ? { provider, ...(claudeAttached || codexAttached) }
+    : null;
   // 会话活性：看板 Mode B 活会话 ∪ CC 注册表(~/.claude/sessions)里有活进程持有该 sessionId
   // （task-runner 的 claude -p --resume 也登记在 att，看板重启后 mbSessionId 丢失仍据此判活）
-  const sessionAlive = !!mbSessionId || (meta?.sessionId && attachedSids ? attachedSids.has(meta.sessionId) : false);
+  const sessionAlive = !!mbSessionId || !!externalSession;
   // 后台维度（统一：与 cli 任务同字段 backgroundTaskCount）
   const { backgroundTaskCount, displayState } = deriveBackgroundState(effectiveState, sessionAlive, meta?.sessionId);
 
@@ -132,7 +139,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
     cwd: task?.cwd || null,                   // 任务配置的工作目录（新建/编辑时写入 task.json）；awaiting 卡片非失败态展示
     effort: task?.effort || null,             // 推理档位（新建/编辑写入）；详情侧栏展示
     model: task?.model || null,               // 任务配置的模型（云端对账指纹需感知其变化）
-    provider: normalizeProvider(task?.provider), // 旧任务缺失 provider 一律解释为 Claude
+    provider, // 旧任务缺失 provider 一律解释为 Claude
     // prompt 指纹：原文最长 100000 字符，塞进卡片会撑爆 /api/state（前端全量轮询）——只放 40 字节
     // 指纹，云端对账据此感知 prompt 改动，原文由 connector 单独读 task.json 上传。两者都取自已读入的
     // task 对象，零额外 I/O。
@@ -158,6 +165,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSids = nul
     humanCc,
     // 内存中活跃 Mode B 会话 id（有则详情页接 /api/session/stream 实时渲染；无=会话已收敛/未起）
     mbSessionId,
+    externalSession,
     // meta 关键字段
     meta: meta ? {
       sessionId: meta.sessionId || null,
@@ -190,14 +198,14 @@ function collectAll(now) {
   // plan = 待用户确认的计划态（queued 之前；per-source 配置或 manual 勾选"先计划"进入）
   const buckets = { plan: [], processing: [], queued: [], done: [], 'awaiting-human': [], archived: [], other: [] };
   // CC 注册表活进程的 sessionId 集合（读一次，供 collectOne 判会话活性——含 task-runner 的 claude -p --resume）
-  const attachedSids = new Set(readAttachedSessions().keys());
+  const attachedSessions = readAttachedSessions();
   const scan = (root, isArchive) => {
     let names = [];
     try { names = fs.readdirSync(root); } catch { return; }
     for (const name of names) {
       const dir = path.join(root, name);
       try { if (!fs.statSync(dir).isDirectory()) continue; } catch { continue; }
-      const task = collectOne(name, dir, now, isArchive, attachedSids);
+      const task = collectOne(name, dir, now, isArchive, attachedSessions);
       if (!task) continue;
       // 「真正处理过」判据：只过滤阶段 2 迁移进来的历史（outcomeDetail.migratedFrom 有值 = migration by 标记）
       // 新建/运行中的任务（无论跑成功/中/失败）都要显示——processing/queued 阶段无 meta 也是"正在处理"
@@ -217,6 +225,7 @@ function collectAll(now) {
     cli.provider = 'claude';
     // 收养会话按 taskKey 反查活会话 id（getTaskSessionId 内含 session-manager 兜底）→ 详情据此进 live 模式
     cli.mbSessionId = getTaskSessionId(cli.taskKey);
+    cli.externalSession = !cli.mbSessionId && cli.cli?.attachedPid ? { provider: 'claude', pid: cli.cli.attachedPid, status: cli.cli.attachedStatus || null, cwd: cli.cli.cwd || null } : null;
     if (cli.state === 'archived') { cli.isArchive = true; buckets.archived.push(cli); }
     else if (buckets[cli.state]) buckets[cli.state].push(cli);
     else buckets.other.push(cli);

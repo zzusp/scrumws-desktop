@@ -1216,7 +1216,7 @@ const DETAIL_SIDE_W_MIN = 280;
 function replyBoxFp(t) {
   return JSON.stringify([
     t?.state, t?.mbSessionId || null, t?.source, !!t?.meta?.sessionId,
-    !!t?.lease?.alive, !!t?.isArchive, t?.cli?.attachedPid || null, t?.cli?.archivedAt || null,
+    !!t?.lease?.alive, !!t?.isArchive, t?.externalSession?.pid || null, t?.externalSession?.status || null, t?.cli?.archivedAt || null,
   ]);
 }
 
@@ -1228,7 +1228,7 @@ function currentActualModelEffort(taskKey) {
   }
   const rounds = (currentModalData?.rounds || []).filter((x) => !x.error);
   const lastOk = rounds[rounds.length - 1] || null;
-  return { provider: t?.provider || 'claude', model: lastOk?.ccSummary?.model || lastOk?.systemInit?.model || null, effort: t?.effort || null };
+  return { provider: t?.provider || 'claude', model: lastOk?.ccSummary?.model || lastOk?.systemInit?.model || null, effort: lastOk?.systemInit?.effort || t?.effort || null };
 }
 
 // ---- 继续对话区：三态状态机（可对话 / 处理中 / 需重发 / 不可用）----
@@ -1267,6 +1267,8 @@ function updateReplyBoxAvailability(taskKey) {
   restartBody.style.display = 'none';
   // 徽章 class 归零（保留 .tag 基类）
   stateTag.className = 'tag tag-mut';
+  stateTag.style.background = '';
+  stateTag.style.color = '';
   stateTag.style.display = '';
   hint.style.display = '';
   // 状态头默认显示；实时会话（Mode B）分支会隐藏整条（见下方 mbSessionId 分支）
@@ -1301,17 +1303,19 @@ function updateReplyBoxAvailability(taskKey) {
     return;
   }
 
-  // 被旁观的 CLI 会话三态：终端占用 → 只读；正在算 → 等；空闲无进程 → 收养续接成 live（--resume）
+  // 本地其它客户端显式持有同一 session 时不允许并发写入；避免两个运行时进程竞争同一对话。
+  if (t?.externalSession?.pid) {
+    stateTag.className = 'tag tag-amber';
+    stateTag.textContent = '会话已在其他客户端打开';
+    hint.innerHTML = `该 session 正由其他客户端使用（pid=<b>${t.externalSession.pid}</b>）· 请直接在原窗口回复，关闭后即可在看板继续对话。`;
+    return;
+  }
+
+  // 被旁观的 CLI 会话三态：正在算 → 等；空闲无进程 → 收养续接成 live（--resume）
   if (isObservedCli) {
     stateTag.className = 'tag';
     stateTag.style.background = 'var(--brandS)';
     stateTag.style.color = 'var(--brand)';
-    const attachedPid = t.cli?.attachedPid;
-    if (attachedPid) {
-      stateTag.textContent = 'CLI · 终端占用';
-      hint.innerHTML = `该 session 有终端进程在占用（pid=<b>${attachedPid}</b>${t.cli?.attachedStatus ? ` · ${escapeHtml(t.cli.attachedStatus)}` : ''}），请直接在那个<b>终端窗口</b>里回复。`;
-      return;
-    }
     if (t.state === 'processing') {
       stateTag.textContent = 'CLI · 处理中';
       hint.innerHTML = 'session 正在算（可能是上一条看板回复在跑）· 等它收敛后可继续发';

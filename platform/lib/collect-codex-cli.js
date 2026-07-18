@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fmt, parse, ago } from './timeutil.js';
 import { listWatchlist, upsertWatchlist, setDoneWatchlist } from './cli-watchlist.js';
 
@@ -73,6 +74,28 @@ export function readCodexCliSession(sid, jsonlPath = null) {
   return located?.sid === sid ? located : null;
 }
 
+// Codex 没有像 Claude ~/.claude/sessions 那样的 session 注册表。仅将命令行里显式带该
+// thread id 的本机 Codex 进程视为“外部占用”，避免把其它 Codex 会话误判为本会话。
+export function readCodexAttachedSession(sid) {
+  const sessionId = String(sid || '').trim();
+  if (!SID_RE.test(sessionId)) return null;
+  try {
+    if (process.platform === 'win32') {
+      // sessionId 已由 SID_RE 校验为 UUID，可安全嵌入 PowerShell 单引号字面量；避免 -Command 后的参数在
+      // Windows PowerShell 中不稳定地落入 $args。
+      const script = `$sid = '${sessionId}'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.IndexOf($sid, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.CommandLine -match '(?i)codex' } | Select-Object -First 1 ProcessId, CommandLine | ConvertTo-Json -Compress`;
+      const raw = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 2500 }).trim();
+      if (!raw) return null;
+      const row = JSON.parse(raw);
+      return Number.isFinite(Number(row?.ProcessId)) ? { pid: Number(row.ProcessId), status: 'external', cwd: null } : null;
+    }
+    const raw = execFileSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8', timeout: 2500 });
+    const row = raw.split(/\r?\n/).find((line) => line.toLowerCase().includes(sessionId.toLowerCase()) && /(^|[^a-z0-9_-])codex([^a-z0-9_-]|$)/i.test(line));
+    const pid = Number(row?.trim().split(/\s+/, 1)[0]);
+    return Number.isFinite(pid) && pid > 0 ? { pid, status: 'external', cwd: null } : null;
+  } catch { return null; }
+}
+
 function textOf(value) {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object' && typeof value.text === 'string') return value.text;
@@ -94,11 +117,17 @@ export function readCodexCliSessionHistory(sid, jsonlPath = null) {
   try { lines = fs.readFileSync(located.jsonlPath, 'utf8').split(/\r?\n/); }
   catch (error) { return { ok: false, error: `读取 Codex rollout 失败: ${error.message}` }; }
   const messages = [];
+  let actualModel = null;
+  let actualEffort = null;
   for (const line of lines) {
     if (!line) continue;
     let event; try { event = JSON.parse(line); } catch { continue; }
     const payload = event.payload || {};
     const at = event.timestamp || null;
+    if (event.type === 'turn_context') {
+      if (typeof payload.model === 'string' && payload.model.trim()) actualModel = payload.model.trim();
+      if (typeof payload.effort === 'string' && payload.effort.trim()) actualEffort = payload.effort.trim();
+    }
     if (event.type === 'event_msg' && payload.type === 'user_message') {
       const text = String(payload.message || '').trim();
       if (text) messages.push({ role: 'user', at, content: [{ type: 'text', text, _ts: at }] });
@@ -117,7 +146,7 @@ export function readCodexCliSessionHistory(sid, jsonlPath = null) {
       messages.push({ role: 'user', at, content: [{ type: 'tool_result', tool_use_id: payload.call_id || payload.id, content: output, is_error: false, _ts: at }] });
     }
   }
-  return { ok: true, sid, cwd: located.cwd, model: located.model, messages, jsonlPath: located.jsonlPath };
+  return { ok: true, sid, cwd: located.cwd, model: actualModel, effort: actualEffort, messages, jsonlPath: located.jsonlPath };
 }
 
 export function codexMessagesToModeBSeed(messages) {
@@ -161,6 +190,7 @@ export function collectCodexCliSessions(now) {
     const state = entry.archivedAt ? 'archived' : entry.doneAt ? 'done' : 'awaiting-human';
     const at = located?.mtimeMs ? fmt(new Date(located.mtimeMs)) : entry.addedAt;
     if (entry.doneAt && located?.mtimeMs && located.mtimeMs > (parse(entry.doneAt)?.getTime() || 0) + 2000) { setDoneWatchlist(entry.sid, false); }
+    const attached = readCodexAttachedSession(entry.sid);
     cards.push({
       taskKey: `cli:${entry.sid.slice(0, 8)}`, safeTaskKey: `cli__${entry.sid}`, provider: 'codex', source: 'cli', kind: 'interactive',
       title: entry.customTitle || `Codex CLI · ${entry.sid.slice(0, 8)}`, description: entry.note || null, hasCustomTitle: !!entry.customTitle,
@@ -169,7 +199,8 @@ export function collectCodexCliSessions(now) {
       createdAt: entry.addedAt, history: [{ state: 'awaiting-human', at: entry.addedAt }, ...(entry.doneAt ? [{ state: 'done', at: entry.doneAt, by: 'user' }] : []), ...(entry.archivedAt ? [{ state: 'archived', at: entry.archivedAt, by: 'user' }] : [])],
       durationMs: null, lease: { alive: false, pid: null, claimedAt: entry.addedAt, heartbeatAt: at, heartbeatAgo: at ? ago(at, now).text : '—', intent: 'read-only', intentAt: at, durationMin: null }, humanCc: [],
       meta: { sessionId: entry.sid, sessionHistoryLen: 1, rounds: 0, totalCostUsd: 0, numTurns: 0, usage: null, lastRoundAt: at, model: located?.model || null }, business: null,
-      cli: { provider: 'codex', readOnly: true, cwd: located?.cwd || null, gitBranch: null, version: located?.version || null, mode: 'read-only', jsonlPath: located?.jsonlPath || null, jsonlBytes: located?.size || 0, projectDir: null, addedAt: entry.addedAt, archivedAt: entry.archivedAt || null, doneAt: entry.doneAt || null, attachedPid: null, attachedStatus: null },
+      externalSession: attached ? { provider: 'codex', ...attached } : null,
+      cli: { provider: 'codex', readOnly: true, cwd: located?.cwd || null, gitBranch: null, version: located?.version || null, mode: 'read-only', jsonlPath: located?.jsonlPath || null, jsonlBytes: located?.size || 0, projectDir: null, addedAt: entry.addedAt, archivedAt: entry.archivedAt || null, doneAt: entry.doneAt || null, attachedPid: attached?.pid || null, attachedStatus: attached?.status || null },
       resolvedAgo: state === 'done' ? ago(entry.doneAt, now).text : state === 'archived' ? ago(at, now).text : null, resolvedAgoSec: null, queuedAgeMin: null, isArchive: state === 'archived',
     });
   }

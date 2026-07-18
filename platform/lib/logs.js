@@ -432,7 +432,7 @@ function readCliWorkerLog(taskKey) {
       state: meta.archivedAt ? 'archived' : meta.doneAt ? 'done' : 'awaiting-human',
       rounds: [{ round: 1, provider: 'codex', sessionId: sid, at: null, startedAt: messages[0]?.at || null, endedAt: messages[messages.length - 1]?.at || null,
         intent: 'cli-interactive', metaUsage: null, metaCostUsd: null, ccSummary: null, messages, humanCc: [],
-        systemInit: { model: codex.model || null, cwd: codex.cwd || null, toolsCount: null }, cwd: codex.cwd || null,
+        systemInit: { model: codex.model || null, effort: codex.effort || null, cwd: codex.cwd || null, toolsCount: null }, cwd: codex.cwd || null,
         gitBranch: null, inflight: false }],
       hasInflight: false, runnerLogTail: null, checkerLogTail: null,
     };
