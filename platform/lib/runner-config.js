@@ -29,7 +29,26 @@ export function providerConfig(config = readConfig()) {
       ? { model: selected.model, effort: selected.effort }
       : { model: definition.defaultModel, effort: definition.defaultEffort };
   }
-  return { defaultProvider, providerDefaults };
+  return { defaultProvider, providerDefaults, providerEnabled: providerEnabledConfig(config) };
+}
+
+// 缺失项兼容为启用；关闭运行时不删除其模型/任务数据，只阻止后续创建或恢复会话。
+export function providerEnabledConfig(config = readConfig()) {
+  const raw = config?.providerEnabled && typeof config.providerEnabled === 'object' ? config.providerEnabled : {};
+  return Object.fromEntries(listProviderDefinitions().map((definition) => [definition.id, raw[definition.id] !== false]));
+}
+
+export function isProviderEnabled(provider, config = readConfig()) {
+  return providerEnabledConfig(config)[normalizeProvider(provider)] === true;
+}
+
+export function setProviderEnabled(provider, enabled) {
+  const id = normalizeProvider(provider);
+  if (!getProviderDefinition(id)) return { ok: false, error: `未知 provider：${id}` };
+  const next = providerEnabledConfig();
+  next[id] = Boolean(enabled);
+  writeConfig({ providerEnabled: next });
+  return { ok: true, provider: id, enabled: next[id], providerEnabled: next };
 }
 
 // model context 的规范 key 为 provider:model；旧的裸 model key 只归到 Claude。

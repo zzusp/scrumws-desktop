@@ -1,6 +1,6 @@
 # scrumws-desktop
 
-**ScrumWS 任务看板** · 桌面端（Electron）。本机 Claude Code / Codex 任务的一站式看板：任务从计划（plan）、排队（queued）、执行（看板持有的交互会话）到人机回环（awaiting-human）/ 完成 / 归档的全状态管理；外加 Claude CLI 会话总览、外部系统 API 接入（API 密钥）与云端控制面上报。托盘常驻，UI 按 [multica](https://github.com/multica-ai/multica) 风格构建。
+**ScrumWS 任务看板** · 桌面端（Electron）。本机 Claude Code / Codex 任务的一站式看板：任务从计划（plan）、排队（queued）、执行（看板持有的交互会话）到人机回环（awaiting-human）/ 完成 / 归档的全状态管理；外加本机 CLI 会话总览、外部系统 API 接入（API 密钥）与云端控制面上报。托盘常驻，UI 按 [multica](https://github.com/multica-ai/multica) 风格构建。
 
 ## 结构
 

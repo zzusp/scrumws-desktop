@@ -9,8 +9,8 @@ import * as scheduler from './scheduler.js';
 import { normalizeModelContextLimits, providerConfig, readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
 import { collectCliSessions, readAttachedSessions, backgroundTaskCountBySid } from './collect-cli.js';
+import { collectCodexCliSessions } from './collect-codex-cli.js';
 import { getTaskSessionId } from './task-runner.js';
-import { listSessions } from './session-manager.js';
 import { modelContextLimits, usageSnapshot } from './claude-usage.js';
 import { getDailyUsage } from './daily-usage.js';
 import { detectProviders, listProviderDefinitions, normalizeProvider } from './providers/registry.js';
@@ -222,6 +222,14 @@ function collectAll(now) {
     else buckets.other.push(cli);
   }
 
+  // Codex CLI 会话目前只读观察：不创建 runner-state 任务包，也不允许从看板续接。
+  for (const cli of collectCodexCliSessions(now)) {
+    cli.mbSessionId = null;
+    if (cli.state === 'archived') { cli.isArchive = true; buckets.archived.push(cli); }
+    else if (buckets[cli.state]) buckets[cli.state].push(cli);
+    else buckets.other.push(cli);
+  }
+
   // 统一「最近活动」字段（复用 taskUpdatedMs，与排序同源）：卡片显示 + 各桶按其倒序。
   // runner 看板任务与 CLI 会话共用同一时间戳全集，卡片跨来源一致展示「最后一次活动时间」。
   for (const b of Object.values(buckets)) {
@@ -292,45 +300,50 @@ function computeRuntimeUsage(buckets, provider) {
   return agg;
 }
 
-// ---------- 运行时卡片（本机 Claude Code 执行环境 + 活跃会话计数）----------
-async function buildRuntime(buckets) {
-  // 活跃会话：看板持有的 Mode B 会话（未收敛）+ 终端 CLI 会话（CC 注册表活进程），按 sessionId 去重
-  const boardLive = listSessions().filter((s) => s.state !== 'closed' && s.state !== 'error');
-  const boardSids = new Set(boardLive
-    .filter((s) => normalizeProvider(s.provider) === 'claude')
-    .map((s) => s.sessionId || s.claudeSessionId)
-    .filter(Boolean));
-  const attached = readAttachedSessions();
-  let attachedCli = 0;
-  for (const sid of attached.keys()) if (!boardSids.has(sid)) attachedCli++;
+function dailyCreatedTasks(buckets, days = 7) {
+  const at = new Date();
+  const keyOf = (value) => {
+    const d = value instanceof Date ? value : parse(value);
+    if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  const rows = [];
+  for (let offset = days - 1; offset >= 0; offset--) {
+    const d = new Date(at.getFullYear(), at.getMonth(), at.getDate() - offset);
+    rows.push({ date: keyOf(d), total: 0, providers: {} });
+  }
+  const byDate = new Map(rows.map((row) => [row.date, row]));
+  for (const bucket of Object.values(buckets)) for (const task of bucket) {
+    const row = byDate.get(keyOf(task.createdAt));
+    if (!row) continue;
+    const provider = normalizeProvider(task.provider);
+    row.total += 1;
+    row.providers[provider] = (row.providers[provider] || 0) + 1;
+  }
+  return rows;
+}
 
+// ---------- 运行时卡片（本机 Agent 执行环境）----------
+async function buildRuntime(buckets) {
   const discovered = await getProviderRuntime();
   const snap = usageSnapshot();   // 账号级用量（session/本周）+ 定时拉取实况（纯读定时器缓存，不 spawn）
+  const config = providerConfig();
   // scrumws 平台任务的 sessionId 集合（有任务包的托管任务 meta.sessionId，不含被旁观的 cli watchlist 会话）
   // → 日用量柱状图「平台子集」过滤。按 t.cli 判：物化后的 CLI 任务无 t.cli、算平台任务（任务来源不变量）
   const platformSids = new Set();
   for (const b of Object.values(buckets)) for (const t of b) {
     if (!t.cli && t.provider === 'claude' && t.meta?.sessionId) platformSids.add(t.meta.sessionId);
   }
-  const processingByProvider = new Map();
-  for (const task of buckets.processing) {
-    const provider = normalizeProvider(task.provider);
-    processingByProvider.set(provider, (processingByProvider.get(provider) || 0) + 1);
-  }
   const providerCards = discovered.map((runtime) => {
     const provider = runtime.id;
-    const board = boardLive.filter((s) => normalizeProvider(s.provider) === provider).length;
-    const cli = provider === 'claude' ? attachedCli : 0;
     return {
       ...runtime,
+      enabled: config.providerEnabled[provider] !== false,
       online: runtime.available,
       binPath: runtime.path,
-      sessions: {
-        total: board + cli,
-        board,
-        cli,
-        processing: processingByProvider.get(provider) || 0,
-      },
       usage: computeRuntimeUsage(buckets, provider),
       claudeUsage: provider === 'claude' ? snap.data : null,
       usagePoll: provider === 'claude' ? snap.poll : null,
@@ -343,11 +356,11 @@ async function buildRuntime(buckets) {
     host: os.hostname(),
     platform: process.platform,
     providers: providerCards,
+    dailyCreated: dailyCreatedTasks(buckets),
     // 顶层字段保留为 Claude 兼容视图；新页面应按 providers[] 独立渲染。
     online: claude?.online ?? null,
     version: claude?.version || null,
     binPath: claude?.binPath || null,
-    sessions: claude?.sessions || { total: 0, board: 0, cli: 0, processing: 0 },
     usage: claude?.usage || computeRuntimeUsage(buckets, 'claude'),
     claudeUsage: claude?.claudeUsage || null,
     usagePoll: claude?.usagePoll || snap.poll,

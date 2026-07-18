@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getProviderRuntime, getState, invalidateState } from './lib/collect.js';
 import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
-import { normalizeModelContextLimits, providerConfig, readConfig, writeConfig } from './lib/runner-config.js';
+import { normalizeModelContextLimits, providerConfig, readConfig, setProviderEnabled, writeConfig } from './lib/runner-config.js';
 import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask, rewindTaskMessage } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
@@ -201,16 +201,31 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/state') return sendJson(res, 200, await getState({ maxAgeMs: 3000 }));
     if (pathname === '/api/providers') {
       const runtime = await getProviderRuntime();
+      const config = providerConfig();
       return sendJson(res, 200, {
         ok: true,
-        ...providerConfig(),
+        ...config,
         providers: runtime.map((item) => ({
           ...item,
+          enabled: config.providerEnabled[item.id] !== false,
           online: item.available,
           binPath: item.path,
           runtime: { available: item.available, online: item.available, version: item.version, binPath: item.path, error: item.error },
         })),
       });
+    }
+    if (req.method === 'POST' && /^\/api\/providers\/[^/]+\/enabled$/.test(pathname)) {
+      const provider = decodeURIComponent(pathname.split('/')[3] || '');
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; if (body.length > 4 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        if (typeof payload?.enabled !== 'boolean') return sendJson(res, 400, { ok: false, error: 'enabled 必须是 boolean' });
+        const result = setProviderEnabled(provider, payload.enabled);
+        sendJson(res, result.ok ? 200 : 400, result);
+      });
+      return;
     }
     // Claude Code 账号级用量（详情页卡片 + 运行时面板）：session / 本周滚动窗；经官方 CLI `/usage` 查、模块内缓存
     if (pathname === '/api/claude-usage') {
@@ -721,7 +736,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/cli/recent') {
       const withinMinutes = Number(searchParams.get('within')) || 30;
       const limit = Number(searchParams.get('limit')) || 30;
-      return sendJson(res, 200, recentCliSessions({ withinMinutes, limit }));
+      const provider = searchParams.get('provider') || 'all';
+      return sendJson(res, 200, recentCliSessions({ withinMinutes, limit, provider }));
     }
     // CLI session 白名单：搜索 / 添加 / 移除
     if (req.method === 'POST' && pathname === '/api/cli/search') {

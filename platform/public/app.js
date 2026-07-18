@@ -165,7 +165,7 @@ function bindCheckerInterval(rootEl) {
 }
 
 
-// ---- 面板：运行时（本机 Claude Code 执行环境 + 用量汇总；参考 multica Runtime Panel）----
+// ---- 面板：运行时（本机 Agent 执行环境 + 用量汇总）----
 // 每次 /api/state 轮询都渲染（即使不在该视图，更新隐藏 DOM），进入 #/runtime 时即为最新。
 function renderRuntime(rt) {
   const card = $('runtimeCard');
@@ -178,11 +178,14 @@ function renderRuntime(rt) {
   const dim = (t) => `<span style="color:var(--dim)">${t}</span>`;
   const runtimes = Array.isArray(rt.providers) && rt.providers.length ? rt.providers : [rt];
   card.innerHTML = runtimes.map((runtime) => {
+    const enabled = runtime.enabled !== false;
     const online = runtime.online;
-    const statusCls = online == null ? 'detecting' : online ? 'on' : 'off';
-    const statusTxt = online == null ? '检测中…' : online ? '在线' : '离线';
-    const dotCls = online == null ? 'rt-detecting' : online ? 'rt-on' : 'rt-off';
-    const s = runtime.sessions || {};
+    const statusCls = !enabled ? 'off' : online == null ? 'detecting' : online ? 'on' : 'off';
+    const statusTxt = !enabled ? '已关闭' : online == null ? '检测中…' : online ? '在线' : '离线';
+    const dotCls = !enabled || online === false ? 'rt-off' : online == null ? 'rt-detecting' : 'rt-on';
+    const account = runtime.capabilities?.accountUsage
+      ? `<div class="rt-account"><div class="rt-account-head"><span class="rt-account-title">账号用量</span><span class="rt-account-note">由 ${escapeHtml(runtime.label || 'CLI')} 查询</span></div>${ccAccountUsageBarsHtml(runtime.claudeUsage, runtime.usagePoll)}</div>`
+      : `<div class="rt-account"><div class="rt-account-head"><span class="rt-account-title">账号用量</span><span class="rt-account-note">该运行时暂不提供账号级用量</span></div></div>`;
     return `
     <div class="rt-panel">
       <div class="rt-badge"><svg viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></div>
@@ -192,23 +195,25 @@ function renderRuntime(rt) {
           ${kv('主机', escapeHtml(rt.host || '—'))}
           ${kv('平台', escapeHtml(plat))}
           ${kv('版本', runtime.version ? escapeHtml(runtime.version) : dim('未知'))}
-          ${kv('路径', runtime.binPath ? escapeHtml(runtime.binPath) : dim('—'), runtime.binPath || '')}
-        </div>
-      </div>
-      <div class="rt-sessions">
-        <div class="rt-sess-num">${s.total ?? 0}</div>
-        <div class="rt-sess-label">活跃会话</div>
-        <div class="rt-sess-sub">板内 ${s.board ?? 0}${runtime.id === 'claude' || s.cli ? ` · 终端 ${s.cli ?? 0}` : ''}</div>
-      </div>
-    </div>`;
+           ${kv('路径', runtime.binPath ? escapeHtml(runtime.binPath) : dim('—'), runtime.binPath || '')}
+         </div>
+         ${account}
+       </div>
+       <div class="rt-actions">
+         <button type="button" class="btn rt-toggle${enabled ? ' stop' : ''}" onclick="toggleProviderRuntime('${escapeAttr(runtime.id)}', ${enabled ? 'false' : 'true'})">${enabled ? '关闭运行时' : '开启运行时'}</button>
+       </div>
+     </div>`;
   }).join('');
   const claudeRuntime = runtimes.find((runtime) => runtime.id === 'claude') || rt;
   // ---- 用量汇总：CC 全局每日 token 表格（7/15/30 天切换）----
   dailyUsageData = Array.isArray(claudeRuntime.dailyUsage) ? claudeRuntime.dailyUsage : null;
   renderUsageTable();
-  // ---- 账号用量卡（5h/7d 滚动窗）与每日用量趋势卡（7 天柱状图）：并排两张独立卡，各占一半宽度 ----
-  const ccAccountGrid = $('ccAccountUsageGrid');
-  if (ccAccountGrid) ccAccountGrid.innerHTML = ccAccountUsageBarsHtml(claudeRuntime.claudeUsage, claudeRuntime.usagePoll);
+  // ---- 原账号用量卡改为全运行时新建任务折线图；账号用量已嵌入对应运行时卡。 ----
+  const taskCreatedGrid = $('taskCreatedGrid');
+  if (taskCreatedGrid) {
+    taskCreatedGrid.innerHTML = `<div class="du-wrap"><div class="du-canvas-box"><canvas id="taskCreatedChart"></canvas></div></div>`;
+    renderTaskCreatedChart(rt.dailyCreated);
+  }
   const ccGrid = $('ccUsageGrid');
   if (ccGrid) {
     ccGrid.innerHTML = `<div class="du-wrap"><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
@@ -216,10 +221,23 @@ function renderRuntime(rt) {
   }
 }
 
+window.toggleProviderRuntime = async (provider, enabled) => {
+  try {
+    const result = await api(`/api/providers/${encodeURIComponent(provider)}/enabled`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !!enabled }),
+    });
+    if (!result?.ok) return customAlert({ title: '运行时设置失败', message: escapeHtml(result?.error || '未知错误') });
+    await refreshState();
+  } catch (error) {
+    customAlert({ title: '运行时设置失败', message: escapeHtml(error.message) });
+  }
+};
+
 // ---- 用量汇总表格（CC 全局每日 token，7/15/30 切换）+ 每日柱状图（Chart.js）----
 let dailyUsageData = null;    // 最近一次近 30 天每日用量（tab 切换复用同一份，不重新请求）
 let usageTableDays = 7;       // 表格维度：7 / 15 / 30
 let duChartInstance = null;   // Chart.js 实例（重渲染前 destroy 防泄漏）
+let taskCreatedChartInstance = null;
 
 // 用量汇总表格：CC 全局每天 input/output/cache/total（token），末行合计 + 7/15/30 天 tab
 function renderUsageTable() {
@@ -292,6 +310,39 @@ function renderDailyChart(daily) {
       scales: {
         x: { grid: { display: false }, ticks: { color: ink, font: { size: 11 } } },
         y: { beginAtZero: true, ticks: { color: ink, font: { size: 10 }, maxTicksLimit: 5, callback: (v) => compactTokens(v) }, grid: { color: `color-mix(in oklab, ${ink} 16%, transparent)` } },
+      },
+    },
+  });
+}
+
+function renderTaskCreatedChart(rows) {
+  const canvas = $('taskCreatedChart');
+  const days = Array.isArray(rows) ? rows.slice(-7) : null;
+  if (!canvas || !days?.length || !window.Chart) {
+    if (taskCreatedChartInstance) { taskCreatedChartInstance.destroy(); taskCreatedChartInstance = null; }
+    return;
+  }
+  const css = getComputedStyle(document.documentElement);
+  const brand = css.getPropertyValue('--brand').trim() || '#2563eb';
+  const ink = css.getPropertyValue('--dim').trim() || '#8a8a8a';
+  const wd = ['日', '一', '二', '三', '四', '五', '六'];
+  if (taskCreatedChartInstance) taskCreatedChartInstance.destroy();
+  taskCreatedChartInstance = new window.Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: days.map((d) => '周' + wd[new Date(d.date + 'T00:00:00').getDay()]),
+      datasets: [{
+        label: '新建任务', data: days.map((d) => d.total), borderColor: brand,
+        backgroundColor: `color-mix(in oklab, ${brand} 16%, transparent)`, fill: true,
+        tension: .32, pointRadius: 3, pointHoverRadius: 4, borderWidth: 2,
+      }],
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `新建 ${c.parsed.y} 个任务` } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: ink, font: { size: 11 } } },
+        y: { beginAtZero: true, ticks: { precision: 0, color: ink, font: { size: 10 }, maxTicksLimit: 5 }, grid: { color: `color-mix(in oklab, ${ink} 16%, transparent)` } },
       },
     },
   });
@@ -389,6 +440,7 @@ function cardActionButtons(t, section) {
   // 被旁观的 CLI 会话（watchlist 出卡，带 t.cli）：processing 不给「中断」（不干预终端进程）、归档区给「从看板移除」。
   // 物化后的 CLI 任务无 t.cli，与其它来源一致（可中断 Mode B 会话、归档区只取消归档）。按 t.cli 判、不按 source（任务来源不变量）。
   const isObservedCli = !!t.cli;
+  const isReadOnlyCli = isObservedCli && t.provider === 'codex';
   const isPlan = section === 'plan';
   const _k = escapeAttr(t.taskKey);
   const descBtn = `<button class="btn" onclick="editTaskDesc('${_k}')" title="自己看的备注，不发给 Agent">✎ 描述</button>`;
@@ -413,9 +465,9 @@ function cardActionButtons(t, section) {
   } else if (section === 'queued') {
     actionBtn = `<button class="btn" style="color:var(--coralT)" onclick="cancelTaskAction('${_k}')">■ 中断</button>`;
   } else if (section === 'awaiting-human') {
-    actionBtn = completeBtn + toPlanBtn + archiveBtn;
+    actionBtn = completeBtn + (isReadOnlyCli ? '' : toPlanBtn) + archiveBtn;
   } else if (section === 'done') {
-    actionBtn = uncompleteBtn + toPlanBtn + archiveBtn;
+    actionBtn = uncompleteBtn + (isReadOnlyCli ? '' : toPlanBtn) + archiveBtn;
   } else if (section === 'archived') {
     const rmBtn = isObservedCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">✕ 移除</button>` : '';
     actionBtn = unarchiveBtn + rmBtn;
@@ -958,6 +1010,10 @@ async function applyStreamedWorkerLog(taskKey, r) {
   if (fp !== lastModalFp) { lastModalFp = fp; renderModalBody(true); }
   try {
     stateData = await api('/api/state');
+    if (Array.isArray(stateData?.runtime?.providers) && stateData.runtime.providers.length) {
+      providerCatalog = stateData.runtime.providers;
+      newTaskProviderCtl?.refresh();
+    }
     if (!modalOpen || modalPollTaskKey !== taskKey) return;
     renderTaskSide(taskKey);
     updateReplyBoxAvailability(taskKey);
@@ -1250,6 +1306,11 @@ function updateReplyBoxAvailability(taskKey) {
     stateTag.className = 'tag';
     stateTag.style.background = 'var(--brandS)';
     stateTag.style.color = 'var(--brand)';
+    if (t?.provider === 'codex') {
+      stateTag.textContent = 'CLI · 只读观察';
+      hint.innerHTML = '该 Codex CLI 会话仅在看板展示运行信息和状态，请在原终端里继续对话。';
+      return;
+    }
     const attachedPid = t.cli?.attachedPid;
     if (attachedPid) {
       stateTag.textContent = 'CLI · 终端占用';
@@ -2874,7 +2935,7 @@ $('newTaskBtn').addEventListener('click', () => {
   $('newTaskDesc').value = '';
   $('newTaskCwd').value = '';              // 工作目录（可选）
   loadNewTaskCwds();                       // 填充「已有工作目录」下拉（现有任务 cwd + 近期 CLI session cwd）
-  newTaskMesCtl?.setProvider('claude');
+  newTaskProviderCtl?.setProvider(newTaskProviderCtl?.preferredProvider() || 'claude');
   syncNewTaskProviderCapabilities();
   resetNewTaskExtras();                    // req4/5/6：定时 / worktree / 动态工作流 归默认
   refreshWorktreeUi('');                   // 无 cwd → 隐藏 worktree 区
@@ -2896,9 +2957,10 @@ function resetNewTaskExtras() {
 // 退回来的、有会话记录的 plan 任务：锁定 工作目录 / worktree / 基分支（改了会让确认执行的 --resume 找不到原会话）。
 // 前端禁用输入 + 显示锁定说明（后端 editTask 也会保原值兜底）。
 function setDirWorktreeLocked(locked) {
-  for (const id of ['newTaskProvider', 'newTaskCwd', 'newTaskCwdCaret', 'newTaskCwdBrowse', 'newTaskWorktree', 'newTaskBaseBranch', 'newTaskBranchCaret']) {
+  for (const id of ['newTaskCwd', 'newTaskCwdCaret', 'newTaskCwdBrowse', 'newTaskWorktree', 'newTaskBaseBranch', 'newTaskBranchCaret']) {
     const el = $(id); if (el) el.disabled = !!locked;
   }
+  newTaskProviderCtl?.setLocked(locked);
   const hint = $('newTaskDirLockHint');
   if (hint) hint.style.display = locked ? 'block' : 'none';
 }
@@ -3250,7 +3312,7 @@ $('addCliBtn').addEventListener('click', () => {
   $('addCliModal').style.display = 'flex';
   $('addCliSearch').value = '';
   $('addCliErr').style.display = 'none';
-  loadRecentCli();   // req1：打开即默认展示近 30min 活跃的 claude code 会话
+  loadRecentCli();
   setTimeout(() => $('addCliSearch').focus(), 100);
 });
 window.closeAddCliModal = () => { $('addCliModal').style.display = 'none'; };
@@ -3260,10 +3322,10 @@ async function loadRecentCli() {
   const results = $('addCliResults');
   results.innerHTML = '<div style="color:var(--dim);font-size:12.5px;padding:14px;text-align:center">加载近 30 分钟活跃会话…</div>';
   try {
-    const r = await api('/api/cli/recent?within=30&limit=30');
+    const r = await api('/api/cli/recent?within=30&limit=30&provider=all');
     if (!r.ok) { results.innerHTML = `<div style="color:var(--coral);font-size:12px;padding:14px;text-align:center">${escapeHtml(r.error || '加载失败')}</div>`; return; }
     if (!r.candidates?.length) {
-      results.innerHTML = '<div style="color:var(--dim);font-size:12.5px;padding:14px;text-align:center">近 30 分钟内没有活跃的 claude code 会话<br>可用上方搜索按关键字 / sid 前缀查更早的</div>';
+      results.innerHTML = '<div style="color:var(--dim);font-size:12.5px;padding:14px;text-align:center">近 30 分钟内没有活跃的 CLI 会话<br>可用上方搜索按关键字 / sid 前缀查更早的</div>';
       return;
     }
     results.innerHTML = '<div style="font-size:10.5px;color:var(--dim);padding:8px 12px 4px;font-family:var(--mono)">近 30 分钟活跃 · ' + r.candidates.length + ' 个（按最近活动倒序）</div>'
@@ -3284,7 +3346,7 @@ async function doCliSearch() {
     const r = await api('/api/cli/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q, limit: 30 }),
+      body: JSON.stringify({ q, limit: 30, provider: 'all' }),
     });
     if (!r.ok) { errBox.textContent = r.error || '搜索失败'; errBox.style.display = 'block'; results.innerHTML = ''; return; }
     if (!r.candidates?.length) {
@@ -3325,11 +3387,12 @@ function renderCliCandidateRow(c) {
     : '';
   const btn = c.alreadyAdded
     ? '<span class="tag tag-jade" style="margin-left:auto;flex:none">已在看板</span>'
-    : `<button class="btn btn-primary" style="font-size:11px;padding:5px 12px;margin-left:auto;flex:none" onclick="addCliFromSearch('${escapeAttr(c.sid)}')">+ 添加</button>`;
+    : `<button class="btn btn-primary" style="font-size:11px;padding:5px 12px;margin-left:auto;flex:none" onclick="addCliFromSearch('${escapeAttr(c.sid)}','${escapeAttr(c.provider || 'claude')}')">+ 添加</button>`;
   return `
     <div style="padding:10px 12px;border-bottom:1px solid var(--hair);display:flex;flex-direction:column;gap:4px">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span style="font-family:var(--mono);font-size:11.5px;color:var(--brand);font-weight:600">${short}</span>
+        <span class="tag" style="font-size:9px;padding:2px 6px">${escapeHtml(providerDef(c.provider || 'claude')?.label || c.provider || 'CLI')}</span>
         <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">${escapeHtml(c.cwd || c.projectDir || '—')}</span>
         <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-left:auto">${c.mtime} · ${c.sizeMb} MB</span>
       </div>
@@ -3343,13 +3406,13 @@ function renderCliCandidateRow(c) {
   `;
 }
 
-window.addCliFromSearch = async (sid) => {
+window.addCliFromSearch = async (sid, provider = 'claude') => {
   const errBox = $('addCliErr');
   try {
     const r = await api('/api/cli/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sid }),
+      body: JSON.stringify({ sid, provider }),
     });
     if (!r.ok) { errBox.textContent = r.error || '添加失败'; errBox.style.display = 'block'; return; }
     await refreshState();
@@ -3409,6 +3472,12 @@ const CLAUDE_MODEL_META = [
   { value: 'claude-sonnet-5',           name: 'Sonnet 5',  desc: '平衡 · 中等速度与推理' },
   { value: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', desc: '最快 · 最省 token' },
 ];
+const CODEX_MODEL_META = [
+  { value: 'gpt-5.6', name: 'GPT-5.6', desc: '当前旗舰 Codex 模型' },
+  { value: 'gpt-5.5', name: 'GPT-5.5', desc: '高能力代码与推理' },
+  { value: 'gpt-5.4', name: 'GPT-5.4', desc: '稳定的通用编码模型' },
+  { value: 'gpt-5.4-mini', name: 'GPT-5.4 mini', desc: '更快、更轻量的任务' },
+];
 // 容错映射：实测 CC 上报 model 即这些干净短 id，偶发带 -YYYYMMDD 后缀 → 归一到 BASE_MODELS 的 canonical value；认不出保留原值（诚实显示，不回落）
 function normalizeModelValue(raw) {
   if (!raw) return '';
@@ -3421,13 +3490,89 @@ const EFFORT_HEAD = '更高档位推理更充分，但更慢、也更快消耗�
 
 function providerModels(def) {
   const values = Array.isArray(def?.models) ? def.models : [];
-  const items = values.map((value) => CLAUDE_MODEL_META.find((m) => m.value === value)
+  const modelMeta = def?.id === 'codex' ? CODEX_MODEL_META : CLAUDE_MODEL_META;
+  const items = values.map((value) => modelMeta.find((m) => m.value === value)
     || { value, name: value, desc: '' });
   if (def?.allowCustomModel) {
     items.unshift({ value: '', name: 'CLI 默认模型', desc: '使用本机 Codex 配置的默认模型' });
     items.push({ value: '__custom__', name: '自定义模型…', desc: '输入 Codex CLI 支持的模型 ID' });
   }
   return items.length ? items : [{ value: '', name: 'CLI 默认模型', desc: '' }];
+}
+
+let newTaskProviderCtl = null;
+function initNewTaskProviderPicker() {
+  const value = $('newTaskProvider');
+  const btn = $('newTaskProviderBtn');
+  const menu = $('newTaskProviderMenu');
+  const picker = $('newTaskProviderPicker');
+  if (!value || !btn || !menu || !picker) return null;
+  const name = btn.querySelector('.provider-btn-name');
+  const meta = btn.querySelector('.provider-btn-meta');
+  let open = false;
+  const definitions = () => providerCatalog.length ? providerCatalog : [
+    { id: 'claude', label: 'Claude Code', command: 'claude', enabled: true },
+    { id: 'codex', label: 'Codex', command: 'codex', enabled: true },
+  ];
+  const current = () => definitions().find((item) => item.id === value.value) || definitions()[0];
+  const syncButton = () => {
+    const selected = current();
+    if (!selected) return;
+    name.textContent = selected.label || selected.id;
+    meta.textContent = selected.enabled === false ? `${selected.command || selected.id} · 已关闭` : (selected.command || selected.id);
+    btn.disabled = btn.dataset.locked === '1';
+  };
+  const render = () => {
+    const selected = value.value;
+    menu.innerHTML = definitions().map((item) => {
+      const enabled = item.enabled !== false;
+      const caps = item.capabilities || {};
+      const desc = enabled
+        ? `${item.command || item.id} · ${caps.approvals ? '支持审批' : '无审批'}${caps.interrupt ? ' · 可打断' : ''}`
+        : '运行时已关闭，开启后可新建会话';
+      return `<button type="button" class="provider-option" role="option" data-provider="${escapeAttr(item.id)}" aria-selected="${item.id === selected}"${enabled ? '' : ' disabled'}>
+        <span class="provider-option-copy"><span class="provider-option-name">${escapeHtml(item.label || item.id)}</span><span class="provider-option-desc">${escapeHtml(desc)}</span></span>
+        <span class="provider-option-state">${enabled ? (item.online === false ? 'CLI 离线' : '可用') : '已关闭'}</span><span class="provider-option-mark">✓</span>
+      </button>`;
+    }).join('');
+    syncButton();
+  };
+  const close = () => {
+    if (!open) return;
+    open = false; menu.classList.remove('open'); btn.classList.remove('open'); btn.setAttribute('aria-expanded', 'false'); menu.style.cssText = '';
+  };
+  const openMenu = () => {
+    if (btn.disabled) return;
+    const rect = btn.getBoundingClientRect();
+    menu.style.left = `${rect.left}px`;
+    menu.style.top = `${rect.bottom + 6}px`;
+    open = true; render(); menu.classList.add('open'); btn.classList.add('open'); btn.setAttribute('aria-expanded', 'true');
+  };
+  const setProvider = (id, { allowDisabled = false } = {}) => {
+    const next = definitions().find((item) => item.id === id);
+    if (!next || (!allowDisabled && next.enabled === false)) return false;
+    value.value = next.id;
+    render();
+    value.dispatchEvent(new Event('change'));
+    newTaskMesCtl?.setProvider(next.id);
+    syncNewTaskProviderCapabilities();
+    return true;
+  };
+  btn.addEventListener('click', (event) => { event.stopPropagation(); open ? close() : openMenu(); });
+  menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-provider]');
+    if (!item || item.disabled) return;
+    setProvider(item.dataset.provider); close(); btn.focus();
+  });
+  document.addEventListener('click', (event) => { if (open && !picker.contains(event.target) && !menu.contains(event.target)) close(); });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && open) { close(); btn.focus(); } });
+  render();
+  return {
+    setProvider,
+    refresh: render,
+    setLocked(locked) { btn.dataset.locked = locked ? '1' : ''; syncButton(); if (locked) close(); },
+    preferredProvider() { return definitions().find((item) => item.enabled !== false)?.id || value.value; },
+  };
 }
 function providerEfforts(def) {
   return (Array.isArray(def?.efforts) ? def.efforts : []).map((value) => ({
@@ -4040,6 +4185,7 @@ window.mbInterrupt = () => { if (mb) api(`/api/session/interrupt?id=${encodeURIC
 refreshState().then(async () => {
   await ensureProviderCatalog();
   initReplyModelSelector();
+  newTaskProviderCtl = initNewTaskProviderPicker();
   initNewTaskModelSelector();
   // 老式深链接 ?task=<key>&tab=<tab> 兼容 → 转成 hash 路由
   const q = new URLSearchParams(location.search);
