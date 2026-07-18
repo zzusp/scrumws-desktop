@@ -7,11 +7,15 @@
 import {
   requireMachine, verifyRegistrationKey, hashEnrollmentCode, mintCredential,
 } from '../auth.js';
+import { requireDispatchAllowed } from '../dispatch-gate.js';
 import { q, withTx } from '../db.js';
 import { sendError, rateLimit } from '../http.js';
 
 const UUID_RE = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
 const BODY_LIMIT_8MB = 8 * 1024 * 1024;
+// :id 路径参数（ack / reject 用）
+const uuidParams = { type: 'object', required: ['id'], properties: { id: { type: 'string', pattern: UUID_RE } } };
+const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? null));
 
 /**
  * ⚠ enroll 的唯一 401 —— 注册密钥失败与配对码失败必须返回**逐字节相同**的响应（契约 §6.5）。
@@ -95,7 +99,7 @@ export default async function machineRoutes(app) {
            app_version = excluded.app_version,
            claude_version = excluded.claude_version,
            revoked_at = null
-         returning id, display_name, workspace_id`,
+         returning id, display_name, workspace_id, owner_user_id`,
         [
           rk.workspace_id, b.machineUid, ec.created_by,
           (typeof b.displayName === 'string' && b.displayName.trim()) || b.hostname, // 缺省用 hostname
@@ -144,6 +148,9 @@ export default async function machineRoutes(app) {
       workspaceId: out.machine.workspace_id,
       workspaceName: out.workspaceName,
       displayName: out.machine.display_name,
+      // §5.7a owner-only 自动执行闸门的前提：本地要拿 ownerUserId 与 intent.createdBy.userId 比对（§7.2）。
+      // on conflict 更新列里没有 owner_user_id，机器重注册返回的仍是原主人（决策 12「重注册不改归属」自动兑现）。
+      ownerUserId: out.machine.owner_user_id,
     };
   });
 
@@ -185,9 +192,17 @@ export default async function machineRoutes(app) {
       ],
     );
     // machine_token.last_used_at 由 requireMachine 统一更新。
-    // ⚠ 与设计 §6.2 的偏差：P0/P1 没有意图/命令下行，pendingIntents / pendingCommands 恒为 0
-    //   且无人消费 → 不返回（P2 加回来是新增字段，向后兼容）。
-    return { serverTime: new Date().toISOString(), machineId: req.machine.machineId };
+    // §5.7b 取件门铃：connector 靠 pendingIntents>0 才去 GET /api/machine/intents，idle 机器每 tick 省一次请求。
+    //   read-only、P0 面、不受绊线约束（设计 §6.2 就是这个模型；P0P1 因无下行把它砍了，现在加回来是向后兼容的新增字段）。
+    const p = await q(
+      `select count(*)::int as n from task where machine_id = $1 and workspace_id = $2 and dispatch = 'pending'`,
+      [req.machine.machineId, req.machine.workspaceId],
+    );
+    return {
+      serverTime: new Date().toISOString(),
+      machineId: req.machine.machineId,
+      pendingIntents: p.rows[0].n,
+    };
   });
 
   // ============================================================
@@ -389,5 +404,129 @@ export default async function machineRoutes(app) {
     }
 
     return { needFull, markedMissing };
+  });
+
+  // ============================================================
+  // 5.3 GET /api/machine/intents —— 取件（造成下发 → 挂绊线）
+  // ============================================================
+  // preHandler 顺序：绊线在鉴权前（明文姿态下不做任何 DB 查询、对有无凭据一视同仁）。
+  app.get('/api/machine/intents', {
+    preHandler: [requireDispatchAllowed, requireMachine],
+  }, async (req) => {
+    // 命中偏索引 task_pending_intent_idx (machine_id) where dispatch='pending'；FIFO；每机器 15s 一次。
+    // ⚠ GET 绝不改 dispatch：取件不是下发，ack 才是。at-least-once 全靠这条（重复下发有 link 兜底，丢失无人兜底）。
+    // dispatch='pending' 蕴含 origin='cloud'（001 的 check 保证 origin='cloud' ⇒ creator_user_id not null），故 join app_user 安全。
+    const { rows } = await q(
+      `select t.id, t.title, t.prompt, t.model, t.effort, t.cwd, t.worktree, t.base_branch,
+              t.description, t.auto_run, t.creator_user_id, u.name as creator_name
+         from task t
+         join app_user u on u.id = t.creator_user_id
+        where t.machine_id = $1 and t.workspace_id = $2 and t.dispatch = 'pending'
+        order by t.created_at asc
+        limit 50`,
+      [req.machine.machineId, req.machine.workspaceId],
+    );
+    return {
+      intents: rows.map((r) => ({
+        intentId: r.id,
+        title: r.title,
+        prompt: r.prompt,
+        cwd: r.cwd,
+        model: r.model,
+        effort: r.effort,
+        worktree: r.worktree,
+        baseBranch: r.base_branch,
+        description: r.description,
+        autoRun: r.auto_run,
+        // createdBy.userId 是本地 owner-only 闸门的唯一判据（§7.2）：必须是 task.creator_user_id，不是别的。
+        createdBy: { userId: r.creator_user_id, name: r.creator_name },
+      })),
+    };
+  });
+
+  // ============================================================
+  // 5.4 POST /api/machine/intents/:id/ack —— 回执（不挂绊线：让已在飞的意图落地收口，别制造孤儿）
+  // ============================================================
+  app.post('/api/machine/intents/:id/ack', {
+    preHandler: [requireMachine],
+    schema: {
+      params: uuidParams,
+      body: {
+        type: 'object',
+        required: ['localTaskKey'],
+        properties: { localTaskKey: { type: 'string', minLength: 1, maxLength: 200 } },
+      },
+    },
+  }, async (req, reply) => {
+    const { machineId, workspaceId } = req.machine;
+    // 一条语句同时兑现「首次 ack」与「重发 ack」（幂等）。别写成先 select 再 update：中间有竞态。
+    // dispatched_at = coalesce(...)：重发不刷新——它是首次 ack 成功的时刻，不是 GET 到的时刻。
+    const upd = await q(
+      `update task
+          set dispatch       = 'delivered',
+              dispatched_at  = coalesce(dispatched_at, now()),
+              local_task_key = $3
+        where id = $1 and machine_id = $2 and workspace_id = $4 and origin = 'cloud'
+          and ( dispatch = 'pending'
+             or (dispatch = 'delivered' and local_task_key = $3) )
+        returning id, dispatched_at`,
+      [req.params.id, machineId, req.body.localTaskKey, workspaceId],
+    );
+    if (upd.rows[0]) return { ok: true, dispatchedAt: iso(upd.rows[0].dispatched_at) };
+
+    // rowCount = 0 → 再查判分支（§5.4）
+    const cur = await q(
+      `select dispatch, local_task_key from task
+        where id = $1 and machine_id = $2 and workspace_id = $3 and origin = 'cloud'`,
+      [req.params.id, machineId, workspaceId],
+    );
+    const row = cur.rows[0];
+    // 行不存在 / 不属本机（含 §5.2 竞态：意图被取消删掉了）
+    if (!row) return sendError(reply, 404, 'NOT_FOUND', '意图不存在或不属于本机');
+    // delivered 但 local_task_key 不同 = 同一意图建出两个本地任务，本地幂等破了，必须响
+    if (row.dispatch === 'delivered') return sendError(reply, 409, 'ALREADY_ACKED', '该意图已回执到另一个本地任务');
+    if (row.dispatch === 'rejected') return sendError(reply, 409, 'ALREADY_REJECTED', '该意图已被拒收');
+    return sendError(reply, 409, 'CONFLICT', '意图状态冲突');
+  });
+
+  // ============================================================
+  // 5.5 POST /api/machine/intents/:id/reject —— 拒收（不挂绊线，同 ack）
+  // ============================================================
+  app.post('/api/machine/intents/:id/reject', {
+    preHandler: [requireMachine],
+    schema: {
+      params: uuidParams,
+      // reason 是机器给的自由文本，原样存、原样显示 → 云端 UI 渲染必须 escapeHtml（cloud/public/app.js 已有该函数）
+      body: {
+        type: 'object',
+        required: ['reason'],
+        properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } },
+      },
+    },
+  }, async (req, reply) => {
+    const { machineId, workspaceId } = req.machine;
+    // 首次 reject 或重发同理由 reject（幂等命中）。reject 天然幂等：丢包 → 意图仍 pending → 下轮重拉重判再 reject。
+    const upd = await q(
+      `update task
+          set dispatch = 'rejected', reject_reason = $3
+        where id = $1 and machine_id = $2 and workspace_id = $4 and origin = 'cloud'
+          and ( dispatch = 'pending'
+             or (dispatch = 'rejected' and reject_reason = $3) )
+        returning id`,
+      [req.params.id, machineId, req.body.reason, workspaceId],
+    );
+    if (upd.rows[0]) return { ok: true };
+
+    const cur = await q(
+      `select dispatch from task
+        where id = $1 and machine_id = $2 and workspace_id = $3 and origin = 'cloud'`,
+      [req.params.id, machineId, workspaceId],
+    );
+    const row = cur.rows[0];
+    if (!row) return sendError(reply, 404, 'NOT_FOUND', '意图不存在或不属于本机');
+    if (row.dispatch === 'delivered') return sendError(reply, 409, 'ALREADY_ACKED', '该意图已被回执，无法拒收');
+    // 已 rejected 但理由不同（重发换了文本）→ 已是终态，据实告知
+    if (row.dispatch === 'rejected') return sendError(reply, 409, 'ALREADY_REJECTED', '该意图已被拒收');
+    return sendError(reply, 409, 'CONFLICT', '意图状态冲突');
   });
 }

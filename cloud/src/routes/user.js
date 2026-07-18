@@ -6,16 +6,28 @@
 //   能写的只有：user_session、enrollment_code、registration_key、machine.revoked_at。
 // 【§3.5】每条业务查询都必须带 workspace_id 谓词 —— 无 RLS，底下没有兜底。
 // 【§3.4】查不到 / 非本 workspace → 一律 404，不泄露「存在但你没权限」。
+import path from 'node:path';
 import {
   requireSession, verifyUserKey, createSession, destroySession,
   setSessionCookie, clearSessionCookie, publicUser, publicWorkspace,
   mintCredential, mintEnrollmentCode,
 } from '../auth.js';
+import { requireDispatchAllowed } from '../dispatch-gate.js';
 import { pool, q, withTx } from '../db.js';
 import { sendError, rateLimit } from '../http.js';
 
 const UUID_RE = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
 const ENROLL_CODE_TTL_SEC = 600; // 10min（契约 §3.2 / §6.4）
+
+// §5.6 model / effort 白名单 —— 与本地 task-actions.js:23-31 **逐字相同**。
+// 云端先挡一道纯为体验；本地 createTask 再挡一次才是权威（不一致会让本地直接拒 → 变 reject）。
+const CLOUD_MODELS = new Set([
+  'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001', 'claude-fable-5',
+]);
+const CLOUD_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+// cwd 必须是绝对路径。云端跑在 Linux，机器可能是 Windows（D:\proj）——单用 path.isAbsolute（随云端平台走）
+// 会把 Windows 绝对路径判为相对而误拒。两个平台的判定都试：任一为真即绝对。
+const isAbsolutePath = (p) => path.win32.isAbsolute(p) || path.posix.isAbsolute(p);
 
 const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? null));
 // numeric 列（total_cost_usd）从 pg 取回是**字符串** —— 前端要数字，这里显式转
@@ -39,9 +51,20 @@ function mapTaskRow(r) {
     worktree: r.worktree,
     baseBranch: r.base_branch,
     localTaskKey: r.local_task_key,
-    // 任务的真实创建时间取本地 task.json.createdAt 的镜像；task.created_at 只是云端入库时刻（导入产物）
-    createdAt: iso(r.local_created_at),
-    status: {
+    // 任务的真实创建时间取本地 task.json.createdAt 的镜像；task.created_at 只是云端入库时刻（导入产物）。
+    // origin='cloud' 的意图尚未在本地建任务时 local_created_at 为 null，回退到云端入库时刻 created_at，
+    // 否则前端拿不到任何创建时间。
+    createdAt: iso(r.local_created_at ?? r.created_at),
+    // §5.7c 下发面（origin='local' 行 dispatch 恒 null；origin='cloud' 意图才有值）：
+    //   pending  待机器取件   delivered 机器已建本地任务并 ack   rejected 机器拒收（rejectReason 是机器给的自由文本）
+    dispatch: r.dispatch,
+    dispatchedAt: iso(r.dispatched_at),
+    rejectReason: r.reject_reason,
+    autoRun: r.auto_run,
+    // §5.7c LEFT JOIN 后 pending/rejected 意图**没有** task_status 行（本地还没建任务，谁也报不上来），
+    //   ts.* 全为 null。mirror 是 task_status 的 not null 列 → 它为 null 即「无 status 行」的可靠哨兵：
+    //   此时只回 dispatch 面，status 显式给 null（不伪造一个全 null 的 status 对象骗消费者）。
+    status: r.mirror == null ? null : {
       // ⚠ state 是本地 state.json 的**原值**，不是看板分桶。归档的 runner 任务原值仍是 'done'
       //   （collect.js:204 是「isArchive 优先」分桶，只有 CLI 卡的原值才会是 'archived'）。
       //   要分桶用下面的 bucket，别拿 state 分——拿它分会把归档任务算进 done。
@@ -67,7 +90,8 @@ function mapTaskRow(r) {
 
 const TASK_COLUMNS = `
   t.id, t.origin, t.source, t.title, t.cwd, t.model, t.effort, t.worktree, t.base_branch,
-  t.local_task_key, t.local_created_at,
+  t.local_task_key, t.local_created_at, t.created_at,
+  t.dispatch, t.dispatched_at, t.reject_reason, t.auto_run,
   m.id as machine_id, m.display_name as machine_display_name, m.status as machine_status,
   ts.state, ts.outcome, ts.entered_at, ts.resolved_at, ts.last_activity_at,
   ts.rounds, ts.num_turns, ts.total_cost_usd, ts.background_task_count, ts.is_archive,
@@ -349,16 +373,20 @@ export default async function userRoutes(app) {
          and ($3::text is null or (case when ts.is_archive then 'archived' else ts.state end) = $3::text)
          and ($4::text is null or ts.mirror = $4::text)
          and ($5::text is null or t.title ilike $5::text or t.prompt ilike $5::text)`;
+    // §5.7c LEFT JOIN task_status：pending/rejected 的云端意图还没有 task_status 行（本地未建任务），
+    //   内连接会让它们「建了看不见」。left join 后这些行 ts.* 为 null，mapTaskRow 只回 dispatch 面。
+    //   注意：带 ?state= / ?mirror= 过滤时 ts 为 null 的意图天然不匹配（null = 值 → 落空），符合语义。
     const from = `
         from task t
         join machine m on m.id = t.machine_id
-        join task_status ts on ts.task_id = t.id`;
+        left join task_status ts on ts.task_id = t.id`;
 
     const total = await q(`select count(*)::int as n ${from} ${where}`, args);
     const { rows } = await q(
-      // 排序固定：与本地看板各桶同源（collect.js:225）
+      // 排序与本地看板各桶同源（collect.js:225）按最近活动倒序；意图无 last_activity_at，
+      //   回退到云端入库时刻 created_at，否则新建的意图会被 nulls last 压到最底、在 limit 内被挤掉。
       `select ${TASK_COLUMNS} ${from} ${where}
-        order by ts.last_activity_at desc nulls last
+        order by coalesce(ts.last_activity_at, t.created_at) desc nulls last
         limit $6 offset $7`,
       [...args, limit, offset],
     );
@@ -372,12 +400,13 @@ export default async function userRoutes(app) {
     preHandler: [requireSession],
     schema: { params: uuidParams },
   }, async (req, reply) => {
+    // §5.7c LEFT JOIN：pending/rejected 意图无 task_status 行，内连接会让详情页 404（明明建出来了）。
     const { rows } = await q(
       `select ${TASK_COLUMNS}, t.prompt, t.description,
               ts.session_id, ts.git_branch, ts.worktree_branch, ts.usage
          from task t
          join machine m on m.id = t.machine_id
-         join task_status ts on ts.task_id = t.id
+         left join task_status ts on ts.task_id = t.id
         where t.id = $1 and t.workspace_id = $2`,
       [req.params.id, req.auth.workspaceId],
     );
@@ -393,7 +422,8 @@ export default async function userRoutes(app) {
       ...base,
       prompt: r.prompt,
       description: r.description,
-      status: {
+      // base.status 为 null 时（意图尚无 task_status 行）只回 dispatch 面，不拼 session/usage 等执行字段。
+      status: base.status == null ? null : {
         ...base.status,
         sessionId: r.session_id,
         gitBranch: r.git_branch,
@@ -404,5 +434,120 @@ export default async function userRoutes(app) {
       },
       history: history.rows.map((h) => ({ seq: h.seq, state: h.state, at: iso(h.at), by: h.by })),
     };
+  });
+
+  // ============================================================
+  // 5.1 POST /api/tasks —— 建意图（造成下发 → 挂绊线；绊线排在鉴权之前）
+  // ============================================================
+  app.post('/api/tasks', {
+    preHandler: [requireDispatchAllowed, requireSession],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['machineId', 'title', 'prompt', 'cwd'],
+        properties: {
+          machineId: { type: 'string', pattern: UUID_RE },
+          // 长度上界防超大 payload；「trim 后 1..N」的精确判定在 handler（schema 量不到 trim）
+          title: { type: 'string', maxLength: 200 },
+          prompt: { type: 'string', maxLength: 100000 },
+          cwd: { type: 'string', maxLength: 1000 },
+          model: { type: ['string', 'null'] },
+          effort: { type: ['string', 'null'] },
+          worktree: { type: 'boolean', default: false },
+          baseBranch: { type: ['string', 'null'], maxLength: 200 },
+          description: { type: ['string', 'null'], maxLength: 2000 },
+          autoRun: { type: 'boolean', default: false }, // 只是**意愿**，跑不跑由本地闸门定
+        },
+      },
+    },
+  }, async (req, reply) => {
+    const b = req.body;
+    const workspaceId = req.auth.workspaceId;
+
+    // 校验顺序即语义（§5.1）。
+    // 1. machine：同 workspace + revoked_at is null + status='online'。
+    //    不存在 / 跨 workspace → 404（不泄露「存在但你没权限」，§3.4）；存在但离线 / 已撤销 → 409。
+    const m = (await q(
+      `select id, status, revoked_at from machine where id = $1 and workspace_id = $2`,
+      [b.machineId, workspaceId],
+    )).rows[0];
+    if (!m) return sendError(reply, 404, 'NOT_FOUND', '机器不存在');
+    if (m.revoked_at || m.status !== 'online') {
+      // 决策 16「能用才能选」：建时要求 online（别对着从没连过的机器许愿）；下发容忍离线（已许的愿不因掉线作废）。
+      return sendError(reply, 409, 'MACHINE_UNAVAILABLE', '目标机器当前不在线，无法派活');
+    }
+
+    // 2. model / effort 落在与本地逐字相同的白名单（§5.6）。云端先挡一道纯为体验，本地再挡一次才是权威。
+    if (b.model != null && !CLOUD_MODELS.has(b.model)) return sendError(reply, 400, 'BAD_REQUEST', `model 不在白名单：${b.model}`);
+    if (b.effort != null && !CLOUD_EFFORTS.has(b.effort)) return sendError(reply, 400, 'BAD_REQUEST', `effort 不在白名单：${b.effort}`);
+
+    // 3. title / prompt / cwd trim 后非空；cwd 必须绝对路径。
+    const title = String(b.title).trim();
+    const prompt = String(b.prompt).trim();
+    const cwd = String(b.cwd).trim();
+    if (!title || title.length > 200) return sendError(reply, 400, 'BAD_REQUEST', 'title 不能为空且不超过 200 字符');
+    if (!prompt) return sendError(reply, 400, 'BAD_REQUEST', 'prompt 不能为空');
+    if (!cwd) return sendError(reply, 400, 'BAD_REQUEST', 'cwd 不能为空');
+    // 为什么 cwd 必填且必须绝对：createTask 的 cwd 空则 claude 跑在桌面 app 进程自己的 CWD 里
+    //   （session-manager.js:206），那不在任何白名单里 —— 最不该被云端指到的地方。
+    if (!isAbsolutePath(cwd)) return sendError(reply, 400, 'BAD_REQUEST', 'cwd 必须是绝对路径');
+    const description = (b.description != null && String(b.description).trim()) || null;
+    const baseBranch = (b.baseBranch != null && String(b.baseBranch).trim()) || null;
+
+    // 4. ⚠ 红线：creator_user_id **只从会话取，绝不从 body 取**。它是 owner-only 闸门判据，
+    //    一旦可由请求体指定，任何登录用户都能自称机器主人 → 闸门当场失效。
+    const creatorUserId = req.auth.user.id;
+
+    // 5. insert：origin='cloud'、dispatch='pending'。云端永不写 task_status / task_history（不变式 1）。
+    const { rows } = await q(
+      `insert into task (workspace_id, machine_id, origin, creator_user_id, title, prompt, model, effort,
+                         cwd, worktree, base_branch, description, auto_run, dispatch)
+       values ($1, $2, 'cloud', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
+       returning id, dispatch, created_at`,
+      [
+        workspaceId, b.machineId, creatorUserId, title, prompt, b.model ?? null, b.effort ?? null,
+        cwd, b.worktree ?? false, baseBranch, description, b.autoRun ?? false,
+      ],
+    );
+    reply.code(201);
+    return { id: rows[0].id, dispatch: rows[0].dispatch, createdAt: iso(rows[0].created_at) };
+  });
+
+  // ============================================================
+  // 5.2 POST /api/tasks/:id/cancel —— 取消未下发的意图
+  //   不挂绊线：取消只**移除**、不造成下发，且运维中途关掉开关也该能收口。
+  // ============================================================
+  app.post('/api/tasks/:id/cancel', {
+    preHandler: [requireSession],
+    schema: { params: uuidParams },
+  }, async (req, reply) => {
+    // pending 意图无 task_status / task_history / local_task_key 足迹，删行即彻底消失（无级联残留）。
+    // 用 DELETE 而非第四个枚举值：语义即「这条从未到达机器的意图不复存在」（§5.2 / 迁移旁注）。
+    const del = await q(
+      `delete from task
+        where id = $1 and workspace_id = $2 and origin = 'cloud' and dispatch = 'pending'
+        returning id`,
+      [req.params.id, req.auth.workspaceId],
+    );
+    if (del.rowCount === 1) return { ok: true, cancelled: true };
+
+    // rowCount = 0 → 再查该行判分支（§5.2）
+    const cur = await q(
+      `select origin, dispatch from task where id = $1 and workspace_id = $2`,
+      [req.params.id, req.auth.workspaceId],
+    );
+    const row = cur.rows[0];
+    // 不存在 / 跨 workspace / origin<>'cloud' → 404
+    if (!row || row.origin !== 'cloud') return sendError(reply, 404, 'NOT_FOUND', '意图不存在');
+    // 已下发的撤回是 P3 命令下行，本期不做。响应带当前 dispatch（§5.2）。
+    if (row.dispatch === 'delivered') {
+      reply.code(409).send({ error: { code: 'ALREADY_DISPATCHED', message: '意图已下发到机器，无法取消（撤回已下发任务是 P3 命令下行）' }, dispatch: row.dispatch });
+      return reply;
+    }
+    if (row.dispatch === 'rejected') {
+      reply.code(409).send({ error: { code: 'ALREADY_REJECTED', message: '意图已被机器拒收' }, dispatch: row.dispatch });
+      return reply;
+    }
+    return sendError(reply, 409, 'CONFLICT', '意图状态冲突');
   });
 }

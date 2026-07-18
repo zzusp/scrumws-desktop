@@ -465,6 +465,48 @@ select.field-input{background:var(--card);cursor:pointer}
 .tl-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .tl-at{font-family:var(--mono);font-size:10.5px;color:var(--dim);font-variant-numeric:tabular-nums}
 .tl-by{font-family:var(--mono);font-size:10.5px;color:var(--mut)}
+
+/* ---------- 侧边栏「新建任务」主操作（风格指南 §2：侧边栏顶部主操作）---------- */
+.sb-actions{flex:none;padding:2px 4px 6px}
+.sb-new{width:100%;justify-content:center;padding:8px 12px;font-size:12.5px}
+.sb-new svg.ic{width:15px;height:15px}
+
+/* ---------- 新建任务表单 ---------- */
+.compose-wrap{max-width:760px}
+.compose-card{padding:20px 22px}
+/* 无在线机器 → 明确禁止提交的横幅（铁律：能用才能选，不假装能派）*/
+.cbanner{display:flex;align-items:flex-start;gap:9px;padding:11px 14px;border-radius:var(--r-lg);margin-bottom:var(--gap);
+  font-size:12px;line-height:1.55;background:var(--amberS);color:var(--amber);font-weight:500}
+.cbanner svg{flex:none;width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;
+  stroke-linejoin:round;margin-top:1px}
+.form-row{display:grid;grid-template-columns:104px minmax(0,1fr);gap:10px 16px;padding:13px 0;border-top:1px solid var(--hair);
+  align-items:start}
+.form-row:first-of-type{border-top:none;padding-top:2px}
+.form-label{font-size:12px;font-weight:600;color:var(--ink2);padding-top:8px}
+.form-label i{color:var(--coralT);font-style:normal;font-weight:700;margin-left:1px}
+.form-ctl{min-width:0;display:flex;flex-direction:column;gap:6px}
+.form-ctl .field-input{width:100%}
+.form-ctl textarea.field-input{resize:vertical;min-height:56px}
+.form-inline{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.form-hint{font-size:10.5px;color:var(--dim);line-height:1.5}
+.form-hint b{color:var(--mut);font-weight:600}
+.form-err{font-size:11.5px;color:var(--coralT);background:var(--coralS);padding:7px 11px;border-radius:var(--r-md);line-height:1.55;
+  box-shadow:inset 0 0 0 1px color-mix(in oklab, var(--destructive) 22%, transparent)}
+.form-actions{display:flex;align-items:center;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--hair)}
+.form-invalid-hint{margin-right:auto;font-size:11px;color:var(--amber);font-weight:500}
+
+/* ---------- 云端任务列表（意图 · dispatch 状态）—— 复用 .rk-table 骨架 ---------- */
+.intents-table td{vertical-align:top}
+.intent-title{color:var(--ink);font-weight:600;text-decoration:none;font-size:12px}
+.intent-title:hover{color:var(--brand)}
+.intent-cwd{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:2px;max-width:300px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.intent-reason{font-size:10px;color:var(--coralT);margin-top:4px;max-width:240px;line-height:1.45;word-break:break-word}
+.intent-mach{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--ink2);min-width:0}
+.intent-mach .dot{width:6px;height:6px;border-radius:50%;flex:none}
+.intent-mach .dot.online{background:var(--success)}
+.intent-mach .dot.offline{background:var(--dim)}
+.intent-disp{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
 </style>
 </head>
 <body>
@@ -506,11 +548,22 @@ select.field-input{background:var(--card);cursor:pointer}
       </span>
     </a>
 
+    <div class="sb-actions">
+      <button class="btn btn-primary sb-new" id="navNew" type="button">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+        <span>新建任务</span>
+      </button>
+    </div>
+
     <nav class="topnav">
       <div class="sb-group">运行</div>
       <a href="#/board" data-nav="board">
         <svg class="ic" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/></svg>
         <span>任务看板</span>
+      </a>
+      <a href="#/intents" data-nav="intents">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4Z"/></svg>
+        <span>云端任务</span>
       </a>
       <div class="sb-group">平台</div>
       <a href="#/machines" data-nav="machines">
@@ -604,6 +657,119 @@ select.field-input{background:var(--card);cursor:pointer}
               <div id="list-done" class="col-body"></div>
             </section>
           </div>
+        </div>
+
+        <!-- ============ 新建任务 ============ -->
+        <!-- 「能用才能选」：指派对象只列名下有 online 机器的人；机器下拉只列该人 online 机器；
+             无在线机器 → 上方横幅 + 提交按钮禁用。所有下拉都是自研（ui.js），无原生 <select>。 -->
+        <div id="view-compose" class="view" style="display:none">
+          <div class="compose-wrap">
+            <div id="composeNoMachine" class="cbanner" style="display:none">
+              <svg viewBox="0 0 24 24"><path d="M10.3 3.3 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+              <span>当前<b>没有任何在线机器</b> —— 无法派发任务。先让目标机器上线（桌面 app 连上云端并保持心跳）再回来新建。</span>
+            </div>
+            <section class="card compose-card">
+              <div class="sec-head">
+                <h2>新建任务</h2>
+                <span class="sec-sub">派一个任务到某人的在线机器 · 是否自动执行由目标机器本地闸门决定</span>
+              </div>
+              <form id="composeForm" autocomplete="off">
+                <div class="form-row">
+                  <label class="form-label" for="cTitle">标题<i>*</i></label>
+                  <div class="form-ctl">
+                    <input class="field-input" id="cTitle" maxlength="200" spellcheck="false" placeholder="一句话说明这个任务">
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label" for="cPrompt">Prompt<i>*</i></label>
+                  <div class="form-ctl">
+                    <textarea class="field-input mono" id="cPrompt" rows="6" spellcheck="false" placeholder="交给 agent 的完整指令"></textarea>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label">指派给<i>*</i></label>
+                  <div class="form-ctl">
+                    <span id="cPerson"></span>
+                    <div class="form-hint">只列出<b>名下至少有一台在线机器</b>的人；任务会派到他名下你选的那台机器</div>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label">机器<i>*</i></label>
+                  <div class="form-ctl">
+                    <span id="cMachine"></span>
+                    <div class="form-hint">选人后只列该人<b>当前在线</b>的机器</div>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label" for="cCwd">工作目录<i>*</i></label>
+                  <div class="form-ctl">
+                    <input class="field-input mono" id="cCwd" maxlength="1000" spellcheck="false" placeholder="目标机器上的绝对路径，如 D:\project\foo 或 /home/me/foo">
+                    <div class="form-hint">必须是目标机器上的<b>绝对路径</b>，且落在该机器的云端白名单内（否则机器会拒收）</div>
+                    <div class="form-err" id="cCwdErr" style="display:none"></div>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label">模型 / effort</label>
+                  <div class="form-ctl">
+                    <div class="form-inline">
+                      <span id="cModel"></span>
+                      <span id="cEffort"></span>
+                    </div>
+                    <div class="form-hint">留空「机器默认」= 用目标机器自己配置的默认模型 / 档位</div>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label">运行</label>
+                  <div class="form-ctl">
+                    <label class="cbx"><input type="checkbox" id="cWorktree"> 用 worktree 隔离运行</label>
+                    <div id="cBaseBranchRow" style="display:none">
+                      <input class="field-input mono" id="cBaseBranch" maxlength="200" spellcheck="false" placeholder="基线分支（可选，如 master）">
+                    </div>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label" for="cDesc">备注</label>
+                  <div class="form-ctl">
+                    <textarea class="field-input" id="cDesc" rows="2" maxlength="2000" spellcheck="false" placeholder="纯备注，不进 prompt（可选）"></textarea>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="form-label">自动执行</label>
+                  <div class="form-ctl">
+                    <label class="cbx"><input type="checkbox" id="cAutoRun"> 希望目标机器直接执行（不落人工确认）</label>
+                    <div class="form-hint">这只是<b>意愿</b>：真正跑不跑由目标机器的本地闸门决定（cwd 白名单 + owner-only 档位）。未放行时任务会停在「待人工」等确认。</div>
+                  </div>
+                </div>
+                <div class="form-err" id="composeErr" style="display:none"></div>
+                <div class="form-actions">
+                  <span class="form-invalid-hint" id="composeHint"></span>
+                  <button class="btn" type="button" id="composeReset">重置</button>
+                  <button class="btn btn-primary" type="submit" id="composeSubmit">下发任务</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </div>
+
+        <!-- ============ 云端任务（意图 · dispatch 状态 + 取消未下发）============ -->
+        <div id="view-intents" class="view" style="display:none">
+          <div class="sec-head">
+            <h2>云端任务</h2>
+            <span class="sec-sub">从云端下发的意图 · 待下发的可取消 · 已下发的在看板里看执行</span>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:8px">
+              <button class="btn btn-primary" id="intentNew" type="button">+ 新建任务</button>
+              <button class="btn" id="intentReload">刷新</button>
+            </span>
+          </div>
+          <div class="rk-wrap">
+            <table class="rk-table intents-table">
+              <thead>
+                <tr><th>标题</th><th>机器</th><th>下发状态</th><th>时间</th><th></th></tr>
+              </thead>
+              <tbody id="intentList"></tbody>
+            </table>
+          </div>
+          <div id="intentEmpty" class="empty" style="display:none"></div>
         </div>
 
         <!-- ============ 机器列表 ============ -->

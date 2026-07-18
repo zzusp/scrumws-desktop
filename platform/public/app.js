@@ -2595,12 +2595,14 @@ function cloudTime(iso) {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-let cloudRemoteCfg = null;   // /api/cloud/remote-config 的 {cloudRemoteControl, cloudAllowedCwds}（远程控制闸门）
+let cloudRemoteCfg = null;   // /api/cloud/remote-config 的 {cloudRemoteControl, cloudAllowedCwds}（远程控制闸门 + 云端派活共用白名单）
+let cloudDispatchCfg = null; // /api/cloud/dispatch-config 的 {acceptAutoRun}（云端派活自动执行闸门档位）
 
 async function refreshCloudStatus() {
   try {
     cloudStatus = await api('/api/cloud/status');
     cloudRemoteCfg = await api('/api/cloud/remote-config');
+    cloudDispatchCfg = await api('/api/cloud/dispatch-config');
   } catch { return; }
   renderCloud();
 }
@@ -2642,20 +2644,37 @@ function renderCloud() {
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11px;color:var(--mut);font-family:var(--mono)">
         <span>最近心跳 <b style="color:var(--ink2)">${cloudTime(s.lastHeartbeatAt)}</b></span>
         <span>最近对账 <b style="color:var(--ink2)">${cloudTime(s.lastReconcileAt)}</b></span>
+        <span>最近取件 <b style="color:var(--ink2)">${cloudTime(s.lastIntentAt)}</b></span>
         <span>上轮推送 <b style="color:var(--ink2)">${s.lastPushed}</b></span>
         <span>已同步 <b style="color:var(--ink2)">${s.syncedCount}</b> 张卡</span>
       </div>
       <div style="border-top:1px solid var(--hair);margin-top:12px;padding-top:10px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div class="field">
+          <span class="f-label">云端派活自动执行（同事 / 自己在云端建的任务下发到本机时，要不要不问就直接跑）</span>
+          <select id="cloudAutoRunSelect" class="field-input">
+            <option value="off">off · 一切云端任务都落「计划」，要本地点确认才跑（最保守）</option>
+            <option value="owner-only">owner-only · 我自己派的直接跑，同事派的要本地确认（默认）</option>
+            <option value="on">on · 任何人派的都直接跑</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+          <span id="cloudAutoRunHint" style="font-size:11.5px;color:var(--dim)"></span>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--dim);line-height:1.7">
+          真正的遏制是下方 cwd 白名单，不是这个档位 —— 白名单为空时三档行为一样（云端任务一律拒收）。
+        </div>
+      </div>
+      <div style="border-top:1px solid var(--hair);margin-top:12px;padding-top:10px">
+        <div class="field">
+          <span class="f-label">云端可派活的 cwd 白名单（云端下发意图 / 手机远程新建 共用 · 每行一个绝对路径 · 前缀匹配 · 空 = 一律拒绝）</span>
+          <textarea id="cloudCwdsInput" class="field-input mono" rows="3" spellcheck="false" placeholder="D:\\project\\foo"></textarea>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;margin-bottom:8px">
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer">
             <input type="checkbox" id="cloudRemoteToggle"${cfg.cloudRemoteControl ? ' checked' : ''}>
             远程控制（手机控制台经云端中继访问本机）
           </label>
           ${relayTag}
-        </div>
-        <div class="field">
-          <span class="f-label">远程新建任务 cwd 白名单（每行一个目录绝对路径 · 前缀匹配 · 空 = 拒绝一切远程新建）</span>
-          <textarea id="cloudCwdsInput" class="field-input mono" rows="3" spellcheck="false" placeholder="D:\\project\\foo"></textarea>
         </div>
         <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
           <button class="btn" id="cloudCwdsSaveBtn">保存白名单</button>
@@ -2664,6 +2683,23 @@ function renderCloud() {
         ${rcErr}
       </div>
       ${err}`;
+    // 自动执行档位：即时保存（change 即写），避免 15s 轮询重渲染把未保存的选择抹掉（对齐远程控制开关的即时保存）
+    const autoSel = $('cloudAutoRunSelect');
+    if (autoSel) {
+      autoSel.value = (cloudDispatchCfg && cloudDispatchCfg.ok && cloudDispatchCfg.acceptAutoRun) || 'owner-only';
+      autoSel.addEventListener('change', async () => {
+        const h = $('cloudAutoRunHint');
+        let r = null;
+        try {
+          r = await api('/api/cloud/dispatch-config', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ acceptAutoRun: autoSel.value }),
+          });
+        } catch { r = { ok: false, error: '保存失败' }; }
+        if (r?.ok) { cloudDispatchCfg = r; if (h) { h.style.color = 'var(--jade)'; h.textContent = '已保存 · 下一次下发即生效'; } }
+        else if (h) { h.style.color = 'var(--coral)'; h.textContent = r?.error || '保存失败'; }
+      });
+    }
     // 白名单回填走 .value（不走模板字符串，避免路径里的反斜杠/引号被 HTML 转义搅坏）
     const ta = $('cloudCwdsInput');
     if (ta) ta.value = (Array.isArray(cfg.cloudAllowedCwds) ? cfg.cloudAllowedCwds : []).join('\n');

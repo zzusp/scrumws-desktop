@@ -347,6 +347,264 @@ async function loadMachines({ render = true } = {}) {
 }
 
 // ==========================================================================
+// 新建任务（契约 §5.1 建意图）+ 云端任务列表（§5.2 取消 / §5.7c dispatch 面）
+// ==========================================================================
+// model / effort 白名单与本地 createTask 逐字相同（契约 §5.6 / task-actions.js:23-31）——
+// 云端先挡一道纯为体验，本地 createTask 再挡一次才是权威。
+const MODELS = [
+  { value: '', label: '机器默认' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+  { value: 'claude-sonnet-5', label: 'Sonnet 5' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  { value: 'claude-fable-5', label: 'Fable 5' },
+];
+const EFFORTS = [
+  { value: '', label: '默认档' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max' },
+];
+
+// 4 个自研 dropdown（ui.js）在 bindEvents 里建一次，这里只存句柄
+let ddCPerson = null, ddCMachine = null, ddCModel = null, ddCEffort = null;
+
+const machineLabel = (m) => m.displayName || m.hostname || m.id;
+
+/** 「能用才能选」：按 owner 聚合**在线且未撤销**的机器。只有名下有 online 机器的人能被指派。 */
+function composePeople() {
+  const byOwner = new Map();
+  for (const m of machines) {
+    if (m.status !== 'online' || m.revokedAt) continue;   // 契约 §5.1：建时要求机器 online
+    const oid = m.owner?.id;
+    if (!oid) continue;
+    const e = byOwner.get(oid) || { id: oid, name: m.owner.name || '(未命名)', machines: [] };
+    e.machines.push(m);
+    byOwner.set(oid, e);
+  }
+  return [...byOwner.values()].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh'));
+}
+
+/** 客户端轻校验：cwd 必须绝对路径（本地 path.isAbsolute 才是权威）。按目标机器平台选规则。 */
+function looksAbsolute(cwd, platform) {
+  const s = String(cwd || '').trim();
+  if (!s) return false;
+  const win = /^[a-zA-Z]:[\\/]/.test(s) || /^\\\\/.test(s);   // 盘符 或 UNC
+  const posix = s.startsWith('/');
+  if (platform === 'win32') return win;
+  if (platform) return posix;              // 已知非 win 平台
+  return win || posix;                     // 平台未知（还没选机器）→ 任一绝对形态都接受
+}
+
+/** 进入 / 刷新新建页：拉最新机器，重建人 / 机器下拉的选项（保留已选），重算可提交性。 */
+function buildComposeOptions() {
+  if (!ddCPerson) return;
+  const people = composePeople();
+  const opts = people.length
+    ? [{ value: '', label: '选择一个人…' },
+       ...people.map((p) => ({ value: p.id, label: `${p.name} · ${p.machines.length} 台在线` }))]
+    : [{ value: '', label: '（无在线机器）' }];
+  ddCPerson.setOptions(opts);        // setOptions 在当前值仍存在时保留选中，不会把用户选的人刷掉
+  updateComposeMachineOptions();
+  updateComposeValidity();
+}
+
+/** 机器下拉：只列所选人当前 online 的机器；恰好一台则自动选中。 */
+function updateComposeMachineOptions() {
+  if (!ddCMachine) return;
+  const p = composePeople().find((x) => x.id === ddCPerson.getValue());
+  if (!p) { ddCMachine.setOptions([{ value: '', label: '先选择一个人' }]); return; }
+  ddCMachine.setOptions(p.machines.length === 1
+    ? [{ value: p.machines[0].id, label: machineLabel(p.machines[0]) }]   // 单台 → setOptions 自动选中它
+    : [{ value: '', label: '选择机器…' }, ...p.machines.map((m) => ({ value: m.id, label: machineLabel(m) }))]);
+}
+
+/** 校验 + 开关提交按钮 + 给出「差什么」提示。表单明确禁止提交，不静默失败。 */
+function updateComposeValidity() {
+  const btn = $('composeSubmit');
+  if (!btn) return false;
+  const title = $('cTitle').value.trim();
+  const prompt = $('cPrompt').value.trim();
+  const cwd = $('cCwd').value.trim();
+  const personId = ddCPerson?.getValue() || '';
+  const machineId = ddCMachine?.getValue() || '';
+  const noMachines = composePeople().length === 0;
+  $('composeNoMachine').style.display = noMachines ? '' : 'none';
+
+  // cwd 绝对路径提示（按所选机器平台）
+  let cwdErr = '';
+  if (cwd) {
+    const m = machines.find((x) => x.id === machineId);
+    if (!looksAbsolute(cwd, m?.platform)) {
+      cwdErr = '需要绝对路径' + (m?.platform === 'win32' ? '（如 D:\\project\\foo）' : m?.platform ? '（如 /home/me/foo）' : '');
+    }
+  }
+  const ce = $('cCwdErr');
+  if (cwdErr) { ce.textContent = cwdErr; ce.style.display = ''; } else ce.style.display = 'none';
+
+  const reasons = [];
+  if (noMachines) reasons.push('当前没有在线机器，无法派发');
+  if (!personId) reasons.push('请选择指派对象');
+  else if (!machineId) reasons.push('请选择机器');
+  if (!title) reasons.push('请填标题');
+  if (!prompt) reasons.push('请填 Prompt');
+  if (!cwd) reasons.push('请填工作目录');
+  else if (cwdErr) reasons.push('工作目录需为绝对路径');
+
+  const ok = reasons.length === 0;
+  btn.disabled = !ok;
+  $('composeHint').textContent = ok ? '' : reasons[0];
+  return ok;
+}
+
+function resetCompose() {
+  ['cTitle', 'cPrompt', 'cCwd', 'cBaseBranch', 'cDesc'].forEach((id) => { $(id).value = ''; });
+  $('cWorktree').checked = false;
+  $('cAutoRun').checked = false;
+  $('cBaseBranchRow').style.display = 'none';
+  ddCModel?.setValue('');
+  ddCEffort?.setValue('');
+  ddCPerson?.setValue('');
+  updateComposeMachineOptions();
+  $('composeErr').style.display = 'none';
+  updateComposeValidity();
+}
+
+/** 刷新新建页所需的机器数据（不清用户填的字段，只更新人 / 机器下拉的选项）。 */
+async function refreshCompose() {
+  await loadMachines({ render: false });
+  buildComposeOptions();
+}
+
+async function submitCompose(ev) {
+  ev?.preventDefault?.();
+  if (!updateComposeValidity()) return;
+  const body = {
+    machineId: ddCMachine.getValue(),
+    title: $('cTitle').value.trim(),
+    prompt: $('cPrompt').value.trim(),
+    cwd: $('cCwd').value.trim(),
+    model: ddCModel.getValue() || null,     // 空 → 机器自己的 defaultModel（契约 §5.1）
+    effort: ddCEffort.getValue() || null,
+    worktree: $('cWorktree').checked,
+    baseBranch: $('cBaseBranch').value.trim() || null,
+    description: $('cDesc').value.trim() || null,
+    autoRun: $('cAutoRun').checked,         // 只是意愿，跑不跑由本地闸门定（契约 §2 决策 8/9）
+  };
+  const btn = $('composeSubmit');
+  const errBox = $('composeErr');
+  btn.disabled = true;
+  errBox.style.display = 'none';
+  const r = await api('/api/tasks', { method: 'POST', body });
+  if (guard401(r)) return;
+  if (r.status === 201) {
+    UI.toast('任务已下发 · 等待机器取件');
+    resetCompose();
+    location.hash = '#/intents';   // 去列表看这条新 pending 意图
+    return;
+  }
+  btn.disabled = false;
+  const code = r.json?.error?.code;
+  let msg = errMsg(r, '下发失败');
+  if (code === 'MACHINE_UNAVAILABLE') { msg = '所选机器已离线，请重新选择在线机器'; refreshCompose(); }
+  else if (code === 'NOT_FOUND') { msg = '所选机器不存在或不属于当前团队'; refreshCompose(); }
+  else if (code === 'PLAINTEXT_DISPATCH_BLOCKED') { msg = '云端尚未放行下发：当前为明文部署且未显式确认，请联系管理员设置 CLOUD_ACCEPT_PLAINTEXT_DISPATCH=1'; }
+  errBox.textContent = msg;
+  errBox.style.display = '';
+  UI.toast(msg, 'err');
+}
+
+// ---------- 云端任务列表（dispatch 状态 + 取消未下发） ----------
+/** dispatch 徽章：pending（机器在线=待取件 / 离线=待下发·机器离线）· delivered · rejected+原因。 */
+function dispatchBadgeHtml(t) {
+  const online = t.machine?.status === 'online';
+  const d = t.dispatch;
+  if (d === 'pending') {
+    return online
+      ? '<span class="tag tag-amber" style="font-size:10px">待取件</span>'
+      : '<span class="tag tag-coral" style="font-size:10px">待下发 · 机器离线</span>';
+  }
+  if (d === 'delivered') return '<span class="tag tag-jade" style="font-size:10px">已下发</span>';
+  if (d === 'rejected') {
+    // reason 是机器给的自由文本 → 必须 escapeHtml（契约 §5.5 红线）
+    return '<span class="tag tag-coral" style="font-size:10px">已拒收</span>'
+      + (t.rejectReason ? `<div class="intent-reason" title="${escapeAttr(t.rejectReason)}">${escapeHtml(t.rejectReason)}</div>` : '');
+  }
+  return '<span class="tag tag-mut" style="font-size:10px">—</span>';
+}
+
+function intentRowHtml(t) {
+  const mach = t.machine || {};
+  const online = mach.status === 'online';
+  const title = t.title || t.localTaskKey || '(无标题)';
+  // pending 意图还没本地任务 → 用意图建立时间 createdAt；delivered 用 dispatchedAt
+  const when = t.dispatch === 'delivered' ? (t.dispatchedAt || t.createdAt) : t.createdAt;
+  return `<tr>
+    <td>
+      <a class="intent-title" href="#/task/${encodeURIComponent(t.id)}">${escapeHtml(title)}</a>
+      ${t.cwd ? `<div class="intent-cwd" title="${escapeAttr(t.cwd)}">${escapeHtml(t.cwd)}</div>` : ''}
+    </td>
+    <td><span class="intent-mach" title="${escapeAttr(mach.displayName || '')}">
+      <span class="dot ${online ? 'online' : 'offline'}"></span><span>${escapeHtml(mach.displayName || '—')}</span>
+    </span></td>
+    <td><div class="intent-disp">${dispatchBadgeHtml(t)}</div></td>
+    <td class="dim" title="${escapeAttr(fmtDateTime(when))}">${escapeHtml(fmtAgo(when))}</td>
+    <td class="act">${t.dispatch === 'pending'
+      ? `<button class="btn" data-cancel="${escapeAttr(t.id)}" data-title="${escapeAttr(title)}">取消</button>`
+      : ''}</td>
+  </tr>`;
+}
+
+// dispatch 三态的排序权重：pending（可操作）在前，rejected（终态）在后
+const DISPATCH_ORDER = { pending: 0, delivered: 1, rejected: 2 };
+
+async function loadIntents() {
+  const list = $('intentList'), empty = $('intentEmpty');
+  // 没有 origin/dispatch 服务端过滤 → 拉通用任务列表再客户端筛 origin==='cloud'（§10 已知取舍）
+  const r = await api('/api/tasks?limit=200');
+  if (guard401(r)) return;
+  if (r.status !== 200 || !r.json) {
+    list.innerHTML = '';
+    empty.style.display = '';
+    empty.textContent = errMsg(r, '加载失败');
+    return;
+  }
+  const intents = (r.json.tasks || []).filter((t) => t.origin === 'cloud');
+  intents.sort((a, b) => {
+    const da = DISPATCH_ORDER[a.dispatch] ?? 9, db = DISPATCH_ORDER[b.dispatch] ?? 9;
+    if (da !== db) return da - db;
+    return (Date.parse(b.dispatchedAt || b.createdAt || 0) || 0) - (Date.parse(a.dispatchedAt || a.createdAt || 0) || 0);
+  });
+  list.innerHTML = intents.map(intentRowHtml).join('');
+  empty.style.display = intents.length ? 'none' : '';
+  empty.textContent = '还没有从云端下发的任务 —— 点「新建任务」派发第一个';
+  markSynced();
+}
+
+/** 取消未下发的意图（契约 §5.2）：只 DELETE pending 行；已下发 / 已拒收会 409。走自研 modal。 */
+async function cancelIntent(id, title) {
+  const yes = await UI.confirmDanger({
+    title: '取消未下发的意图',
+    messageHtml: `即将取消 <b>${escapeHtml(title || '这个意图')}</b>
+      <ul>
+        <li>只能取消<b>还没被机器取走</b>的意图（机器一旦取件即无法在云端撤回）</li>
+        <li>取消后该意图彻底消失，可在「新建任务」重新派发</li>
+      </ul>`,
+    confirmText: '取消意图',
+    cancelText: '返回',
+  });
+  if (!yes) return;
+  const r = await api(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {} });
+  if (guard401(r)) return;
+  if (r.status === 200) { UI.toast('已取消该意图'); loadIntents(); return; }
+  // 409 ALREADY_DISPATCHED / ALREADY_REJECTED（机器抢在取消前取件了）· 404 已不存在
+  UI.toast(errMsg(r, '取消失败'), 'err');
+  loadIntents();   // 刷新看它现在的真实状态
+}
+
+// ==========================================================================
 // 任务详情（契约 §6.12）
 // ==========================================================================
 function statHtml(k, v, title) {
@@ -790,7 +1048,7 @@ function renderEnrollView() {
 // ==========================================================================
 // 路由 / 刷新
 // ==========================================================================
-const ROUTE_VIEWS = ['board', 'machines', 'enroll', 'task'];
+const ROUTE_VIEWS = ['board', 'intents', 'compose', 'machines', 'enroll', 'task'];
 let currentView = 'board';
 let currentTaskId = null;
 
@@ -801,6 +1059,8 @@ function router() {
   let view = 'board';
   currentTaskId = null;
   if (mTask) { view = 'task'; currentTaskId = decodeURIComponent(mTask[1]); }
+  else if (h.startsWith('#/intents')) view = 'intents';
+  else if (h.startsWith('#/compose')) view = 'compose';
   else if (h.startsWith('#/machines')) view = 'machines';
   else if (h.startsWith('#/enroll')) view = 'enroll';
   currentView = view;
@@ -810,7 +1070,10 @@ function router() {
     if (el) el.style.display = v === view ? '' : 'none';
   }
   document.querySelectorAll('.topnav a').forEach((a) => {
-    a.classList.toggle('active', a.dataset.nav === view || (view === 'task' && a.dataset.nav === 'board'));
+    // task 详情高亮「任务看板」；新建任务高亮「云端任务」（它没有独立导航项，是侧栏主操作按钮）
+    a.classList.toggle('active', a.dataset.nav === view
+      || (view === 'task' && a.dataset.nav === 'board')
+      || (view === 'compose' && a.dataset.nav === 'intents'));
   });
   const crumbs = $('crumbs');
   const mid = crumbs.querySelector('.crumb-mid-wrap');
@@ -823,7 +1086,8 @@ function router() {
     crumbs.insertBefore(span, $('viewTitle'));
     $('viewTitle').textContent = '任务详情';
   } else {
-    $('viewTitle').textContent = view === 'machines' ? '机器' : view === 'enroll' ? '机器纳管' : '任务看板';
+    const TITLES = { machines: '机器', enroll: '机器纳管', intents: '云端任务', compose: '新建任务', board: '任务看板' };
+    $('viewTitle').textContent = TITLES[view] || '任务看板';
   }
   // 向导只在**进入本页**时按内存状态重画一次 —— 绝不挂进 refreshCurrentView：
   // 15s 一次的轮询把 DOM 重建掉，会打断正在复制明文的人（明文只此一次，打断的代价是重新生成）。
@@ -836,6 +1100,8 @@ function refreshCurrentView() {
   if (currentView === 'board') { loadMachines({ render: false }); loadBoard(); }
   else if (currentView === 'machines') loadMachines();
   else if (currentView === 'enroll') loadRegKeys();   // 只刷列表，不动向导
+  else if (currentView === 'compose') refreshCompose();   // 只刷机器数据 + 下拉选项，不清用户填的字段
+  else if (currentView === 'intents') loadIntents();
   else if (currentView === 'task' && currentTaskId) loadTaskDetail(currentTaskId);
 }
 function markSynced() {
@@ -899,6 +1165,34 @@ function bindEvents() {
     boardFilter.machineId = ''; boardFilter.mirror = ''; boardFilter.q = '';
     syncBoardToolbar();
     loadBoard();
+  });
+
+  // ---- 新建任务：4 个自研 dropdown（建一次，选项在进入 / 刷新页时喂）----
+  ddCPerson = UI.dropdown({
+    mount: $('cPerson'), ariaLabel: '指派给', minWidth: '240px',
+    options: [{ value: '', label: '加载中…' }], value: '',
+    onChange: () => { updateComposeMachineOptions(); updateComposeValidity(); },
+  });
+  ddCMachine = UI.dropdown({
+    mount: $('cMachine'), ariaLabel: '机器', minWidth: '240px',
+    options: [{ value: '', label: '先选择一个人' }], value: '',
+    onChange: () => updateComposeValidity(),
+  });
+  ddCModel = UI.dropdown({ mount: $('cModel'), ariaLabel: '模型', minWidth: '150px', options: MODELS, value: '' });
+  ddCEffort = UI.dropdown({ mount: $('cEffort'), ariaLabel: 'effort', minWidth: '120px', options: EFFORTS, value: '' });
+  ['cTitle', 'cPrompt', 'cCwd'].forEach((id) => $(id).addEventListener('input', updateComposeValidity));
+  $('cWorktree').addEventListener('change', (e) => {
+    $('cBaseBranchRow').style.display = e.target.checked ? '' : 'none';
+  });
+  $('composeForm').addEventListener('submit', submitCompose);
+  $('composeReset').addEventListener('click', resetCompose);
+  $('navNew').addEventListener('click', () => { location.hash = '#/compose'; });
+  $('intentNew').addEventListener('click', () => { location.hash = '#/compose'; });
+  $('intentReload').addEventListener('click', loadIntents);
+  // 取消按钮随列表重绘，事件委托绑一次
+  $('intentList').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-cancel]');
+    if (b) cancelIntent(b.dataset.cancel, b.dataset.title);
   });
 
   // 机器纳管：撤销按钮随列表重绘，用事件委托绑一次（别每次重绘都重新挂）

@@ -1,0 +1,20 @@
+case,分类,剧本步,说明,round-1,备注,round-2
+C01,迁移,1,一次性库跑 001+002 后 task 有 auto_run/dispatch/dispatched_at/reject_reason 四列且 origin 未删,PASS,round-1.md §2；information_schema 实查,PASS
+C02,云端,1,真 cloud/src/server.js 起在 8791（非 mock）：/api/health 200 + / 托管 index.html,PASS,round-1.md §2,PASS
+C03,云端,1,bootstrap 建两用户(A/B)+各自 /api/auth/login 换会话（同 workspace）,PASS,A=孙鹏 owner；B=同事乙,PASS
+C04,下行,2,本地沙箱 enroll 到真云端→真心跳翻 online + identity.ownerUserId=会话用户,PASS,owner-only 闸门判据落地,PASS
+C05,下行,3,白名单默认空→云端派活被本地拒收，云端见 rejected+原因，本地零任务零 link,PASS,最硬防线（唯一不依赖云端诚实）；真云端往返,PASS
+C06,下行,3,白名单外 cwd 被拒（work-evil 与白名单 work 前缀相邻，未被误放行）,PASS,补分隔符前缀比对生效,PASS
+C07,闸门,4+5a,白名单内+owner-only+自己派+autoRun→autoExec 直接跑（不落 plan），云端 delivered+回填 localTaskKey,PASS,真云端派→本地 createTask→ack 全链,PASS
+C08,闸门,5b,owner-only+别人(B)派+autoRun→落 plan 等人确认（createdBy=B≠机器主人 A）,PASS,owner-only 判据用云端上报的 createdBy,PASS
+C09,幂等,6,自然幂等：delivered 意图不再被取件，每意图恰一个本地任务、localTaskKey 稳定,PASS,等 2 轮 tick 不重建,PASS
+C10,决策15,7,真云端派的自动执行任务 spawn 命中 --disallowedTools AskUserQuestion(挂 bypass)+注入 SCRUMWS_TASK_KEY/API_BASE,PASS,stub 记下真实 argv/env,PASS
+C11,决策15,7,awaiting-human→done(by=agent) 且对账把 by=agent 上行到云端 task_history,PASS,证「上行半」；非真 agent 时序（见 C13b）,PASS
+C12,取消,-,取消已下发意图→409 ALREADY_DISPATCHED（已下发撤回是 P3，本期只挡）,PASS,cancel 端点分支,PASS
+C13a,真跑,8,云端派的最小任务真在机器上执行代码：真 claude 在白名单目录跑起、数出 3 个文件、对账回云端,PASS,P2 首次让云端指令真在机器执行代码；核心目标达成,PASS
+C13b,决策15,8,真 agent 单轮内自我声明完成,FAIL,根因：completeTask 只认 awaiting-human 而 agent 调用时任务仍 processing→被拒→卡 awaiting-human 永不 done；见 round-1.md §4,PASS
+C14,收尾,9,DROP 一次性库 + 按 PID 收自起进程；8799 与生产库不受影响,PASS,独立只读复核（非工具回执）,PASS
+BR4,下行·补,6,强制 ack 丢包→下轮凭 link 重 ack、绝不建第二个任务（幂等的丢包路径）,PASS,verify-local-dispatch.mjs R4（假云端可注入 500）,
+BR5,闸门·补,5,闸门 off→自己派的 autoRun 也落 plan,PASS,verify-local-dispatch.mjs R5,
+BR6,闸门·补,5,闸门 on→别人派的 autoRun 也直接跑,PASS,verify-local-dispatch.mjs R6,
+BR10,门铃·补,-,pendingIntents=0 时 connector 跳过 GET /api/machine/intents（idle 省一次请求）,PASS,verify-local-dispatch.mjs R10,
