@@ -13,7 +13,7 @@
 | S3 | Runtime 信息与新建趋势 | DONE | 用量进 provider 卡、无活跃会话块、7 日折线图 |
 | S4 | Codex CLI 观察态 | DONE | recent/search/add/read-only card 可用且不破坏 Claude |
 | S5 | 通用文案与文档 | DONE | 非专属界面不再错误单指 Claude |
-| S6 | 验收与 PR 更新 | DOING | matrix 通过、草稿 PR 更新 |
+| S6 | 验收与 PR 更新 | DONE | matrix 通过、草稿 PR #70 已创建 |
 
 ## 进展
 
