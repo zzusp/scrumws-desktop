@@ -38,7 +38,7 @@
 | S6 | 本机 CLI 发现、版本/可用性与配置 | DONE | 两种 CLI 独立探测，缺失时给明确错误 |
 | S7 | 日志、用量与 CLI 会话观察边界收口 | DONE | settled journal；Claude-only 能力按 capability 收口 |
 | S8 | 文档与完整验收证据链 | BLOCKED | 实现文档完成；matrix 因真实 Claude 未登录及真机覆盖缺口未全绿 |
-| S9 | 提交、push 与 PR 收口 | TODO | 本地实跑、PR state 检查、PR body 自包含 |
+| S9 | 提交、push 与 PR 收口 | DONE | commit `8eec532` 已推送，草稿 PR #69 OPEN |
 
 状态取值：TODO / DOING / DONE / BLOCKED。用例状态只记录在 `matrix.csv`，证据进入 `round-N.md`。
 
@@ -51,7 +51,8 @@
 - **Round 1**：完成 S1-S7。provider fixture、任务数据、journal、runner、外部 API 与桌面 UI 均通过；
   Codex 0.144.5 真机完成新会话、流式文本、shell 工具、多轮 resume、usage 与 interrupt，并修复快速连发竞态及
   Windows 关闭时孤儿工具进程问题。Claude 2.1.207 在本轮后段变为 `loggedIn:false`，真实审批/中断无法继续，
-  因而 S8 按严格口径保持 BLOCKED；完整证据见 `round-1.md`。
+  因而 S8 按严格口径保持 BLOCKED；完整证据见 `round-1.md`。实现已提交并推送，草稿 PR #69 状态由
+  `gh pr view` 核验为 OPEN。
 
 ## 当前盲点 / 外部阻塞
 
