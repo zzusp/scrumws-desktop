@@ -5,11 +5,11 @@
 本轮只修改 Electron 桌面端及本地 `platform/` 服务：
 
 1. 新建任务的 Provider 改为项目自绘选择面板，不使用浏览器原生 select。
-2. Codex 提供固定快捷模型 `gpt-5.6`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`，仍保留 CLI 默认与自定义 model；
+2. Codex 提供固定快捷模型 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`，仍保留 CLI 默认与自定义 model；
    reasoning effort 使用 Codex CLI 支持的 `none/minimal/low/medium/high/xhigh/max/ultra`。
 3. 运行时卡自身展示该运行时的账号用量和启停控制；移除活跃会话数。
 4. 原独立账号用量卡替换为全 Provider、最近 7 天的新建任务数折线图。
-5. 添加本机 CLI 会话同时扫描 Claude Code 与 Codex CLI，Codex 以只读观察态展示。
+5. 添加本机 CLI 会话同时扫描 Claude Code 与 Codex CLI；Codex 可查看执行详情并从看板续接/回复，仍不支持 Claude 专属 rewind 等能力。
 6. 面向用户的泛指文案使用“运行时 / Agent / CLI 会话”，仅在行为或协议确实专属时保留具体名称。
 
 云端与手机端不在范围内。
@@ -47,13 +47,13 @@
 
 - watchlist entry 增加 `provider`（旧 entry 缺失按 Claude）。
 - Claude 继续现有完整观察/收养路径。
-- Codex 新增独立 rollout 扫描器，支持 recent/search/add/read-only 卡片；不提供执行详情、Claude 专属收养、rewind、后台任务解析或终端进程判定。
+- Codex 新增独立 rollout 扫描器，支持 recent/search/add、执行详情和原生 `thread/resume` 续接；不提供 Claude 专属 rewind、后台任务解析或终端进程判定。
 - 两类观察卡沿用 `cli:<short>` 的既有任务键格式；完整 session id 和 provider 存在 watchlist 元数据中，详情读取时以该元数据分派解析器。
 
 ## 验收
 
 - registry 校验 Codex 固定模型、全部 effort 与禁用 runtime 拒绝创建会话。
 - provider 启停 HTTP 契约、旧 config 兼容、运行时 dailyCreated 聚合。
-- Claude/Codex CLI session fixture：recent/search/add/collect/provider 字段与 Codex 只读能力。
+- Claude/Codex CLI session fixture：recent/search/add/collect/provider 字段、Codex 执行详情与续接能力。
 - 浏览器验收自绘 Provider 面板、Codex 模型、runtime 卡/开关、7 日折线图、CLI 弹窗 provider 筛选。
 - 既有 provider、external API、replan 回归继续通过。

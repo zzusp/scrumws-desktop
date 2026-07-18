@@ -424,13 +424,14 @@ function readCliWorkerLog(taskKey) {
   if (!entry) return { ok: false, error: 'cli session not in watchlist', taskKey };
   const [sid, meta] = entry;
   if (meta?.provider === 'codex') {
-    const codex = _collectCodexCli.readCodexCliSession(sid, meta.jsonlPath);
-    if (!codex) return { ok: false, error: 'Codex rollout not found', taskKey };
+    const codex = _collectCodexCli.readCodexCliSessionHistory(sid, meta.jsonlPath);
+    if (!codex.ok) return { ok: false, error: codex.error, taskKey };
+    const messages = codex.messages || [];
     return {
       ok: true, taskKey, safeKey: `cli__${sid}`, provider: 'codex', isArchive: false,
       state: meta.archivedAt ? 'archived' : meta.doneAt ? 'done' : 'awaiting-human',
-      rounds: [{ round: 1, provider: 'codex', sessionId: sid, at: null, startedAt: null, endedAt: null,
-        intent: 'cli-read-only', metaUsage: null, metaCostUsd: null, ccSummary: null, messages: [], humanCc: [],
+      rounds: [{ round: 1, provider: 'codex', sessionId: sid, at: null, startedAt: messages[0]?.at || null, endedAt: messages[messages.length - 1]?.at || null,
+        intent: 'cli-interactive', metaUsage: null, metaCostUsd: null, ccSummary: null, messages, humanCc: [],
         systemInit: { model: codex.model || null, cwd: codex.cwd || null, toolsCount: null }, cwd: codex.cwd || null,
         gitBranch: null, inflight: false }],
       hasInflight: false, runnerLogTail: null, checkerLogTail: null,

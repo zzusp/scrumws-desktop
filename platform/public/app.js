@@ -416,16 +416,13 @@ function taskCardHtml(t, section) {
   // 状态变更标记：本轮判定「有更新」的任务，标题前显一个更新点（点开卡片/编辑即清）
   const updateDot = updatedTaskKeys.has(t.taskKey) ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
 
-  // Codex CLI rollout 仅用于看板观察，不提供执行详情；其它卡片仍保持原有点击路径。
-  const isReadOnlyCodexCli = t.provider === 'codex' && t.cli?.readOnly;
-  const cardClick = isReadOnlyCodexCli ? '' : section === 'plan'
+  // 只读 CLI 会话仍可查看执行详情；只限制续接/回复，不改变卡片点击路径。
+  const cardClick = section === 'plan'
     ? `openEditTask('${escapeAttr(t.taskKey)}')`
     : `openTaskModal('${escapeAttr(t.taskKey)}')`;
-  const cardClass = `taskcard${isReadOnlyCodexCli ? ' readonly-cli' : ''}`;
-  const cardHint = isReadOnlyCodexCli ? ' title="Codex CLI 会话仅在看板展示状态，不提供执行详情"' : '';
 
   return `
-    <div class="${cardClass}" data-taskkey="${escapeAttr(t.taskKey)}" onclick="${cardClick}"${cardHint}>
+    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" onclick="${cardClick}">
       <div class="card-title" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
       ${cwdLine}
       ${actLine}
@@ -1309,11 +1306,6 @@ function updateReplyBoxAvailability(taskKey) {
     stateTag.className = 'tag';
     stateTag.style.background = 'var(--brandS)';
     stateTag.style.color = 'var(--brand)';
-    if (t?.provider === 'codex') {
-      stateTag.textContent = 'CLI · 只读观察';
-      hint.innerHTML = '该 Codex CLI 会话仅在看板展示运行信息和状态，请在原终端里继续对话。';
-      return;
-    }
     const attachedPid = t.cli?.attachedPid;
     if (attachedPid) {
       stateTag.textContent = 'CLI · 终端占用';
@@ -1327,7 +1319,9 @@ function updateReplyBoxAvailability(taskKey) {
     }
     // 空闲且无占用：开放 composer，发消息 = 收养成 Mode B 实时会话并把消息作为首条发出（--resume + 全部历史），跳会话视图
     stateTag.textContent = 'CLI · 可续接对话';
-    hint.innerHTML = '终端已关闭 · 发消息将在看板<b>续接成实时会话</b>（带全部历史，可连续多轮）';
+    hint.innerHTML = t?.provider === 'codex'
+      ? '发消息将在看板通过 Codex <b>续接成实时会话</b>（带执行历史，可连续多轮）'
+      : '终端已关闭 · 发消息将在看板<b>续接成实时会话</b>（带全部历史，可连续多轮）';
     replyBody.style.display = 'flex';
     text.disabled = false; send.disabled = false;
     text.value = '';
@@ -1528,8 +1522,9 @@ let pendingCliMessage = null;
 // 收养 CLI session 成 Mode B live 会话：taskKey 透传绑该任务，msg 不塞进 adopt 而是置 pendingCliMessage，
 // 详情连上 live 会话 synced 后经 mbSend 乐观回显发出（保证可见），再跳详情进 live。
 // 续接（sendCliContinue）与 rewind（先截断再收养）共用。返回 api 结果（{ok} 或 {ok:false,error}）。
-async function adoptCliToLive({ taskKey, sessionId, msg, model, effort }) {
-  const body = { sessionId, taskKey };
+async function adoptCliToLive({ taskKey, sessionId, provider, jsonlPath, msg, model, effort }) {
+  const body = { sessionId, taskKey, provider };
+  if (jsonlPath) body.jsonlPath = jsonlPath;
   if (model) body.model = model;
   if (effort) body.effort = effort;
   const r = await api('/api/session/adopt', {
@@ -1556,7 +1551,7 @@ async function sendCliContinue(taskKey) {
   if (t?.state === 'processing') { showReplyToast('会话仍在运行——先退出终端再续接，避免两个进程同写一个会话', 'err'); return; }
   send.disabled = true; text.disabled = true; send.classList.add('busy');
   try {
-    const r = await adoptCliToLive({ taskKey, sessionId, msg, model, effort });
+    const r = await adoptCliToLive({ taskKey, sessionId, provider: t?.provider || 'claude', jsonlPath: t?.cli?.jsonlPath, msg, model, effort });
     if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
   } catch (e) {
     showReplyToast(e.message, 'err');
@@ -3476,7 +3471,9 @@ const CLAUDE_MODEL_META = [
   { value: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', desc: '最快 · 最省 token' },
 ];
 const CODEX_MODEL_META = [
-  { value: 'gpt-5.6', name: 'GPT-5.6', desc: '当前旗舰 Codex 模型' },
+  { value: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', desc: '复杂、开放式任务的细节与打磨' },
+  { value: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', desc: '日常工作的均衡主力' },
+  { value: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', desc: '明确、可重复的高吞吐任务' },
   { value: 'gpt-5.5', name: 'GPT-5.5', desc: '高能力代码与推理' },
   { value: 'gpt-5.4', name: 'GPT-5.4', desc: '稳定的通用编码模型' },
   { value: 'gpt-5.4-mini', name: 'GPT-5.4 mini', desc: '更快、更轻量的任务' },
