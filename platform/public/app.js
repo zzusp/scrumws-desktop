@@ -416,13 +416,16 @@ function taskCardHtml(t, section) {
   // 状态变更标记：本轮判定「有更新」的任务，标题前显一个更新点（点开卡片/编辑即清）
   const updateDot = updatedTaskKeys.has(t.taskKey) ? '<span class="update-dot" title="任务状态有更新"></span>' : '';
 
-  // 卡片点击：plan 态弹编辑弹窗（任务未开始，不进详情页）；其余进详情页
-  const cardClick = section === 'plan'
+  // Codex CLI rollout 仅用于看板观察，不提供执行详情；其它卡片仍保持原有点击路径。
+  const isReadOnlyCodexCli = t.provider === 'codex' && t.cli?.readOnly;
+  const cardClick = isReadOnlyCodexCli ? '' : section === 'plan'
     ? `openEditTask('${escapeAttr(t.taskKey)}')`
     : `openTaskModal('${escapeAttr(t.taskKey)}')`;
+  const cardClass = `taskcard${isReadOnlyCodexCli ? ' readonly-cli' : ''}`;
+  const cardHint = isReadOnlyCodexCli ? ' title="Codex CLI 会话仅在看板展示状态，不提供执行详情"' : '';
 
   return `
-    <div class="taskcard" data-taskkey="${escapeAttr(t.taskKey)}" onclick="${cardClick}">
+    <div class="${cardClass}" data-taskkey="${escapeAttr(t.taskKey)}" onclick="${cardClick}"${cardHint}>
       <div class="card-title" title="${escapeAttr(titleText)}">${updateDot}${escapeHtml(titleShort)}</div>
       ${cwdLine}
       ${actLine}

@@ -47,7 +47,7 @@
 
 - watchlist entry 增加 `provider`（旧 entry 缺失按 Claude）。
 - Claude 继续现有完整观察/收养路径。
-- Codex 新增独立 rollout 扫描器，支持 recent/search/add/read-only 卡片；不提供 Claude 专属收养、rewind、后台任务解析或终端进程判定。
+- Codex 新增独立 rollout 扫描器，支持 recent/search/add/read-only 卡片；不提供执行详情、Claude 专属收养、rewind、后台任务解析或终端进程判定。
 - 两类观察卡沿用 `cli:<short>` 的既有任务键格式；完整 session id 和 provider 存在 watchlist 元数据中，详情读取时以该元数据分派解析器。
 
 ## 验收
