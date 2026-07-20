@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, shell } from 'electron';
 import { loadConfig } from './config.js';
 import { startServer } from './server-host.js';
 import { createTray } from './tray.js';
+import { localPathFromLink } from './link-utils.js';
 
 let mainWindow = null;
 let tray = null;
@@ -41,17 +42,33 @@ if (!gotLock) {
     mainWindow.loadURL(`http://127.0.0.1:${port}/`);
     mainWindow.once('ready-to-show', () => mainWindow.show());
 
-    // 外链一律用系统默认浏览器打开，不在 app 内部浏览器里跳（详情里 claude 输出的 markdown 超链接、issue 评论链接等）。
+    // 详情消息的链接绝不在窗口内导航：网页交默认浏览器，本地文件交系统关联程序。
+    // 这样 file:// 和 Windows 盘符链接不会把 SPA 导航到空白页；未知协议则直接拒绝。
     // 本地 app 自身导航（同 origin，含 #/ hash 路由）不拦——hash 变化根本不触发 will-navigate。
     const appOrigin = `http://127.0.0.1:${port}`;
-    const openExternal = (url) => { if (/^(https?|mailto):/i.test(url)) shell.openExternal(url); };
-    // target=_blank / window.open（如 issue commentUrl）→ 系统浏览器 + 拒绝开内嵌窗口
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
-    // 无 target 的 <a href> 点击会把整窗导航走 → 拦下外链改用系统浏览器
+    const openLinkOutsideApp = async (url) => {
+      const localPath = localPathFromLink(url);
+      if (localPath) {
+        const error = await shell.openPath(localPath);
+        if (error) {
+          await dialog.showMessageBox(mainWindow, {
+            type: 'error',
+            title: '无法打开本地文件',
+            message: '该文件可能已被移动、删除，或没有可用的关联程序。',
+            detail: localPath,
+          });
+        }
+        return;
+      }
+      if (/^(https?|mailto):/i.test(url)) await shell.openExternal(url);
+    };
+    // target=_blank / window.open（消息 markdown 和 issue commentUrl）→ 系统处理 + 拒绝开内嵌窗口
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => { void openLinkOutsideApp(url); return { action: 'deny' }; });
+    // 无 target 的 <a href> 点击会把整窗导航走 → 拦下并交给系统；未识别协议也不会离开当前页。
     mainWindow.webContents.on('will-navigate', (e, url) => {
       let external = false;
       try { external = new URL(url).origin !== appOrigin; } catch { external = false; }
-      if (external) { e.preventDefault(); openExternal(url); }
+      if (external) { e.preventDefault(); void openLinkOutsideApp(url); }
     });
 
     // 关窗 = 隐藏到托盘，调度继续；显式退出走托盘菜单
