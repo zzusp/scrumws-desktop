@@ -8,11 +8,12 @@ import { CHECKER, checkerIntervalSec } from './jobs/checker-meta.js';
 import * as scheduler from './scheduler.js';
 import { normalizeModelContextLimits, providerConfig, readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
-import { collectCliSessions, readAttachedSessions, backgroundTaskCountBySid } from './collect-cli.js';
+import { collectCliSessions, readAttachedSessions, backgroundTaskCountBySid, readClaudeSessionCwd } from './collect-cli.js';
 import { collectCodexCliSessions, readCodexAttachedSession } from './collect-codex-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { modelContextLimits, usageSnapshot } from './claude-usage.js';
 import { getDailyUsage } from './daily-usage.js';
+import { codexUsageSnapshot, getCodexDailyUsage } from './codex-daily-usage.js';
 import { detectProviders, listProviderDefinitions, normalizeProvider } from './providers/registry.js';
 
 // ---------- 通用小工具 ----------
@@ -115,6 +116,10 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSessions =
 
   // 标题优先级：用户 customTitle（rename 写入）> task.title > taskKey
   const title = task?.customTitle || task?.title || taskKey;
+  // 早期任务包尚未持久化 task.cwd：只在缺失时从官方 JSONL 提取，保证归档可按真实项目目录整理。
+  const recoveredCwd = !task?.cwd && provider === 'claude' && meta?.sessionId
+    ? readClaudeSessionCwd(meta.sessionId)
+    : null;
 
   // 内存中活跃 Mode B 会话 id（有=会话进程活，idle-but-alive 也在）
   const mbSessionId = getTaskSessionId(taskKey);
@@ -136,7 +141,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSessions =
     title,
     hasCustomTitle: !!task?.customTitle,
     description: task?.description || null,   // 纯用户备注（看板编辑，不进 prompt）
-    cwd: task?.cwd || null,                   // 任务配置的工作目录（新建/编辑时写入 task.json）；awaiting 卡片非失败态展示
+    cwd: task?.cwd || recoveredCwd || null,    // 新任务持久化 cwd；旧任务从官方 JSONL 恢复实际目录
     effort: task?.effort || null,             // 推理档位（新建/编辑写入）；详情侧栏展示
     model: task?.model || null,               // 任务配置的模型（云端对账指纹需感知其变化）
     provider, // 旧任务缺失 provider 一律解释为 Claude
@@ -163,7 +168,7 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSessions =
     durationMs,
     lease: leaseInfo,
     humanCc,
-    // 内存中活跃 Mode B 会话 id（有则详情页接 /api/session/stream 实时渲染；无=会话已收敛/未起）
+    // 内存中活跃 provider 子进程 id（仅用于执行中冲突判断/诊断；详情页不接实时流）
     mbSessionId,
     externalSession,
     // meta 关键字段
@@ -335,28 +340,61 @@ function dailyCreatedTasks(buckets, days = 7) {
   return rows;
 }
 
+// Align provider daily rows by local calendar date.  The aggregate preserves
+// the legacy fields for the table while retaining provider splits for the
+// chart/table source labels.
+function mergeDailyUsage(claudeRows, codexRows) {
+  // The two scanners are independent and asynchronous.  Render whichever
+  // provider has finished first instead of hiding Codex behind a slow Claude
+  // history scan (and vice versa).
+  if (!Array.isArray(claudeRows) && !Array.isArray(codexRows)) return null;
+  const byDate = new Map();
+  for (const [provider, rows] of [['claude', claudeRows], ['codex', codexRows]]) {
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      if (!row?.date) continue;
+      const total = byDate.get(row.date) || { date: row.date, input: 0, output: 0, cache: 0, total: 0, platform: 0, providers: {} };
+      const part = { input: Number(row.input) || 0, output: Number(row.output) || 0, cache: Number(row.cache) || 0, total: Number(row.total) || 0, platform: Number(row.platform) || 0 };
+      total.input += part.input; total.output += part.output; total.cache += part.cache; total.total += part.total; total.platform += part.platform;
+      total.providers[provider] = part;
+      byDate.set(row.date, total);
+    }
+  }
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
 // ---------- 运行时卡片（本机 Agent 执行环境）----------
 async function buildRuntime(buckets) {
   const discovered = await getProviderRuntime();
-  const snap = usageSnapshot();   // 账号级用量（session/本周）+ 定时拉取实况（纯读定时器缓存，不 spawn）
   const config = providerConfig();
+  const enabledFor = (provider) => config.providerEnabled[provider] !== false;
+  // 关闭运行时后不读取、也不向前端暴露账号级用量快照。Claude 的轮询由 server
+  // 同步停止；Codex 的 session 限额扫描也跳过，避免「关闭」仍产生用量读取。
+  const snap = enabledFor('claude') ? usageSnapshot() : { data: null, poll: null };
   // scrumws 平台任务的 sessionId 集合（有任务包的托管任务 meta.sessionId，不含被旁观的 cli watchlist 会话）
   // → 日用量柱状图「平台子集」过滤。按 t.cli 判：物化后的 CLI 任务无 t.cli、算平台任务（任务来源不变量）
   const platformSids = new Set();
+  const codexPlatformSids = new Set();
   for (const b of Object.values(buckets)) for (const t of b) {
     if (!t.cli && t.provider === 'claude' && t.meta?.sessionId) platformSids.add(t.meta.sessionId);
+    if (!t.cli && t.provider === 'codex' && t.meta?.sessionId) codexPlatformSids.add(String(t.meta.sessionId).toLowerCase());
   }
+  const claudeDailyUsage = getDailyUsage(platformSids);
+  const codexDailyUsage = getCodexDailyUsage(codexPlatformSids);
+  const allDailyUsage = mergeDailyUsage(claudeDailyUsage, codexDailyUsage);
+  const codexUsage = enabledFor('codex') ? codexUsageSnapshot() : null;
   const providerCards = discovered.map((runtime) => {
     const provider = runtime.id;
     return {
       ...runtime,
-      enabled: config.providerEnabled[provider] !== false,
+      enabled: enabledFor(provider),
       online: runtime.available,
       binPath: runtime.path,
       usage: computeRuntimeUsage(buckets, provider),
       claudeUsage: provider === 'claude' ? snap.data : null,
       usagePoll: provider === 'claude' ? snap.poll : null,
-      dailyUsage: provider === 'claude' ? getDailyUsage(platformSids) : null,
+      codexUsage: provider === 'codex' ? codexUsage : null,
+      dailyUsage: provider === 'claude' ? claudeDailyUsage : provider === 'codex' ? codexDailyUsage : null,
     };
   });
   const claude = providerCards.find((p) => p.id === 'claude');
@@ -373,7 +411,8 @@ async function buildRuntime(buckets) {
     usage: claude?.usage || computeRuntimeUsage(buckets, 'claude'),
     claudeUsage: claude?.claudeUsage || null,
     usagePoll: claude?.usagePoll || snap.poll,
-    dailyUsage: claude?.dailyUsage || null,
+    dailyUsage: allDailyUsage,
+    providerDailyUsage: { claude: claudeDailyUsage, codex: codexDailyUsage },
   };
 }
 

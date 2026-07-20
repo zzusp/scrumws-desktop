@@ -13,8 +13,14 @@ import { CodexAdapter } from '../../../../platform/lib/providers/codex.js';
 assert.equal(normalizeProvider(), 'claude');
 assert.equal(normalizeProvider(' CODEX '), 'codex');
 assert.equal(listProviderDefinitions().length, 2);
-assert.equal(getProviderDefinition('claude').capabilities.backgroundTasks, true);
+assert.equal(getProviderDefinition('claude').capabilities.backgroundTasks, false);
 assert.equal(getProviderDefinition('codex').capabilities.backgroundTasks, false);
+assert.equal(getProviderDefinition('claude').capabilities.jsonl, true);
+assert.equal(getProviderDefinition('codex').capabilities.sessionResume, true);
+assert.deepEqual(getProviderDefinition('codex').models, ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.3-codex-spark']);
+assert.deepEqual(getProviderDefinition('codex').efforts, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+assert.equal(getProviderDefinition('codex').defaultModel, 'gpt-5.6-sol');
+assert.equal(getProviderDefinition('codex').defaultEffort, 'low');
 
 const defaults = {
   defaultProvider: 'codex',

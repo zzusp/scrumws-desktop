@@ -16,6 +16,7 @@ const CC_PROJECTS = process.env.SCRUMWS_CC_PROJECTS || path.join(os.homedir(), '
 // 同上，SCRUMWS_CC_SESSIONS 可覆盖。sessionAlive 现在是「未配平的 launched 是否陈旧」的唯一防线
 // （见 countRunningBackgroundTasks 上方注释），沙箱里必须能造活/死会话才验得了它。
 const CC_SESSIONS = process.env.SCRUMWS_CC_SESSIONS || path.join(os.homedir(), '.claude', 'sessions');
+const recoveredCwdCache = new Map();
 
 // CC 活进程注册表：~/.claude/sessions/<pid>.json = {pid, sessionId, cwd, status: idle|busy, kind}
 // 进程死后文件可能残留 → process.kill(pid,0) 判活兜底（EPERM 也算活）
@@ -96,6 +97,25 @@ export function locateJsonlBySid(sid) {
     if (fs.existsSync(p)) return { jsonlPath: p, projectDir };
   }
   return null;
+}
+
+// 旧看板任务的 task.json 可能早于 cwd 字段，归档分组仍应以原 Claude session 的实际工作目录为准。
+// 复用 CLI 卡片同一套 head/tail 解析；大文件只读有限窗口，避免每次 state 轮询全量读历史。
+export function readClaudeSessionCwd(sid) {
+  const cached = recoveredCwdCache.get(sid);
+  if (cached?.jsonlPath) {
+    try {
+      if (fs.statSync(cached.jsonlPath).mtimeMs === cached.mtimeMs) return cached.cwd;
+    } catch { /* 文件移动后重新定位 */ }
+  }
+  const found = locateJsonlBySid(sid);
+  if (!found?.jsonlPath) return null;
+  const { head, tail } = readLinesSplit(found.jsonlPath);
+  const { firstEnv } = extractHeadInfo(head);
+  const { lastEnv } = extractTailInfo(tail);
+  const cwd = lastEnv?.cwd || firstEnv?.cwd || null;
+  try { recoveredCwdCache.set(sid, { jsonlPath: found.jsonlPath, mtimeMs: fs.statSync(found.jsonlPath).mtimeMs, cwd }); } catch { /* 下次再定位 */ }
+  return cwd;
 }
 
 // 小文件全读；大文件 head + tail 折中

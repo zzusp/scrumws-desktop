@@ -174,5 +174,13 @@ export function startUsageTimer() {
   return usagePollSec();
 }
 
+// 关闭 Claude 运行时时立即取消下一次官方 CLI /usage 调用。已有的一次拉取可以自然收尾，
+// 但不会再排下一轮；缓存保留在内存中供重新开启时复用，collect 层不会在关闭时暴露它。
+export function stopUsageTimer() {
+  stopped = true;
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  poll.nextRunAt = null;
+}
+
 // 间隔变更后热更：定时器在跑才按新基准重排（立即用新节奏拉一次）
 export function reloadUsageTimer() { if (!stopped) startUsageTimer(); }

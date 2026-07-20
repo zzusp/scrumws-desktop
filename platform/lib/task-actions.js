@@ -3,14 +3,12 @@ import path from 'node:path';
 import { P } from './paths.js';
 import { parse } from './timeutil.js';
 import { readConfig } from './runner-config.js';
-import { replyCliSession, rewindCliSession, truncateSessionJsonlByUuid } from './cli-actions.js';
 import { tryStartOrQueue, replyTask, cancelTaskSession, parkTaskSession, getTaskSessionId } from './task-runner.js';
-import { readCcSessionForAdopt, completeCliSession, uncompleteCliTask } from './logs.js';
-import { readAttachedSessions, locateJsonlBySid } from './collect-cli.js';
-import { readCodexAttachedSession } from './collect-codex-cli.js';
+import { completeCliSession, uncompleteCliTask } from './logs.js';
 import { readWatchlist, removeWatchlist } from './cli-watchlist.js';
 import { detectWorktreeBase } from './git.js';
 import { getProviderDefinition, normalizeProvider, resolveProviderSelection, validateProviderSelection } from './providers/registry.js';
+import { observedSessionAccess, readObservedSession } from './providers/observed-session.js';
 
 // 生成任务 slug：yyyyMMddHHmmss + 3 位随机（同秒并发也不撞）；来源类型由 taskKey 前缀承载，slug 不带类型标记
 function genSlug() {
@@ -54,7 +52,7 @@ export function cancelTask({ taskKey }) {
     return { ok: false, error: `任务已是终态 ${state.state}、不能中断` };
   }
 
-  // 有活跃 Mode B 会话 → 关会话进程 + 落 awaiting-human/cancelled（跨平台，task-runner 内写盘）
+  // 有活跃 provider 子进程 → 关闭并落 awaiting-human/cancelled（跨平台，task-runner 内写盘）
   const viaSession = cancelTaskSession(taskKey);
   if (viaSession.ok) return { ok: true, taskKey, killedPid: viaSession.killed, resolvedAt: viaSession.resolvedAt || null };
 
@@ -84,27 +82,32 @@ export function cancelTask({ taskKey }) {
   return { ok: true, taskKey, killedPid, resolvedAt: nowStr };
 }
 
-// 移除 plan 态任务（从未 spawn 的计划草稿）：直接删除任务包目录。
-// 仅限 plan——已排队/运行/收敛的任务有真实执行记录，不走删除（用中断/归档）。
+// 永久删除任务包。运行态只允许删除从未执行的 plan 草稿；已归档的任务是用户已明确
+// 收起的历史记录，允许在归档区二次确认后彻底移除。这样既不让 active/可 --resume 的
+// 任务被误删，也不会让「未实际执行、已中断后归档」的任务卡无法清理。
 export function deleteTask({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   // 不按 source 特判：物化后的 CLI 任务有 meta.sessionId，会被下面「已执行过→改归档」guard 挡下；未物化 CLI 无包→
   // 落到「task not found」。删除只对「plan 且无 sessionId」的纯草稿放行（见下）。
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
-  const taskDir = path.join(P.runnerRoot, safeKey);
+  const runnerDir = path.join(P.runnerRoot, safeKey);
+  const archiveDir = path.join(P.archiveRoot, safeKey);
+  const isArchived = fs.existsSync(archiveDir);
+  const taskDir = isArchived ? archiveDir : runnerDir;
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found' };
   let state = {};
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
-  if (state.state !== 'plan') {
+  if (!isArchived && state.state !== 'plan') {
     return { ok: false, error: `state=${state.state || '?'} 非 plan，不能移除（用中断/归档）` };
   }
-  // 跑过的任务（有会话记录，如从 待人工/完成 退回 plan 的）不走删除——会毁掉可 --resume 的执行记录；改用归档。
+  // 运行区内跑过的任务（例如从 待人工/完成 退回 plan）不走删除——会毁掉可 --resume 的执行记录；
+  // 归档区不再可 resume，用户点「永久删除」即明确放弃该任务包，允许删除。
   let meta = null;
   try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
-  if (meta?.sessionId) return { ok: false, error: '该任务已执行过（有会话记录），不能移除；如要清走请用归档' };
+  if (!isArchived && meta?.sessionId) return { ok: false, error: '该任务已执行过（有会话记录），不能移除；如要清走请用归档' };
   try { fs.rmSync(taskDir, { recursive: true, force: true }); }
   catch (e) { return { ok: false, error: `删除任务目录失败: ${e.message}` }; }
-  return { ok: true, taskKey, safeKey, removed: taskDir };
+  return { ok: true, taskKey, safeKey, removed: taskDir, archived: isArchived };
 }
 
 // 确认完成（awaiting-human → done）：复查后判定任务其实已完成，落成成功终态。
@@ -203,18 +206,16 @@ export function uncompleteTask({ taskKey }) {
 
 // 把被旁观的 CLI 会话「物化」成一等托管任务包（runner-state/<key>/），使其后续走与其它来源完全一致的状态机
 // （退回计划 / 完成 / 回复 / 编辑…）。source 仍标 'cli'（仅展示元数据，不改行为——见 README「任务来源不变量」）；
-// sessionId 落 meta 供确认执行时 --resume 续上之前的对话；task.cwd 取会话原目录，保 --resume 定位到同一 CC 项目目录。
-// 从 watchlist 摘除该 sid（去重：collect-cli 不再出这张卡，改由 runner-state 包出卡）。终端仍占用该会话时拒绝
-// （对齐 /api/session/adopt 的 guard：两个 claude 抢同一 session 会撞车）。
+// sessionId 落 meta 供确认执行/直接回复时 resume 续上之前的对话；task.cwd 取会话原目录。
+// 从 watchlist 摘除该 sid（去重：collect-cli 不再出这张卡，改由 runner-state 包出卡）。外部进程仍占用时拒绝。
 export function materializeCliTask(taskKey, { state = 'plan' } = {}) {
   const shortSid = String(taskKey).slice(4);   // 'cli:xxxxxxxx' → 'xxxxxxxx'
   const w = readWatchlist();
   const found = Object.entries(w.sessions).find(([sid]) => sid.startsWith(shortSid));
   if (!found) return { ok: false, error: 'cli session not in watchlist' };
   const [fullSid, entry] = found;
-  const att = readAttachedSessions().get(fullSid);
-  if (att) return { ok: false, error: `session 正被终端进程占用（pid=${att.pid}），请先关闭该终端窗口再操作` };
-  const hist = readCcSessionForAdopt(fullSid);
+  const provider = normalizeProvider(entry?.provider);
+  const hist = readObservedSession(provider, fullSid, entry?.jsonlPath || null);
   if (!hist.ok) return hist;
   const textOf = (m) => {
     if (!m) return '';
@@ -225,7 +226,9 @@ export function materializeCliTask(taskKey, { state = 'plan' } = {}) {
   };
   const firstUser = (hist.messages || []).find((m) => m.role === 'user' && !m.isMeta);
   const lastUser = [...(hist.messages || [])].reverse().find((m) => m.role === 'user' && !m.isMeta);
-  const title = (entry.customTitle || textOf(firstUser) || shortSid).slice(0, 200);
+  // Codex 的用户可见会话名来自 ~/.codex/session_index.jsonl，优先于首条消息；
+  // 否则把已添加卡片物化为任务时会从标题回退成 prompt/短 sid。
+  const title = (entry.customTitle || hist.sessionName || textOf(firstUser) || shortSid).slice(0, 200);
   const prompt = (textOf(lastUser) || title).slice(0, 100000);   // 续跑起点，用户可在编辑里改写
 
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');   // cli:xxxx → cli__xxxx
@@ -235,9 +238,14 @@ export function materializeCliTask(taskKey, { state = 'plan' } = {}) {
   const nowStr = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`;
   try {
     fs.mkdirSync(taskDir, { recursive: true });
-    const taskJson = { taskKey, source: 'cli', provider: 'claude', title, prompt, mode: 'single', metaMode: 'overwrite', createdAt: nowStr };
+    const taskJson = { taskKey, source: 'cli', provider, title, prompt, mode: 'single', metaMode: 'overwrite', createdAt: nowStr };
     if (hist.model) taskJson.model = hist.model;
-    const meta = { sessionId: fullSid };
+    if (hist.effort) taskJson.effort = hist.effort;
+    const meta = {
+      sessionId: fullSid,
+      jsonlPath: hist.jsonlPath || entry?.jsonlPath || null,
+      sessionHistory: [{ provider, sessionId: fullSid, round: 1, at: nowStr, jsonlPath: hist.jsonlPath || entry?.jsonlPath || null }],
+    };
     // 工作目录不变量：task.cwd 只存 base 仓库根。会话跑在 worktree 里时，worktree 路径进 meta.worktreeDir，
     // 并置 task.worktree=true —— 确认执行时 resolveRunCwd 据 meta.worktreeDir --resume 回到同一 worktree（否则会跑错目录）。
     if (hist.cwd) {
@@ -265,7 +273,7 @@ export function materializeCliTask(taskKey, { state = 'plan' } = {}) {
 }
 
 // 退回计划（awaiting-human/done → plan）：把终态任务退回 plan 桶，供编辑配置 / 改期后重新执行。
-// 关掉可能仍空转的 Mode B 会话（释放 claude 进程）但**保留 meta.sessionId**——之后确认执行时 startTask 据它
+// 关掉可能仍存活的 provider 子进程但**保留 meta.sessionId**——之后确认执行时 startTask 据它
 // --resume 续上之前的对话。CLI 会话（尚无任务包）→ 先物化成一等托管任务、直接落 plan 桶（不再按来源特判拒绝）。
 export function moveTaskToPlan({ taskKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
@@ -304,16 +312,18 @@ export function moveTaskToPlan({ taskKey }) {
   return { ok: true, taskKey, state: 'plan' };
 }
 
-// 回复任务：package-first——有任务包（含物化 CLI）走 Mode B（复用 live 会话 / --resume 重挂）；未物化的 CLI 会话
-// （无包）才走观察侧 cli-reply-runner。effort：per-reply reasoning 档位覆盖（仅 --resume 重挂新会话时生效）。
+// 回复任务：所有来源统一先成为任务包，再由 task-runner 启动一次 provider 原生 resume；本轮收敛后进程退出。
+// 未物化的外部 CLI 会话先只读解析原 JSONL 并物化，避免维护第二套 provider 专用回复脚本。
 export function replyToTask({ taskKey, message, model, effort, attachments }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
   const taskDir = path.join(P.runnerRoot, safeKey);
-  // 未物化的 CLI 会话（无任务包）→ 观察侧 replyCliSession；有包一律走下面统一的 Mode B 路径
-  if (String(taskKey).startsWith('cli:') && !fs.existsSync(taskDir)) return replyCliSession({ taskKey, message, model });
   const msg = String(message || '').trim();
   if (!msg) return { ok: false, error: 'message required' };
+  if (String(taskKey).startsWith('cli:') && !fs.existsSync(taskDir)) {
+    const materialized = materializeCliTask(taskKey, { state: 'awaiting-human' });
+    if (!materialized.ok) return materialized;
+  }
   if (!fs.existsSync(taskDir)) return { ok: false, error: 'task not found（归档任务请先取消归档再回复）' };
   let state = null;
   try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
@@ -323,75 +333,25 @@ export function replyToTask({ taskKey, message, model, effort, attachments }) {
   const provider = normalizeProvider(task.provider);
   let meta = null;
   try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
-  // 看板已持有的 Mode B 会话允许正常发送；否则拒绝向被其它本机客户端持有的同一 session 并发写入。
+  // App 自己仍有本轮子进程，或外部客户端仍持有同一 session 时，都不允许并发 resume。
   if (!getTaskSessionId(taskKey) && meta?.sessionId) {
-    const att = provider === 'claude'
-      ? readAttachedSessions().get(meta.sessionId)
-      : provider === 'codex' ? readCodexAttachedSession(meta.sessionId) : null;
-    if (att) return { ok: false, error: `session 正被其他客户端占用（pid=${att.pid}），请在原窗口回复` };
+    const att = observedSessionAccess(provider)?.active(meta.sessionId) || null;
+    if (att) {
+      if (att.status === 'checking') return { ok: false, error: '正在检查本机 Codex 会话占用，请稍后重试' };
+      const where = att.status === 'desktop' ? 'Codex Desktop' : `其他客户端（pid=${att.pid || '未知'}）`;
+      return { ok: false, error: `session 正由${where}持有，请在原窗口回复` };
+    }
   }
   const eff = String(effort || '').trim();
   const selection = validateProviderSelection({ provider, model, effort: eff });
   if (!selection.ok) return selection;
-  // 走 Mode B：live 会话在则复用续轮 / 会话已死则 --resume 重挂（task-runner 内写 state=processing + lease）
+  // task-runner 内写 state=processing + lease；provider adapter 负责各自的 resume 协议与命令。
   return replyTask(taskKey, msg, selection.model || undefined, selection.effort || undefined, normalizeAttachments(attachments));
 }
 
-// 改写重跑（原地 rewind）：改写某条历史 user 消息、从那里替换重跑（该消息及之后的时间线丢弃，对齐 CC 交互 double-Esc）。
-// 统一入口——不按 source 特判，只按「有无任务包」这一真实能力差异分支：
-//   · 观察态 CLI 会话（cli: 无包）→ rewindCliSession 截断，前端收养成 live 会话重跑（hosted:false）。
-//   · 托管任务（有包，含物化 cli / manual / api）→ park 空转会话 + 截断 + replyTask 从截断处 --resume 重跑（hosted:true）。
-export function rewindTaskMessage({ taskKey, uuid, message } = {}) {
-  if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
-  const msg = String(message || '').trim();
-  if (!msg) return { ok: false, error: 'message required' };
-  if (!uuid || !/^[a-f0-9-]{36}$/i.test(String(uuid))) return { ok: false, error: 'invalid uuid（目标消息）' };
-  const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
-  const taskDir = path.join(P.runnerRoot, safeKey);
-  const hasPackage = fs.existsSync(taskDir);
-
-  // 观察态 CLI 会话（cli: 且无任务包）→ 观察侧截断，前端收养成 live 会话重跑
-  if (String(taskKey).startsWith('cli:') && !hasPackage) {
-    const r = rewindCliSession({ taskKey, uuid, message: msg });
-    return r.ok ? { ...r, hosted: false } : r;
-  }
-
-  // 托管任务（有包）
-  if (!hasPackage) return { ok: false, error: 'task not found（归档任务请先取消归档再改写重跑）' };
-  let state = null, meta = null;
-  try { state = JSON.parse(fs.readFileSync(path.join(taskDir, 'state.json'), 'utf8')); } catch { }
-  try { meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'meta.json'), 'utf8')); } catch { }
-  let task = {};
-  try { task = JSON.parse(fs.readFileSync(path.join(taskDir, 'task.json'), 'utf8')); } catch { }
-  const provider = normalizeProvider(task.provider);
-  if (!getProviderDefinition(provider)?.capabilities.rewind) {
-    return { ok: false, error: `${getProviderDefinition(provider)?.label || provider} 不支持 rewind` };
-  }
-  if (state?.state === 'processing') return { ok: false, error: '任务正在处理中（state=processing），等它跑完 / 停下再改写重跑' };
-  const sid = meta?.sessionId || null;
-  if (!sid) return { ok: false, error: '该任务无 sessionId，无法改写重跑（会话从未成功起过，请重新发起）' };
-
-  const located = locateJsonlBySid(sid);
-  if (!located || !located.jsonlPath || !fs.existsSync(located.jsonlPath)) {
-    return { ok: false, error: 'session jsonl 未找到（历史久远或已被清）' };
-  }
-  // guard：sid 被活终端进程占用 → 拒绝（双进程写同一 session 会撞）
-  const att = readAttachedSessions().get(sid);
-  if (att) return { ok: false, error: `session 正被终端进程占用（pid=${att.pid}），不能改写历史` };
-
-  // 关掉可能仍存活的 idle Mode B 会话——否则 replyTask 会复用旧进程，其内存里是截断前的全量上下文、rewind 不生效
-  parkTaskSession(taskKey);
-  // 截断 jsonl 到目标消息之前（原时间线丢弃、不备份）
-  const tr = truncateSessionJsonlByUuid(located.jsonlPath, uuid);
-  if (!tr.ok) return tr;
-  // 从截断处 --resume 重跑改写后的消息（无 live 会话 → --resume + 截断后的历史 seed；task-runner 写 state=processing + lease）
-  const rr = replyTask(taskKey, msg);
-  return rr.ok ? { ...rr, hosted: true } : rr;
-}
-
-// 重新发起 / 确认执行：起绑定该任务的 Mode B 会话执行（→processing）。
+// 重新发起 / 确认执行：起绑定该任务的一次性 provider 会话执行（→processing）。
 // restart 对 awaiting-human/queued（中断后 / 新建入队未起）；approve=true 对 plan（用户确认后执行）。
-// task-runner.startTask 内含「已有活跃会话则拒绝」防双跑；无 .ps1、无 source 分支——一律 Mode B 引擎。
+// task-runner.startTask 内含「已有活跃会话则拒绝」防双跑；无 .ps1、无 source 分支。
 export function restartTask({ taskKey, approve = false }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(String(taskKey || ''))) return { ok: false, error: 'invalid taskKey' };
   const safeKey = String(taskKey).replace(/:/g, '__').replace(/#/g, '_');
@@ -434,7 +394,7 @@ export function taskCwds() {
 }
 
 // 新增任务（推送式）：任意来源调 API / CLI / 看板「新建任务」把任务推进来。
-// state 由任务信息决定：plan(需用户确认) / queued(可跑)。**queued 即自动起绑定该任务的 Mode B 会话执行**
+// state 由任务信息决定：plan(需用户确认) / queued(可跑)。**queued 即自动起绑定该任务的 provider 会话执行**
 // （→processing，见 task-runner.startTask）；plan 待用户 approve 再起。跨平台，一个入口一套处理逻辑。
 // source（缺省 manual）：任意 [A-Za-z0-9_-] 标签，承载在 taskKey 前缀（<source>:<slug>），仅作展示/回复路由。
 // cwd（可选）：provider 工作目录，校验存在且是目录后写进 task.json.cwd。effort（可选）：reasoning 档位。
@@ -524,7 +484,7 @@ export function createTask({ source, provider, title, prompt, model, description
     return { ok: false, error: `建任务包失败: ${e.message}` };
   }
 
-  // queued → 立即起绑定该任务的 Mode B 会话执行（→processing）；plan 待 approve。
+  // queued → 立即起绑定该任务的 provider 会话执行（→processing）；plan 待 approve。
   // 起会话失败（如对应 provider CLI 不可用）不回滚任务，留在 queued 供用户「重新发起」重试。
   if (initState === 'queued') {
     const started = tryStartOrQueue(taskKey);   // 受并发上限约束：满则留 queued 等排空

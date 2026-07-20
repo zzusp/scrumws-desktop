@@ -10,9 +10,9 @@ const CLAUDE_MODELS = Object.freeze([
   'claude-fable-5',
 ]);
 const CLAUDE_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-// 这些是桌面端提供的 Codex 快捷模型；空 model 仍表示交给本机 Codex CLI/账号选择默认模型。
-const CODEX_MODELS = Object.freeze(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
-const CODEX_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+// Codex Desktop 当前公开的模型 / 推理档位；UI 与新建任务都以此目录为准。
+const CODEX_MODELS = Object.freeze(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.3-codex-spark']);
+const CODEX_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 const DEFINITIONS = Object.freeze({
   claude: Object.freeze({
@@ -25,12 +25,11 @@ const DEFINITIONS = Object.freeze({
     defaultModel: 'claude-opus-4-8',
     defaultEffort: 'xhigh',
     capabilities: Object.freeze({
-      approvals: true,
-      interrupt: true,
-      backgroundTasks: true,
-      terminalObserve: true,
-      terminalAdopt: true,
-      rewind: true,
+      jsonl: true,
+      sessionResume: true,
+      approvals: false,
+      interrupt: false,
+      backgroundTasks: false,
       dynamicWorkflow: true,
       accountUsage: true,
     }),
@@ -43,17 +42,17 @@ const DEFINITIONS = Object.freeze({
     models: CODEX_MODELS,
     allowCustomModel: true,
     efforts: CODEX_EFFORTS,
-    defaultModel: '',
-    defaultEffort: 'high',
+    defaultModel: 'gpt-5.6-sol',
+    defaultEffort: 'low',
     capabilities: Object.freeze({
-      approvals: true,
-      interrupt: true,
+      jsonl: true,
+      sessionResume: true,
+      approvals: false,
+      interrupt: false,
       backgroundTasks: false,
-      terminalObserve: false,
-      terminalAdopt: false,
-      rewind: false,
       dynamicWorkflow: false,
-      accountUsage: false,
+      // Read from the latest local rollout rate_limits record (not an API poll).
+      accountUsage: true,
     }),
     createAdapter(options) { return new CodexAdapter({ ...options, command: options?.command || 'codex' }); },
   }),

@@ -2,28 +2,29 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getProviderRuntime, getState, invalidateState } from './lib/collect.js';
-import { readWorkerLog, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask, readCcSessionForAdopt, ccMessagesToModeBSeed, latestGitBranchBySid } from './lib/logs.js';
+import { readWorkerLog, readWorkerLogRevision, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask } from './lib/logs.js';
 import { normalizeModelContextLimits, providerConfig, readConfig, setProviderEnabled, writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask, rewindTaskMessage } from './lib/task-actions.js';
+import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
 import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
-import { createSession, sendUserMessage, respondPermission, interruptSession, closeSession, getSession, listSessions, stopTaskInSession, readTaskOutput } from './lib/session-manager.js';
-import { readAttachedSessions } from './lib/collect-cli.js';
-import { codexMessagesToModeBSeed, readCodexAttachedSession, readCodexCliSessionHistory } from './lib/collect-codex-cli.js';
-import { getModelContextLimit, getClaudeUsage, startUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
+import { getModelContextLimit, getClaudeUsage, startUsageTimer, stopUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
 import * as scheduler from './lib/scheduler.js';
 import { startConnector, connectorStatus, enroll, unenroll } from './lib/cloud/connector.js';
 import { ensureMachineUid } from './lib/cloud/identity.js';
 import { acceptAutoRunMode } from './lib/cloud/gate.js';
+import { isCwdAllowed } from './lib/cloud/cwd-allow.js';
 import { createApiKey, updateApiKey, listApiKeys, setApiKeyDisabled, deleteApiKey, verifyApiKey } from './lib/api-keys.js';
 import { createExternalTask, externalTaskStatus } from './lib/external-ingest.js';
 import { P } from './lib/paths.js';
-import { getProviderDefinition, normalizeProvider } from './lib/providers/registry.js';
+import { normalizeProvider } from './lib/providers/registry.js';
 
 const HOST = '127.0.0.1'; // owner 本机自查，不对外
 const PORT = Number(process.env.SCRUMWS_PORT) || 8799;
 const PUBLIC = path.join(import.meta.dirname, 'public');
+// 只有持有 scheduler 锁的主实例管理账号用量轮询；副实例只读状态，不能因用户点开关
+// 意外启动第二个 claude -p /usage 定时器。
+let ownsUsageTimer = false;
 
 // console 输出同步镜像到数据根 runtime/（与旧 web 看板的 dashboard-server.log 分开，避免交叉写）
 const SERVER_LOG = path.join(P.tmpDir, 'desktop-server.log');
@@ -66,129 +67,6 @@ function serveStatic(req, res) {
   });
 }
 
-// worker-log 内容指纹（block 级）：只数消息条数会漏"同一 assistant 消息新增 content block"
-// （CC 流式把 thinking/text/各 tool_use 拆成同 message.id 的多块合并进一条消息）——按 content block
-// 计数 + 末块文本长度，才能感知处理中"逐块增长"。
-function wlFingerprint(r) {
-  const rounds = r.rounds || [];
-  return JSON.stringify([
-    rounds.length,
-    rounds.map((x) => (x.messages || []).reduce((n, m) => n + (m.content ? m.content.length : 0), 0)),
-    rounds.map((x) => {
-      const last = (x.messages || []).slice(-1)[0];
-      const lc = last && last.content ? last.content.slice(-1)[0] : null;
-      return lc ? (typeof lc.text === 'string' ? lc.text.length : (lc.type || '')) : 0;
-    }),
-    r.hasInflight, r.state,
-  ]);
-}
-
-// SSE：processing 详情页的块级近实时推送。fs.watch(CC 会话目录 + 任务目录) 变更即推（去抖 200ms），
-// 2.5s 兜底轮询应对 fs.watch 在网络盘/Windows 漏事件；服务端指纹去重、只推真变化；state 收敛发 done 关闭。
-function startWorkerLogStream(req, res, taskKey) {
-  let first;
-  try { first = readWorkerLog(taskKey); } catch (e) { return sendJson(res, 500, { ok: false, error: e.message }); }
-  if (!first || !first.ok) return sendJson(res, 404, first || { ok: false, error: 'not found' });
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-store',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  res.write('retry: 3000\n\n');
-
-  let closed = false;
-  let lastFp = null;
-  let debounceTimer = null;
-  let backstop = null;
-  let heartbeat = null;
-  const watchers = [];
-  const taskDir = path.join(first.isArchive ? P.archiveRoot : P.runnerRoot, first.safeKey);
-
-  const end = (evt) => {
-    if (closed) return;
-    closed = true;
-    if (debounceTimer) clearTimeout(debounceTimer);
-    if (backstop) clearInterval(backstop);
-    if (heartbeat) clearInterval(heartbeat);
-    for (const w of watchers) { try { w.close(); } catch { /* 已释放 */ } }
-    try { if (evt) res.write(`event: ${evt}\ndata: {}\n\n`); res.end(); } catch { /* socket 已断 */ }
-  };
-  const pushNow = () => {
-    if (closed) return;
-    let payload;
-    try { payload = readWorkerLog(taskKey); } catch { return; }
-    if (!payload || !payload.ok) return;
-    const fp = wlFingerprint(payload);
-    if (fp !== lastFp) {
-      lastFp = fp;
-      try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { return end(); }
-    }
-    if (payload.state !== 'processing') end('done');   // 收敛 → 收官帧 + 关闭
-  };
-  const schedule = () => {
-    if (closed) return;
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(pushNow, 200);
-  };
-  const safeWatch = (dir) => { try { watchers.push(fs.watch(dir, { persistent: false }, schedule)); } catch { /* 目录不存在忽略 */ } };
-  safeWatch(P.ccProjectDir);
-  safeWatch(taskDir);
-  backstop = setInterval(pushNow, 2500);
-  heartbeat = setInterval(() => { if (!closed) { try { res.write(': ping\n\n'); } catch { end(); } } }, 20000);
-
-  // 首帧立即推
-  lastFp = wlFingerprint(first);
-  try { res.write(`data: ${JSON.stringify(first)}\n\n`); } catch { return end(); }
-  if (first.state !== 'processing') return end('done');
-  req.on('close', () => end());
-}
-
-// SSE：Mode B 交互会话事件流（L2 / S4）。连上先回放已 settled 的 transcript（完整消息），
-// 再实时转发后续事件（含逐字 stream_event partial）；心跳保活；断开即解订阅。
-function startSessionStream(req, res, id) {
-  const s = getSession(id);
-  if (!s) return sendJson(res, 404, { ok: false, error: 'session not found' });
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-store',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  res.write('retry: 3000\n\n');
-  let closed = false;
-  let heartbeat = null;
-  const send = (ev) => { if (closed) return; try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch { cleanup(); } };
-  const onEvent = (ev) => send(ev);
-  const cleanup = () => {
-    if (closed) return;
-    closed = true;
-    if (heartbeat) clearInterval(heartbeat);
-    s.emitter.off('event', onEvent);
-    try { res.end(); } catch { /* socket 已断 */ }
-  };
-  // fresh 任务的 Session.gitBranch 为空（createSession 未传、live 流事件也不带）→ 连接时从该 session 的
-  // CC jsonl 补「最新分支」，与非 live 的 worker-log 同源，详情侧栏 git 两条路径显示一致（收养/resume 已带则保留）。
-  const rawInfo = s.info();
-  const provider = normalizeProvider(rawInfo.provider);
-  const definition = getProviderDefinition(provider);
-  const { claudeSessionId: legacyClaudeSessionId, ...restInfo } = rawInfo;
-  const info = {
-    ...restInfo,
-    provider,
-    sessionId: rawInfo.sessionId || legacyClaudeSessionId || null,
-    capabilities: { ...(definition?.capabilities || {}) },
-  };
-  if (!info.gitBranch && provider === 'claude' && info.sessionId) info.gitBranch = latestGitBranchBySid(info.sessionId);
-  try { res.write(`event: info\ndata: ${JSON.stringify(info)}\n\n`); } catch { /* 早断 */ }
-  for (const ev of s.transcript) send(ev);      // 回放已 settled 消息
-  try { res.write('event: synced\ndata: {}\n\n'); } catch { /* 早断 */ }
-  s.emitter.on('event', onEvent);               // 订阅实时
-  heartbeat = setInterval(() => { if (!closed) { try { res.write(': ping\n\n'); } catch { cleanup(); } } }, 20000);
-  req.on('close', cleanup);
-}
-
 const server = http.createServer(async (req, res) => {
   const { pathname, searchParams } = new URL(req.url, 'http://x');
   // 写请求改完磁盘（任务包 / 配置）后作废状态缓存：前端每个 mutation 都紧跟一次 refreshState()，
@@ -224,6 +102,10 @@ const server = http.createServer(async (req, res) => {
         try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
         if (typeof payload?.enabled !== 'boolean') return sendJson(res, 400, { ok: false, error: 'enabled 必须是 boolean' });
         const result = setProviderEnabled(provider, payload.enabled);
+        if (result.ok && result.provider === 'claude' && ownsUsageTimer) {
+          if (result.enabled) startUsageTimer();
+          else stopUsageTimer();
+        }
         sendJson(res, result.ok ? 200 : 400, result);
       });
       return;
@@ -232,6 +114,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/claude-usage') {
       const provider = normalizeProvider(searchParams.get('provider'));
       if (provider !== 'claude') return sendJson(res, 400, { ok: false, provider, error: '该 provider 不支持 accountUsage' });
+      if (providerConfig().providerEnabled.claude === false) return sendJson(res, 409, { ok: false, provider, error: 'runtime-disabled' });
       return sendJson(res, 200, { ...(await getClaudeUsage()), provider: 'claude' });
     }
     // 模型上下文窗口上限（详情页上下文用量环形的分母）：读设置页配置的 model→max_input_tokens 映射，不打 API
@@ -246,140 +129,21 @@ const server = http.createServer(async (req, res) => {
       }
       return sendJson(res, 200, { ...(await getModelContextLimit(model)), provider });
     }
-    if (pathname === '/api/worker-log/stream') {
+    if (pathname === '/api/worker-log/revision') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
-      return startWorkerLogStream(req, res, taskKey);
+      return sendJson(res, 200, readWorkerLogRevision(taskKey));
     }
     if (pathname === '/api/worker-log') {
       const taskKey = searchParams.get('taskKey');
       if (!taskKey) return sendJson(res, 400, { ok: false, error: 'taskKey required' });
-      return sendJson(res, 200, readWorkerLog(taskKey));
-    }
-    // ---- Mode B 交互会话（L2 / S4）：看板持有的 claude 进程 ----
-    if (req.method === 'POST' && pathname === '/api/session/create') {
-      let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 256 * 1024) req.destroy(); });
-      req.on('end', () => {
-        let payload = null;
-        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const r = createSession(payload || {});
-        sendJson(res, r.ok ? 200 : 400, r);
-      });
-      return;
-    }
-    if (pathname === '/api/session/stream') {
-      const id = searchParams.get('id');
-      if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
-      return startSessionStream(req, res, id);
-    }
-    if (req.method === 'POST' && pathname === '/api/session/send') {
-      const id = searchParams.get('id');
-      if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
-      let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 256 * 1024) req.destroy(); });
-      req.on('end', () => {
-        let payload = null;
-        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        sendJson(res, 200, sendUserMessage(id, payload?.message, payload?.attachments));
-      });
-      return;
-    }
-    // 权限应答（S5）：body {requestId, allow}；对应 can_use_tool control_request
-    if (req.method === 'POST' && pathname === '/api/session/respond') {
-      const id = searchParams.get('id');
-      if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
-      let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 16 * 1024) req.destroy(); });
-      req.on('end', () => {
-        let payload = null;
-        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        // S8：交互式工具（AskUserQuestion）回传答案 → 合并进 updatedInput
-        const extra = payload?.answers ? { answers: payload.answers } : (payload?.extraInput || null);
-        sendJson(res, 200, respondPermission(id, payload?.requestId, !!payload?.allow, extra));
-      });
-      return;
-    }
-    // 打断当前轮（S6）
-    if (req.method === 'POST' && pathname === '/api/session/interrupt') {
-      const id = searchParams.get('id');
-      if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
-      return sendJson(res, 200, interruptSession(id));
-    }
-    if (req.method === 'POST' && pathname === '/api/session/close') {
-      const id = searchParams.get('id');
-      if (!id) return sendJson(res, 400, { ok: false, error: 'id required' });
-      return sendJson(res, 200, closeSession(id));
-    }
-    // 停单个后台任务（详情「后台任务」栏）：走 CC 的 stop_task 控制请求，不猜进程
-    if (req.method === 'POST' && pathname === '/api/session/stop-task') {
-      const id = searchParams.get('id');
-      const taskId = searchParams.get('taskId');
-      if (!id || !taskId) return sendJson(res, 400, { ok: false, error: 'id + taskId required' });
-      const session = getSession(id);
-      const provider = normalizeProvider(session?.info()?.provider);
-      if (session && !getProviderDefinition(provider)?.capabilities.backgroundTasks) {
-        return sendJson(res, 400, { ok: false, provider, error: `${getProviderDefinition(provider)?.label || provider} 不支持后台任务` });
-      }
-      return sendJson(res, 200, stopTaskInSession(id, taskId));
-    }
-    // 看后台任务输出（详情「后台任务」栏的「查看」）
-    if (pathname === '/api/session/task-output') {
-      const id = searchParams.get('id');
-      const taskId = searchParams.get('taskId');
-      if (!id || !taskId) return sendJson(res, 400, { ok: false, error: 'id + taskId required' });
-      const session = getSession(id);
-      const provider = normalizeProvider(session?.info()?.provider);
-      if (session && !getProviderDefinition(provider)?.capabilities.backgroundTasks) {
-        return sendJson(res, 400, { ok: false, provider, error: `${getProviderDefinition(provider)?.label || provider} 不支持后台任务` });
-      }
-      return sendJson(res, 200, readTaskOutput(id, taskId));
-    }
-    if (pathname === '/api/session/list') {
-      const sessions = listSessions().map((raw) => {
-        const provider = normalizeProvider(raw.provider);
-        const { claudeSessionId, ...rest } = raw;
-        return {
-          ...rest,
-          provider,
-          sessionId: raw.sessionId || claudeSessionId || null,
-          capabilities: { ...(getProviderDefinition(provider)?.capabilities || {}) },
-        };
-      });
-      return sendJson(res, 200, { ok: true, sessions });
-    }
-    // S10 收养：把本机 CLI 会话续接成看板 Mode B 交互会话（provider 原生 resume + 预置历史）。body {provider, sessionId, model?}
-    if (req.method === 'POST' && pathname === '/api/session/adopt') {
-      let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 8 * 1024) req.destroy(); });
-      req.on('end', () => {
-        let payload = null;
-        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const provider = normalizeProvider(payload?.provider);
-        if (!['claude', 'codex'].includes(provider)) return sendJson(res, 400, { ok: false, error: '不支持该运行时的 CLI 会话续接' });
-        const sessionId = payload?.sessionId;
-        let hist, seed, options;
-        if (provider === 'claude') {
-          // Claude 能从注册表判断原终端是否还持有 session，避免两个进程竞争同一会话。
-          const att = readAttachedSessions().get(sessionId);
-          if (att) return sendJson(res, 409, { ok: false, error: `session 正被终端进程占用（pid=${att.pid}${att.status ? ` · ${att.status}` : ''}），请直接在那个终端窗口里回复；关闭该终端后即可从看板续接` });
-          hist = readCcSessionForAdopt(sessionId);
-          if (!hist.ok) return sendJson(res, 400, hist);
-          seed = ccMessagesToModeBSeed(hist.messages);
-          options = { provider, cwd: hist.cwd, gitBranch: hist.gitBranch, model: payload?.model || hist.model };
-        } else {
-          const att = readCodexAttachedSession(sessionId);
-          if (att) return sendJson(res, 409, { ok: false, error: `session 正被其他 Codex 客户端占用（pid=${att.pid}），请在原窗口回复；关闭后即可从看板续接` });
-          hist = readCodexCliSessionHistory(sessionId, payload?.jsonlPath);
-          if (!hist.ok) return sendJson(res, 400, hist);
-          seed = codexMessagesToModeBSeed(hist.messages);
-          options = { provider, cwd: hist.cwd, model: payload?.model || hist.model };
-        }
-        // CLI 会话续接沿用原 CLI 的无交互授权模式；Codex 由 app-server 的 thread/resume 恢复同一 thread。
-        const r = createSession({ ...options, effort: payload?.effort, resume: sessionId, seedTranscript: seed, taskKey: payload?.taskKey || null, bypass: true });
-        sendJson(res, r.ok ? 200 : 400, r.ok ? { ...r, resumedFrom: sessionId, seeded: seed.length } : r);
-      });
-      return;
+      const before = readWorkerLogRevision(taskKey);
+      const record = readWorkerLog(taskKey);
+      const after = readWorkerLogRevision(taskKey);
+      // JSONL 可能在整份读取期间继续 append。只有读前/读后 stat 一致才确认已追到该 revision；
+      // 否则返回 null，让客户端下一次探测再补读，避免把未包含的尾部误标为已消费。
+      const revision = before.ok && after.ok && before.revision === after.revision ? after.revision : null;
+      return sendJson(res, 200, after.ok ? { ...record, revision } : record);
     }
     // 模型上下文上限配置（设置页）：body {modelContextLimits:{modelId:number}}；存 runner-config.json。
     // 详情页上下文环形的分母改读此映射，不再打 /v1/models（也不再需要代理/凭据）。
@@ -458,12 +222,28 @@ const server = http.createServer(async (req, res) => {
       const r = archiveTask(taskKey);
       return sendJson(res, r.ok ? 200 : 400, r);
     }
-    // 已知工作目录列表（新建任务「选已有目录」下拉）：现有任务 cwd + 近 30 天 CLI session cwd，去重
+    // 已知工作目录列表（新建任务「选已有目录」下拉）：仅展示已配置的项目工作目录
+    // （cloudAllowedCwds 同时就是本机项目目录白名单）。不能把扫描到的所有 CLI session
+    // 直接暴露进下拉，否则用户主目录等非项目 cwd 会混进来；手填/浏览仍按原有本地任务语义处理。
     if (pathname === '/api/task/cwds') {
+      const runnerConfig = readConfig();
+      const allowedCwds = Array.isArray(runnerConfig.cloudAllowedCwds)
+        ? runnerConfig.cloudAllowedCwds.map((c) => String(c || '').trim()).filter(Boolean)
+        : [];
       const seen = new Set();
       const cwds = [];
-      for (const c of taskCwds()) { if (!seen.has(c)) { seen.add(c); cwds.push({ cwd: c, source: 'task' }); } }
-      for (const c of sessionCwds({ limit: 80 })) { if (!seen.has(c)) { seen.add(c); cwds.push({ cwd: c, source: 'cli' }); } }
+      const add = (cwd, source) => {
+        if (!isCwdAllowed(cwd, allowedCwds)) return;
+        // Windows 文件系统不区分大小写，避免同一路径仅大小写不同而重复。
+        const key = path.resolve(cwd).toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        cwds.push({ cwd, source });
+      };
+      // 白名单根本身也是可选的项目目录，即使当前还没有任务/CLI 历史。
+      for (const c of allowedCwds) add(c, 'project');
+      for (const c of taskCwds()) add(c, 'task');
+      for (const c of sessionCwds({ limit: 80 })) add(c, 'cli');
       return sendJson(res, 200, { ok: true, cwds: cwds.slice(0, 60) });
     }
     // 读 plan 态任务可编辑字段（看板「编辑」弹窗回填）：仅 plan 可编辑，非 plan 返回 400
@@ -772,20 +552,6 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    // 改写重跑（原地 rewind）：改写某条历史 user 消息、截断 jsonl 到该消息之前（原时间线丢弃不备份），从截断处重跑。
-    // 统一入口（观察态 CLI + 托管任务）：body {taskKey, uuid, message}。
-    // 返回 {hosted}：hosted=false（观察态 cli）→ 前端收养成 live 会话；hosted=true（托管）→ 后端已 --resume 重跑，前端刷 state 进 live。
-    if (req.method === 'POST' && pathname === '/api/task/rewind') {
-      let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
-      req.on('end', () => {
-        let payload = null;
-        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
-        const r = rewindTaskMessage(payload || {});
-        sendJson(res, r.ok ? 200 : 400, r);
-      });
-      return;
-    }
     // 取消归档（archive 复用 /api/archive）；按来源分派：CLI 清 watchlist.archivedAt / 看板任务目录移回 runner-state
     if (req.method === 'POST' && pathname === '/api/unarchive') {
       const taskKey = searchParams.get('taskKey');
@@ -900,7 +666,11 @@ export function start() {
       const mode = scheduler.start();
       // 账号用量定时拉取、云端上报都只在主（持锁）实例启：副实例「只看不调度」，
       // 不重复 spawn claude、也不重复上报（同一台机器两个实例上报会互相打架）
-      if (mode === 'running') { startUsageTimer(); startConnector(); }
+      if (mode === 'running') {
+        ownsUsageTimer = true;
+        if (providerConfig().providerEnabled.claude !== false) startUsageTimer();
+        startConnector();
+      }
       resolve({ host: HOST, port: PORT, server });
     });
   });

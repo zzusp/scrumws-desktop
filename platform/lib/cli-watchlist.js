@@ -20,6 +20,22 @@ function readRaw() {
   }
 }
 
+// 早期双 provider 版本有一个迁移缺口：对已有 Codex 会话执行 rename / done / archive 时，
+// upsert 的 provider 默认值会把它误写回 claude。rollout 文件路径是稳定且只读的来源，
+// 因而在读取旧 watchlist 时做一次轻量纠正，避免错误 provider 让后续详情走 Claude 解析器。
+function normalizeLegacyProviders(watchlist) {
+  let changed = false;
+  for (const [sid, meta] of Object.entries(watchlist.sessions || {})) {
+    if (!meta || meta.provider === 'codex') continue;
+    const jsonlPath = String(meta.jsonlPath || '').replace(/\\/g, '/').toLowerCase();
+    if (!jsonlPath.includes('/.codex/sessions/')) continue;
+    watchlist.sessions[sid] = { ...meta, provider: 'codex' };
+    changed = true;
+  }
+  if (changed) writeRaw(watchlist);
+  return watchlist;
+}
+
 function writeRaw(obj) {
   fs.mkdirSync(path.dirname(FILE), { recursive: true });
   const tmp = FILE + '.tmp';
@@ -32,11 +48,11 @@ export function isValidSid(sid) {
 }
 
 export function readWatchlist() {
-  return readRaw();
+  return normalizeLegacyProviders(readRaw());
 }
 
 export function listWatchlist() {
-  const { sessions } = readRaw();
+  const { sessions } = readWatchlist();
   return Object.entries(sessions).map(([sid, meta]) => ({ sid, provider: meta?.provider || 'claude', ...meta }));
 }
 
@@ -45,13 +61,15 @@ export function hasWatchlist(sid) {
   return !!readRaw().sessions[sid];
 }
 
-export function upsertWatchlist(sid, { provider = 'claude', customTitle = null, note = null, jsonlPath = null, projectDir = null } = {}) {
+export function upsertWatchlist(sid, { provider = null, customTitle = null, note = null, jsonlPath = null, projectDir = null } = {}) {
   if (!isValidSid(sid)) return { ok: false, error: 'invalid sid' };
   const w = readRaw();
   const now = fmt(new Date());
   const prev = w.sessions[sid] || {};
   w.sessions[sid] = {
-    provider: provider === 'codex' ? 'codex' : 'claude',
+    // provider 只有显式指定时才更新。rename / done / archive 等元数据更新不应把
+    // 已加入的 Codex 会话降级为 Claude，否则会把 rollout 交给错误的 JSONL 解析器。
+    provider: provider === 'codex' ? 'codex' : provider === 'claude' ? 'claude' : (prev.provider || 'claude'),
     addedAt: prev.addedAt || now,
     customTitle: customTitle === '' ? null : (customTitle ?? prev.customTitle ?? null),
     note: note === '' ? null : (note ?? prev.note ?? null),

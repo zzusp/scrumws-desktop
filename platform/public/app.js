@@ -50,13 +50,18 @@ async function ensureProviderCatalog() {
   } catch { providerCatalog = []; }
   return providerCatalog;
 }
-// modal 打开时暂停看板刷新 —— 用户焦点在 modal 上、看板轮询 5s 刷 detail；关闭时立即 refreshState + 重置计时
+// modal 打开时暂停看板刷新 —— 详情由独立的 JSONL revision 轮询驱动；关闭时立即 refreshState + 重置计时
 let modalOpen = false;
 let modalPollTimer = null;
 let modalPollTaskKey = null;
-let modalSse = null;                // 详情页块级近实时 SSE（processing 时）；断了回落 5s 轮询
 let stateTimer = null;
-const MODAL_POLL_MS = 5000;
+// 详情页只轮询轻量 revision（stat + 小型元数据），约 1 秒即可跟随 CLI 输出，正文变更后才读完整 JSONL。
+const MODAL_POLL_MS = 1000;
+// 外部 Codex Desktop 的占用探测无需随每次 revision 请求，独立低频收敛即可。
+const MODAL_STATE_POLL_MS = 5000;
+let modalLastStatePollAt = 0;
+let modalPollBusy = false;
+let lastModalRevision = null;
 
 // ---- 任务「状态变更」标记 ----
 // 记录每个任务上次「看过」时所处的分桶(section)；当前分桶与之不同 = 状态有更新，卡片显更新点。
@@ -183,9 +188,12 @@ function renderRuntime(rt) {
     const statusCls = !enabled ? 'off' : online == null ? 'detecting' : online ? 'on' : 'off';
     const statusTxt = !enabled ? '已关闭' : online == null ? '检测中…' : online ? '在线' : '离线';
     const dotCls = !enabled || online === false ? 'rt-off' : online == null ? 'rt-detecting' : 'rt-on';
-    const account = runtime.capabilities?.accountUsage
+    // 已关闭的运行时既不展示也不请求账号用量；保留 CLI 版本、路径等诊断信息即可。
+    const account = !enabled ? '' : runtime.id === 'claude' && runtime.capabilities?.accountUsage
       ? `<div class="rt-account"><div class="rt-account-head"><span class="rt-account-title">账号用量</span><span class="rt-account-note">由 ${escapeHtml(runtime.label || 'CLI')} 查询</span></div>${ccAccountUsageBarsHtml(runtime.claudeUsage, runtime.usagePoll)}</div>`
-      : `<div class="rt-account"><div class="rt-account-head"><span class="rt-account-title">账号用量</span><span class="rt-account-note">该运行时暂不提供账号级用量</span></div></div>`;
+      : runtime.id === 'codex' && runtime.capabilities?.accountUsage
+        ? `<div class="rt-account"><div class="rt-account-head"><span class="rt-account-title">账号用量</span><span class="rt-account-note">最近本机 session JSONL 记录</span></div>${codexAccountUsageBarsHtml(runtime.codexUsage)}</div>`
+        : `<div class="rt-account"><div class="rt-account-head"><span class="rt-account-title">账号用量</span><span class="rt-account-note">该运行时暂不提供账号级用量</span></div></div>`;
     return `
     <div class="rt-panel">
       <div class="rt-badge"><svg viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></div>
@@ -200,13 +208,16 @@ function renderRuntime(rt) {
          ${account}
        </div>
        <div class="rt-actions">
-         <button type="button" class="btn rt-toggle${enabled ? ' stop' : ''}" onclick="toggleProviderRuntime('${escapeAttr(runtime.id)}', ${enabled ? 'false' : 'true'})">${enabled ? '关闭运行时' : '开启运行时'}</button>
+         <button type="button" class="rt-power-toggle${enabled ? ' is-on' : ''}" role="switch" aria-checked="${enabled ? 'true' : 'false'}" title="${enabled ? '关闭' : '开启'} ${escapeAttr(runtime.label || runtime.tool || '运行时')}" onclick="toggleProviderRuntime('${escapeAttr(runtime.id)}', ${enabled ? 'false' : 'true'})">
+           <span class="rt-power-copy"><span>运行时</span><small>${enabled ? '已开启' : '已关闭'}</small></span>
+           <span class="rt-switch" aria-hidden="true"><i></i></span>
+         </button>
        </div>
      </div>`;
   }).join('');
   const claudeRuntime = runtimes.find((runtime) => runtime.id === 'claude') || rt;
-  // ---- 用量汇总：CC 全局每日 token 表格（7/15/30 天切换）----
-  dailyUsageData = Array.isArray(claudeRuntime.dailyUsage) ? claudeRuntime.dailyUsage : null;
+  // ---- 用量汇总：Claude Code + Codex 的本机 session JSONL（7/15/30 天切换）----
+  dailyUsageData = Array.isArray(rt.dailyUsage) ? rt.dailyUsage : null;
   renderUsageTable();
   // ---- 原账号用量卡改为全运行时新建任务折线图；账号用量已嵌入对应运行时卡。 ----
   const taskCreatedGrid = $('taskCreatedGrid');
@@ -217,7 +228,7 @@ function renderRuntime(rt) {
   const ccGrid = $('ccUsageGrid');
   if (ccGrid) {
     ccGrid.innerHTML = `<div class="du-wrap"><div class="du-canvas-box"><canvas id="duChart"></canvas></div></div>`;
-    renderDailyChart(claudeRuntime.dailyUsage);
+    renderDailyChart(dailyUsageData);
   }
 }
 
@@ -233,7 +244,7 @@ window.toggleProviderRuntime = async (provider, enabled) => {
   }
 };
 
-// ---- 用量汇总表格（CC 全局每日 token，7/15/30 切换）+ 每日柱状图（Chart.js）----
+// ---- 用量汇总表格（全部本机 CLI 的每日 token，7/15/30 切换）+ 每日柱状图（Chart.js）----
 let dailyUsageData = null;    // 最近一次近 30 天每日用量（tab 切换复用同一份，不重新请求）
 let usageTableDays = 7;       // 表格维度：7 / 15 / 30
 let duChartInstance = null;   // Chart.js 实例（重渲染前 destroy 防泄漏）
@@ -273,7 +284,8 @@ function bindUsageTabs() {
   });
 }
 
-// 账号卡右侧柱状图（Chart.js）：近 7 天，全局浅色柱 + scrumws 深色子集覆盖（两 dataset grouped:false 重叠）。
+// 近 7 天 token：恢复原来的「全局 / ScrumWS」覆盖式展示；来源 CLI 只在数据采集层合并，
+// 不在趋势图按 Provider 拆柱，避免改变用户既有的阅读口径。
 function renderDailyChart(daily) {
   const canvas = document.getElementById('duChart');
   if (!canvas) return;
@@ -294,11 +306,8 @@ function renderDailyChart(daily) {
     data: {
       labels,
       datasets: [
-        // 子集覆盖：全局(浅)先画，scrumws(深)后画叠在其上；不用 order（避免图例被 order 重排），靠 dataset 顺序自然覆盖。
-        // hoverBackgroundColor 必须显式给：否则 Chart.js 用内部 color helper 从 backgroundColor 派生 hover 色，
-        // 但它解析不了 CSS color-mix() 字符串（canvas 能渲染、解析器不能）→ fallback 成黑色。
-        { label: '全局', data: days.map((d) => d.total), backgroundColor: `color-mix(in oklab, ${info} 32%, transparent)`, hoverBackgroundColor: `color-mix(in oklab, ${info} 48%, transparent)`, borderRadius: 4, grouped: false },
-        { label: 'scrumws', data: days.map((d) => d.platform), backgroundColor: brand, hoverBackgroundColor: `color-mix(in oklab, ${brand} 86%, black)`, borderRadius: 4, grouped: false },
+        { label: '全局', data: days.map((d) => d.total || 0), backgroundColor: `color-mix(in oklab, ${info} 32%, transparent)`, hoverBackgroundColor: `color-mix(in oklab, ${info} 48%, transparent)`, borderRadius: 4, grouped: false },
+        { label: 'ScrumWS', data: days.map((d) => d.platform || 0), backgroundColor: brand, hoverBackgroundColor: `color-mix(in oklab, ${brand} 86%, black)`, borderRadius: 4, grouped: false },
       ],
     },
     options: {
@@ -400,6 +409,18 @@ function sourceTagHtml(t) {
         : '<span class="tag tag-mut">' + escapeHtml(sourceLabel(t.source)) + '</span>';
 }
 
+// 执行 CLI 标识：任务的 provider 是唯一事实源；未带该字段的历史任务仍按 Claude 兼容。
+// 不依赖运行时 catalog，避免看板首屏在 catalog 异步加载前显示空标签。
+function cliLabel(provider) {
+  const id = String(provider || 'claude').toLowerCase();
+  return providerDef(id)?.label || (id === 'codex' ? 'Codex' : id === 'claude' ? 'Claude Code' : id);
+}
+function cliTagHtml(t) {
+  const id = String(t.provider || 'claude').toLowerCase();
+  const cls = id === 'codex' ? 'tag-cyan' : 'tag-amber';
+  return `<span class="tag ${cls}" title="CLI：${escapeAttr(cliLabel(id))}">${escapeHtml(cliLabel(id))}</span>`;
+}
+
 // 卡片上半部分只保留：任务标题 + 工作目录 + 最后一次活动时间（req2）；其余状态/耗时/描述/意图/失败原因都进详情页。
 function taskCardHtml(t, section) {
   // 工作目录跨来源统一取（CLI 在 t.cli.cwd，看板任务在 t.cwd）
@@ -428,6 +449,7 @@ function taskCardHtml(t, section) {
       ${actLine}
       <div class="card-foot">
         ${sourceTagHtml(t)}
+        ${cliTagHtml(t)}
         <span style="flex:1"></span>
         <button class="btn card-menu-btn" title="操作" onclick="event.stopPropagation();openCardMenu(event,'${escapeAttr(t.taskKey)}','${section}')">···</button>
       </div>
@@ -437,8 +459,8 @@ function taskCardHtml(t, section) {
 
 // 卡片操作按钮（收进「···」浮层菜单）：edit/desc + 按 section 的操作。菜单在卡片外浮层，按钮不需 stopPropagation。
 function cardActionButtons(t, section) {
-  // 被旁观的 CLI 会话（watchlist 出卡，带 t.cli）：processing 不给「中断」（不干预终端进程）、归档区给「从看板移除」。
-  // 物化后的 CLI 任务无 t.cli，与其它来源一致（可中断 Mode B 会话、归档区只取消归档）。按 t.cli 判、不按 source（任务来源不变量）。
+  // 被旁观的 CLI 会话（watchlist 出卡，带 t.cli）：processing 不给「中断」（不干预外部进程）、归档区给「从看板移除」。
+  // 物化后的 CLI 任务无 t.cli，与其它来源一致（可中断 provider 子进程、归档区只取消归档）。
   const isObservedCli = !!t.cli;
   const isReadOnlyCli = isObservedCli && t.provider === 'codex';
   const isPlan = section === 'plan';
@@ -469,7 +491,9 @@ function cardActionButtons(t, section) {
   } else if (section === 'done') {
     actionBtn = uncompleteBtn + (isReadOnlyCli ? '' : toPlanBtn) + archiveBtn;
   } else if (section === 'archived') {
-    const rmBtn = isObservedCli ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">✕ 移除</button>` : '';
+    const rmBtn = isObservedCli
+      ? `<button class="btn" style="color:var(--coralT)" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')" title="从看板 watchlist 移除（不影响 CLI session 本体）">✕ 移除</button>`
+      : `<button class="btn" style="color:var(--coralT)" onclick="deleteTaskAction('${_k}', true)" title="永久删除该归档任务包（不可恢复）">✕ 删除</button>`;
     actionBtn = unarchiveBtn + rmBtn;
   }
   return lead + actionBtn;
@@ -505,19 +529,20 @@ function openCardMenu(event, taskKey, section) {
 }
 window.openCardMenu = openCardMenu;
 
-// ================= 看板筛选（来源 / 工作目录 / 关键字 / sessionId）=================
+// ================= 看板筛选（来源 / CLI / 工作目录 / 关键字 / sessionId）=================
 // 视图层筛选：状态存 boardFilter，renderLifecycle 渲染前按 matchesBoardFilter 过滤各桶（计数随之显可见数）。
 // 来源 / 工作目录用自定义下拉（不用原生 select，选项面板对齐新建任务 .cwd-menu 范式），选项从真实任务数据动态取；
 // 关键字 / sessionId 走子串匹配。
-let boardFilter = { source: '', cwd: '', keyword: '', sessionId: '' };
-let boardSources = [], boardCwds = [];   // 真实任务里出现过的来源 / 工作目录全集（下拉选项数据源）
-let srcDD = null, cwdDD = null;           // 两个自定义下拉实例（initBoardFilter 里建）
+let boardFilter = { source: '', provider: '', cwd: '', keyword: '', sessionId: '' };
+let boardSources = [], boardProviders = [], boardCwds = []; // 真实任务里出现过的来源 / CLI / 工作目录全集
+let srcDD = null, providerDD = null, cwdDD = null;          // 三个自定义下拉实例（initBoardFilter 里建）
 
 function cwdOf(t) { return t.cwd || t.cli?.cwd || ''; }
 
 function matchesBoardFilter(t) {
   const f = boardFilter;
   if (f.source && (t.source || '') !== f.source) return false;
+  if (f.provider && String(t.provider || 'claude').toLowerCase() !== f.provider) return false;
   if (f.cwd && cwdOf(t) !== f.cwd) return false;
   if (f.keyword) {
     const hay = [t.title, t.taskKey, t.description].filter(Boolean).join(' ').toLowerCase();
@@ -573,14 +598,17 @@ function makeFilterDropdown({ btnId, menuId, items, getValue, onPick }) {
 }
 
 const sourceDropItems = () => [{ value: '', label: '全部' }, ...boardSources.map((s) => ({ value: s, label: sourceLabel(s) }))];
+const providerDropItems = () => [{ value: '', label: '全部' }, ...boardProviders.map((p) => ({ value: p, label: cliLabel(p) }))];
 const cwdDropItems = () => [{ value: '', label: '全部' }, ...boardCwds.map((c) => ({ value: c, label: c.length > 44 ? '…' + c.slice(-42) : c, title: c }))];
 
 // 依真实数据刷新筛选选项数据源（选中项若已不存在则回落全部）；菜单是打开时现取，不必重建 DOM
 function updateBoardFilterOptions(lifecycle) {
   const all = allLifecycleTasks(lifecycle);
   boardSources = [...new Set(all.map((t) => t.source).filter(Boolean))].sort();
+  boardProviders = [...new Set(all.map((t) => String(t.provider || 'claude').toLowerCase()))].sort();
   boardCwds = [...new Set(all.map(cwdOf).filter(Boolean))].sort();
   if (boardFilter.source && !boardSources.includes(boardFilter.source)) boardFilter.source = '';
+  if (boardFilter.provider && !boardProviders.includes(boardFilter.provider)) boardFilter.provider = '';
   if (boardFilter.cwd && !boardCwds.includes(boardFilter.cwd)) boardFilter.cwd = '';
   syncBoardFilterUi();
 }
@@ -588,10 +616,11 @@ function updateBoardFilterOptions(lifecycle) {
 // 把 boardFilter 反映到面板 UI（下拉标签 / 输入框 / 激活数徽章）
 function syncBoardFilterUi() {
   srcDD?.syncLabel();
+  providerDD?.syncLabel();
   cwdDD?.syncLabel();
   const kw = $('fpKeyword'); if (kw && kw.value !== boardFilter.keyword) kw.value = boardFilter.keyword;
   const sid = $('fpSessionId'); if (sid && sid.value !== boardFilter.sessionId) sid.value = boardFilter.sessionId;
-  const n = ['source', 'cwd', 'keyword', 'sessionId'].filter((k) => boardFilter[k]).length;
+  const n = ['source', 'provider', 'cwd', 'keyword', 'sessionId'].filter((k) => boardFilter[k]).length;
   const badge = $('filterBadge');
   if (badge) { badge.textContent = String(n); badge.style.display = n ? 'inline-flex' : 'none'; }
 }
@@ -623,14 +652,7 @@ function renderLifecycle(lifecycle) {
       list.innerHTML = shown.map((t) => taskCardHtml(t, name)).join('');
     }
   }
-  const archShown = lifecycle.archived.filter(matchesBoardFilter);
-  $('count-archived').textContent = archShown.length;
-  const arch = $('list-archived');
-  if (archShown.length === 0) {
-    arch.innerHTML = `<div style="color:var(--dim);font-size:12px;padding:6px 0">空</div>`;
-  } else {
-    arch.innerHTML = archShown.map((t) => taskCardHtml(t, 'archived')).join('');
-  }
+  renderArchive(lifecycle);
 }
 
 // ---- 筛选面板交互（按钮开合 / 来源·工作目录自定义下拉 / 输入 / 清除 / 点外关闭）----
@@ -641,7 +663,7 @@ function renderLifecycle(lifecycle) {
   let outsideCloser = null;
   const close = () => {
     panel.classList.remove('open'); btn.classList.remove('on');
-    srcDD?.close(); cwdDD?.close();   // 收面板时一并收内部下拉
+    srcDD?.close(); providerDD?.close(); cwdDD?.close(); // 收面板时一并收内部下拉
     if (outsideCloser) { document.removeEventListener('mousedown', outsideCloser, true); outsideCloser = null; }
   };
   const open = () => {
@@ -650,10 +672,14 @@ function renderLifecycle(lifecycle) {
     setTimeout(() => document.addEventListener('mousedown', outsideCloser, true), 0);
   };
   btn.addEventListener('click', () => (panel.classList.contains('open') ? close() : open()));
-  // 来源 / 工作目录：自定义下拉（选项面板同款），选项按真实数据现取
+  // 来源 / CLI / 工作目录：自定义下拉（选项面板同款），选项按真实数据现取
   srcDD = makeFilterDropdown({
     btnId: 'fpSourceBtn', menuId: 'fpSourceMenu', items: sourceDropItems,
     getValue: () => boardFilter.source, onPick: (v) => { boardFilter.source = v; applyBoardFilter(); },
+  });
+  providerDD = makeFilterDropdown({
+    btnId: 'fpProviderBtn', menuId: 'fpProviderMenu', items: providerDropItems,
+    getValue: () => boardFilter.provider, onPick: (v) => { boardFilter.provider = v; applyBoardFilter(); },
   });
   cwdDD = makeFilterDropdown({
     btnId: 'fpCwdBtn', menuId: 'fpCwdMenu', items: cwdDropItems,
@@ -662,18 +688,106 @@ function renderLifecycle(lifecycle) {
   $('fpKeyword')?.addEventListener('input', (e) => { boardFilter.keyword = e.target.value.trim(); applyBoardFilter(); });
   $('fpSessionId')?.addEventListener('input', (e) => { boardFilter.sessionId = e.target.value.trim(); applyBoardFilter(); });
   $('fpClear')?.addEventListener('click', () => {
-    boardFilter = { source: '', cwd: '', keyword: '', sessionId: '' };
+    boardFilter = { source: '', provider: '', cwd: '', keyword: '', sessionId: '' };
     applyBoardFilter();
   });
 })();
 
-$('archivedHeader').addEventListener('click', () => {
-  const list = $('list-archived');
-  const caret = $('archivedCaret');
-  const isOpen = list.style.display !== 'none';
-  list.style.display = isOpen ? 'none' : 'flex';
-  caret.textContent = isOpen ? '▸' : '▾';
-});
+// ---- 归档：按工作目录分目录；二级目录内可按 provider / 来源 / 关键字筛选 ----
+let archiveFilter = { provider: '', source: '', keyword: '' };
+let archiveFilterAbort = null;
+function archiveBucketOf(t) {
+  // 归档目录的一级维度就是任务实际工作目录；CLI 观察态回落 cli.cwd，无目录的历史任务单独归类。
+  return String(t.cwd || t.cli?.cwd || '未设置工作目录').trim() || '未设置工作目录';
+}
+function archiveRouteBucket() {
+  const match = /^#\/archive\/([^/?#]+)/.exec(location.hash || '');
+  return match ? decodeURIComponent(match[1]) : null;
+}
+function archiveTaskTime(t) {
+  return t.archivedAt || t.history?.findLast?.((h) => h.state === 'archived')?.at || t.resolvedAt || t.createdAt || '';
+}
+function archiveTaskMatches(t) {
+  if (archiveFilter.provider && String(t.provider || 'claude').toLowerCase() !== archiveFilter.provider) return false;
+  if (archiveFilter.source && String(t.source || '') !== archiveFilter.source) return false;
+  const q = archiveFilter.keyword.trim().toLowerCase();
+  return !q || [t.title, t.description, t.taskKey, t.meta?.sessionId].filter(Boolean).join(' ').toLowerCase().includes(q);
+}
+function renderArchive(lifecycle) {
+  const target = $('archiveContent');
+  if (!target) return;
+  const tasks = Array.isArray(lifecycle?.archived) ? lifecycle.archived.slice() : [];
+  const bucket = archiveRouteBucket();
+  if (!bucket) {
+    if (archiveFilterAbort) { archiveFilterAbort.abort(); archiveFilterAbort = null; }
+    const folders = new Map();
+    for (const task of tasks) {
+      const key = archiveBucketOf(task);
+      const current = folders.get(key) || { count: 0 };
+      current.count++;
+      folders.set(key, current);
+    }
+    const rows = [...folders.entries()].sort(([a], [b]) => a.localeCompare(b));
+    target.innerHTML = `
+      <div class="archive-intro"><div><h2>任务归档</h2><p>按工作目录整理；进入目录后可筛选和恢复任务。</p></div><span class="tag tag-mut">${tasks.length} 项</span></div>
+      ${rows.length ? `<div class="archive-folders">${rows.map(([key, info]) => `<button class="archive-folder" title="${escapeAttr(key)}" onclick="openArchiveFolder('${encodeURIComponent(key)}')"><span class="archive-folder-icon">▰</span><span class="archive-folder-main"><span class="archive-folder-name">${escapeHtml(key)}</span><span class="archive-folder-meta">${info.count} 个任务</span></span><span class="archive-folder-arrow">›</span></button>`).join('')}</div>` : '<div class="archive-empty">暂无已归档任务</div>'}`;
+    return;
+  }
+  const inFolder = tasks.filter((task) => archiveBucketOf(task) === bucket).sort((a, b) => String(archiveTaskTime(b)).localeCompare(String(archiveTaskTime(a))));
+  const providers = [...new Set(inFolder.map((t) => String(t.provider || 'claude').toLowerCase()))].sort();
+  const sources = [...new Set(inFolder.map((t) => String(t.source || '')).filter(Boolean))].sort();
+  if (archiveFilter.provider && !providers.includes(archiveFilter.provider)) archiveFilter.provider = '';
+  if (archiveFilter.source && !sources.includes(archiveFilter.source)) archiveFilter.source = '';
+  const shown = inFolder.filter(archiveTaskMatches);
+  target.innerHTML = `
+    <div class="archive-list-head"><button class="btn archive-back" onclick="openArchiveRoot()">‹ 目录</button><span class="archive-list-title">${escapeHtml(bucket)}</span><span class="tag tag-mut">${shown.length}/${inFolder.length}</span></div>
+    <div class="archive-filter-row">
+      <div class="fp-dd" id="archiveProviderDD"><button type="button" class="fp-dd-btn" id="archiveProviderBtn"><span class="fp-dd-label${archiveFilter.provider ? '' : ' dim'}">${escapeHtml(archiveFilter.provider ? cliLabel(archiveFilter.provider) : '全部 CLI')}</span><span class="fp-dd-caret">▾</span></button><div class="fp-dd-menu" id="archiveProviderMenu" role="listbox"></div></div>
+      <div class="fp-dd" id="archiveSourceDD"><button type="button" class="fp-dd-btn" id="archiveSourceBtn"><span class="fp-dd-label${archiveFilter.source ? '' : ' dim'}">${escapeHtml(archiveFilter.source ? sourceLabel(archiveFilter.source) : '全部来源')}</span><span class="fp-dd-caret">▾</span></button><div class="fp-dd-menu" id="archiveSourceMenu" role="listbox"></div></div>
+      <input class="field-input archive-query" id="archiveKeywordFilter" value="${escapeAttr(archiveFilter.keyword)}" placeholder="搜索标题、taskKey、session ID">
+      <button class="btn" id="archiveFilterClear">清除</button>
+    </div>
+    ${shown.length ? `<div class="archive-list">${shown.map((task) => taskCardHtml(task, 'archived')).join('')}</div>` : '<div class="archive-empty">该目录中没有匹配的归档任务</div>'}`;
+  if (archiveFilterAbort) archiveFilterAbort.abort();
+  archiveFilterAbort = new AbortController();
+  bindArchiveFilterDropdown({
+    btnId: 'archiveProviderBtn', menuId: 'archiveProviderMenu', current: archiveFilter.provider,
+    items: [{ value: '', label: '全部 CLI' }, ...providers.map((p) => ({ value: p, label: cliLabel(p) }))],
+    onPick: (value) => { archiveFilter.provider = value; renderArchive(stateData?.lifecycle); },
+  });
+  bindArchiveFilterDropdown({
+    btnId: 'archiveSourceBtn', menuId: 'archiveSourceMenu', current: archiveFilter.source,
+    items: [{ value: '', label: '全部来源' }, ...sources.map((s) => ({ value: s, label: sourceLabel(s) }))],
+    onPick: (value) => { archiveFilter.source = value; renderArchive(stateData?.lifecycle); },
+  });
+  $('archiveKeywordFilter')?.addEventListener('input', (e) => { archiveFilter.keyword = e.target.value; renderArchive(stateData?.lifecycle); });
+  $('archiveFilterClear')?.addEventListener('click', () => { archiveFilter = { provider: '', source: '', keyword: '' }; renderArchive(stateData?.lifecycle); });
+}
+function bindArchiveFilterDropdown({ btnId, menuId, current, items, onPick }) {
+  // 二级归档页每次筛选都会重绘；这一轮由 renderArchive 创建的 signal 统一清理 document 监听。
+  const signal = archiveFilterAbort.signal;
+  const btn = $(btnId), menu = $(menuId);
+  if (!btn || !menu) return;
+  const render = () => {
+    menu.innerHTML = items.map((item) => `<div class="fp-dd-item${item.value === current ? ' active' : ''}" role="option" data-value="${escapeAttr(item.value)}"><span class="fp-dd-path">${escapeHtml(item.label)}</span><span class="fp-dd-check">✓</span></div>`).join('');
+  };
+  const close = () => { menu.classList.remove('open'); btn.classList.remove('open'); };
+  btn.addEventListener('click', () => {
+    const open = !menu.classList.contains('open');
+    document.querySelectorAll('#archiveContent .fp-dd-menu.open').forEach((el) => el.classList.remove('open'));
+    document.querySelectorAll('#archiveContent .fp-dd-btn.open').forEach((el) => el.classList.remove('open'));
+    if (open) { render(); menu.classList.add('open'); btn.classList.add('open'); }
+  }, { signal });
+  menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-value]');
+    if (!item) return;
+    close(); onPick(item.dataset.value);
+  }, { signal });
+  document.addEventListener('mousedown', (event) => { if (!btn.contains(event.target) && !menu.contains(event.target)) close(); }, { capture: true, signal });
+}
+window.openArchiveRoot = () => { location.hash = '#/archive'; };
+// 目录名先 encode 再写入 inline handler，避免 Windows 路径反斜杠被 JavaScript 字符串吞掉。
+window.openArchiveFolder = (encodedBucket) => { location.hash = '#/archive/' + encodedBucket; };
 
 // ---- 自定义 confirm 弹窗（替代原生 confirm，Promise-based）----
 // message 支持简单 HTML 内联标签（<b>/<code>/<br>）——调用侧只塞可信文案，别拼用户输入
@@ -876,12 +990,14 @@ async function approveTaskAction(taskKey) {
 }
 window.approveTaskAction = approveTaskAction;
 
-// 移除 plan 态任务（删除计划草稿，不可恢复）
-async function deleteTaskAction(taskKey) {
+// 删除从未执行的 plan 草稿，或永久删除已归档的任务包（均不可恢复）。
+async function deleteTaskAction(taskKey, archived = false) {
   const ok = await customConfirm({
-    title: '移除任务',
-    message: `删除计划任务 <code>${escapeHtml(taskKey)}</code>（从未执行的草稿）。<br><b>不可恢复。</b>`,
-    confirmText: '移除',
+    title: archived ? '永久删除归档任务' : '移除任务',
+    message: archived
+      ? `永久删除归档任务 <code>${escapeHtml(taskKey)}</code> 的本地任务包。<br>不会删除 Claude/Codex 原始 JSONL，但该任务将无法从本应用恢复。<br><b>不可恢复。</b>`
+      : `删除计划任务 <code>${escapeHtml(taskKey)}</code>（从未执行的草稿）。<br><b>不可恢复。</b>`,
+    confirmText: archived ? '永久删除' : '移除',
     tone: 'danger',
   });
   if (!ok) return;
@@ -913,32 +1029,28 @@ window.moveToPlanAction = moveToPlanAction;
 
 // ---- 任务详情页（单一对话流 + 右侧信息栏）----
 let currentModalData = null;
-let lastModalFp = null;             // poll 内容指纹：没新内容不重画 DOM（保住滚动位置和 details 展开态）
 let lastReplyFp = null;             // 回复框模式指纹：只在决定 composer 形态的字段变了才重装（否则每 tick 重装会清空用户正在输入的文本 + 抢焦点）
 
-// 卡片点击入口：统一进详情 #/task/<key>。详情内部按任务是否有活 Mode B 会话分派——
-// 有活会话 → 连 live SSE（逐字 / 权限 / 打断）；无 → 读磁盘 jsonl 只读历史 + 回复框。
-window.openTaskModal = (taskKey) => { location.hash = '#/task/' + encodeURIComponent(taskKey); };
+// 卡片点击入口：从归档进入详情时记住原二级目录，面包屑“返回”保持在该目录而不是跳回看板。
+window.openTaskModal = (taskKey) => {
+  const origin = location.hash || '#/board';
+  const storageKey = `scrumws-task-return:${taskKey}`;
+  try {
+    if (origin.startsWith('#/archive')) sessionStorage.setItem(storageKey, origin);
+    else sessionStorage.removeItem(storageKey);
+  } catch { /* sessionStorage 不可用时退回看板 */ }
+  location.hash = '#/task/' + encodeURIComponent(taskKey);
+};
 
 async function loadTaskDetail(taskKey) {
   modalOpen = true;
   modalPollTaskKey = taskKey;
   acknowledgeTask(taskKey);             // 看过即清「状态变更」更新点
-  const t = findTaskInState(taskKey);
-  // 分派：有活 Mode B 会话 → 详情接 live SSE（逐字 / 权限卡 / 打断，渲染进 #modalBody + renderTaskSide + composer）；
-  // 无活会话 → 读磁盘 jsonl 只读历史（processing 时块级 SSE 兜底）。二者对同一次详情加载互斥。
-  if (t?.mbSessionId) {
-    closeModalLive();
-    currentModalData = null;
-    renderTaskSide(taskKey);            // 先出侧栏，body 由 loadSession 连上后渲染
-    startModalPoll(taskKey);            // 常驻轮询：live 模式下 stateData 也要保鲜，侧栏 state/耗时 不滞后
-    loadSession(t.mbSessionId);
-    return;
-  }
-  if (mb) mbDetach();                    // 从 live 任务切到只读任务：断开旧 live SSE
+  // processing / awaiting / done 都只从 provider JSONL 还原完整执行记录。
   // 标题现在渲染在右侧「任务信息」块内（renderTaskSide），详情页顶部 header 已移除（req4）
   $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">正在读取 Agent 会话记录…</div>';
-  lastModalFp = null;
+  lastModalRevision = null;
+  modalLastStatePollAt = Date.now();
   try {
     const r = await api(`/api/worker-log?taskKey=${encodeURIComponent(taskKey)}`);
     if (!r.ok) {
@@ -946,36 +1058,20 @@ async function loadTaskDetail(taskKey) {
       return;
     }
     currentModalData = r;
+    lastModalRevision = r.revision || null;
     renderModalBody();
     renderTaskSide(taskKey);
-    // 回复框显示/禁用判据：需有 meta.sessionId + state ≠ processing
     updateReplyBoxAvailability(taskKey);
-    // processing 任务：块级近实时 SSE（in-flight jsonl 一变就推）；断了回落 5s 轮询
     ensureModalLive(taskKey);
   } catch (e) {
     $('modalBody').innerHTML = `<div style="color:var(--coral)">${e.message}</div>`;
   }
 }
 
-// worker-log 内容指纹（block 级，与服务端 wlFingerprint 对齐）：消息条数会漏"同消息新增 content
-// block"，改按 content block 计数 —— 否则处理中逐块增长不重画。
-function modalContentFp(r, stateStr, histLen) {
-  const rounds = r.rounds || [];
-  return JSON.stringify([
-    rounds.length,
-    rounds.map((x) => (x.messages || []).reduce((n, m) => n + (m.content ? m.content.length : 0), 0)),
-    r.hasInflight, stateStr, histLen,
-  ]);
-}
-
-// 只关块级 SSE（消息体近实时通道），保留常驻轮询继续刷侧栏卡片
-function closeModalSse() {
-  if (modalSse) { try { modalSse.close(); } catch { /* ignore */ } modalSse = null; }
-}
-// 关闭详情页所有实时通道（SSE + 常驻轮询）——离开详情 / 切任务时用
+// 关闭详情页轮询——离开详情 / 切任务时用
 function closeModalLive() {
-  closeModalSse();
   if (modalPollTimer) { clearInterval(modalPollTimer); modalPollTimer = null; }
+  modalPollBusy = false;
 }
 
 function startModalPoll(taskKey) {
@@ -983,72 +1079,49 @@ function startModalPoll(taskKey) {
   modalPollTimer = setInterval(() => pollTaskDetail(taskKey), MODAL_POLL_MS);
 }
 
-// 详情页刷新总控：无条件起常驻轮询（任何状态都刷「任务信息卡 + state」，补上 modal 打开期间被门控的
-// 看板主轮询）；processing 任务再叠加块级 SSE 做消息体近实时（此时轮询只刷侧栏、不重复拉 worker-log）。
+// 详情页刷新总控：只保留 JSONL revision 轮询；内容变化时再读取并解析完整记录。
 function ensureModalLive(taskKey) {
   closeModalLive();
-  startModalPoll(taskKey);   // 常驻：侧栏卡片稳定刷（heartbeat/耗时/state/工作时长/git 不再滞后）
-  const t = findTaskInState(taskKey);
-  if (t?.state !== 'processing' || typeof EventSource === 'undefined') return;   // 非 processing / 无 SSE：只靠轮询
-  const es = new EventSource(`/api/worker-log/stream?taskKey=${encodeURIComponent(taskKey)}`);
-  modalSse = es;
-  es.onmessage = (ev) => {
-    if (!modalOpen || modalPollTaskKey !== taskKey) { closeModalLive(); return; }
-    let payload = null;
-    try { payload = JSON.parse(ev.data); } catch { return; }
-    if (payload && payload.ok) applyStreamedWorkerLog(taskKey, payload);
-  };
-  es.addEventListener('done', () => { closeModalSse(); pollTaskDetail(taskKey); });   // SSE 收敛：只关 SSE，轮询继续刷卡
-  es.onerror = () => { closeModalSse(); };   // SSE 掉线：回落常驻轮询兜底拉 worker-log
+  startModalPoll(taskKey);
 }
 
-// 消费 SSE 推来的 worker-log：消息流立即用推送数据渲染（不阻塞），侧栏卡片同步一次
-async function applyStreamedWorkerLog(taskKey, r) {
-  currentModalData = r;
-  const histLen = (findTaskInState(taskKey)?.history || []).length;
-  const fp = modalContentFp(r, r.state, histLen);
-  if (fp !== lastModalFp) { lastModalFp = fp; renderModalBody(true); }
-  try {
-    stateData = await api('/api/state');
-    if (Array.isArray(stateData?.runtime?.providers) && stateData.runtime.providers.length) {
-      providerCatalog = stateData.runtime.providers;
-      newTaskProviderCtl?.refresh();
-    }
-    if (!modalOpen || modalPollTaskKey !== taskKey) return;
-    renderTaskSide(taskKey);
-    updateReplyBoxAvailability(taskKey);
-    const t = findTaskInState(taskKey);
-    if (t && t.state !== 'processing') closeModalSse();   // 收敛：只关 SSE，常驻轮询继续刷卡
-  } catch { /* state 抖动：忽略，下一帧再同步 */ }
-}
-
-// 详情页常驻轮询（任何状态/模式一 tick 一刷）：拉 state 刷「任务信息卡」——侧栏无滚动/展开态，
-// 每 tick 直接重画拿最新 heartbeat/耗时/state/工作时长/git，不再受消息指纹门控而滞后。
-// 非 live 的 processing 任务且无块级 SSE 时，顺带拉 worker-log 兜底刷消息体（指纹变才重画，保滚动）。
+// 详情页常驻轮询：高频请求只读取 JSONL stat revision；文件变化后才取完整记录。
+// /api/state 独立低频刷新，避免其 3s 缓存被 1.5s 详情轮询持续击穿。
 async function pollTaskDetail(taskKey) {
   if (!modalOpen || modalPollTaskKey !== taskKey) { closeModalLive(); return; }
+  if (modalPollBusy) return;
+  modalPollBusy = true;
   try {
-    stateData = await api('/api/state');
+    const now = Date.now();
+    const shouldRefreshState = now - modalLastStatePollAt >= MODAL_STATE_POLL_MS;
+    const [revision, nextState] = await Promise.all([
+      api(`/api/worker-log/revision?taskKey=${encodeURIComponent(taskKey)}`),
+      shouldRefreshState ? api('/api/state') : Promise.resolve(null),
+    ]);
     if (!modalOpen || modalPollTaskKey !== taskKey) return;
-    const t = findTaskInState(taskKey);
-    // 会话变活（queued 自动起会话 / CLI 收养 / 续接）→ 切 live 模式重新分派（会重挂 SSE + 常驻轮询）
-    if (t?.mbSessionId && !mb) { loadTaskDetail(taskKey); return; }
-    // 侧栏卡片每 tick 重画（与消息体解耦：这是"刷新不及时"的根因）
-    renderTaskSide(taskKey);
-    // 回复框仅在 composer 形态变了才重装（否则会清空用户正在输入的文本 / 抢焦点）
-    if (replyBoxFp(t) !== lastReplyFp) updateReplyBoxAvailability(taskKey);
-    // 消息体：live 会话由 mb SSE 维护、块级 SSE 在跑时交给 SSE；非 live 且刚进 processing 且没挂 SSE →
-    // 升级到块级 SSE 做近实时（覆盖"打开时还是 queued、看着看着起跑"的场景）；无 SSE 环境则轮询兜底拉 worker-log
-    if (!mb && !modalSse && t?.state === 'processing') {
-      if (typeof EventSource !== 'undefined') { ensureModalLive(taskKey); return; }
-      const r = await api(`/api/worker-log?taskKey=${encodeURIComponent(taskKey)}`);
-      if (r.ok) {
-        currentModalData = r;
-        const fp = modalContentFp(r, t.state, (t.history || []).length);
-        if (fp !== lastModalFp) { lastModalFp = fp; renderModalBody(true); }
+    let shouldRenderSide = false;
+    if (nextState) {
+      stateData = nextState;
+      modalLastStatePollAt = now;
+      shouldRenderSide = true;
+    }
+    if (revision?.ok && revision.revision !== lastModalRevision) {
+      const record = await api(`/api/worker-log?taskKey=${encodeURIComponent(taskKey)}`);
+      if (!modalOpen || modalPollTaskKey !== taskKey) return;
+      if (record?.ok) {
+        currentModalData = record;
+        lastModalRevision = record.revision || revision.revision;
+        renderModalBody(true);
+        shouldRenderSide = true;
       }
     }
+    if (shouldRenderSide) {
+      renderTaskSide(taskKey);
+      const nextReplyFp = replyBoxFp(findTaskInState(taskKey));
+      if (nextReplyFp !== lastReplyFp) updateReplyBoxAvailability(taskKey);
+    }
   } catch { /* 网络抖一下别把 modal 打坏，静默继续 */ }
+  finally { modalPollBusy = false; }
 }
 
 // 在 stateData 里找当前任务（跨所有分区，包括 archived）
@@ -1163,17 +1236,17 @@ function router() {
     a.classList.toggle('active', a.dataset.nav === view || (fullBleed && a.dataset.nav === 'board'));
   });
 
-  // 离开详情页：停详情实时通道（SSE + 兜底轮询）+ 断开 live 会话前端 SSE（后端进程继续跑）+ 刷看板重置计时
+  // 离开详情页：停止 JSONL 轮询并刷新看板。
   if (view !== 'task' && modalOpen) {
     modalOpen = false;
     modalPollTaskKey = null;
     closeModalLive();
-    if (mb) mbDetach();
     $('modalReplyBox').style.display = 'none';
     refreshState();
     scheduleStateRefresh();
   }
   if (view === 'task' && taskKey) loadTaskDetail(taskKey);
+  if (view === 'archive') renderArchive(stateData?.lifecycle);
   if (view === 'settings') refreshCloudStatus();
   if (view === 'apikeys') refreshApiKeys();
   window.scrollTo(0, 0);
@@ -1215,24 +1288,20 @@ const DETAIL_SIDE_W_MIN = 280;
 // 否则每 tick 重装会清空用户正在输入的文本 + 抢焦点（CLI 空闲 / 可对话分支会 text.value='' + focus）。
 function replyBoxFp(t) {
   return JSON.stringify([
-    t?.state, t?.mbSessionId || null, t?.source, !!t?.meta?.sessionId,
+    t?.state, t?.source, !!t?.meta?.sessionId,
     !!t?.lease?.alive, !!t?.isArchive, t?.externalSession?.pid || null, t?.externalSession?.status || null, t?.cli?.archivedAt || null,
   ]);
 }
 
-// 取任务「当前实际」model/effort：live 会话读 mb.info（后端序列化即带 model/effort）；否则读详情末轮 systemInit/ccSummary.model + t.effort
+// 取任务当前实际 model/effort：以最近一轮 JSONL 解析结果为准。
 function currentActualModelEffort(taskKey) {
   const t = findTaskInState(taskKey);
-  if (t?.mbSessionId && mb && mb.id === t.mbSessionId && mb.info) {
-    return { provider: mb.info.provider || t?.provider || 'claude', model: mb.info.model || null, effort: mb.info.effort || t?.effort || null };
-  }
   const rounds = (currentModalData?.rounds || []).filter((x) => !x.error);
   const lastOk = rounds[rounds.length - 1] || null;
   return { provider: t?.provider || 'claude', model: lastOk?.ccSummary?.model || lastOk?.systemInit?.model || null, effort: lastOk?.systemInit?.effort || t?.effort || null };
 }
 
-// ---- 继续对话区：三态状态机（可对话 / 处理中 / 需重发 / 不可用）----
-// 每次 open modal 都会调；状态徽章 + 说明 + 输入区 / 重发区之间切换
+// ---- 轻量继续对话区：空闲 session 可回复；执行中只读；无 session 才显示首次重发/确认。 ----
 function updateReplyBoxAvailability(taskKey) {
   const box = $('modalReplyBox');
   const stateTag = $('modalReplyState');
@@ -1252,12 +1321,9 @@ function updateReplyBoxAvailability(taskKey) {
   lastReplyFp = replyBoxFp(t);   // 每次装配都刷新基线，常驻轮询据此判定后续是否需要重装
   const hasSid = !!(t?.meta?.sessionId);
   const processing = t?.state === 'processing';
-  // 被旁观的 CLI 会话（watchlist 出卡，带 t.cli 详情）走「收养续接」分支；物化后的 CLI 任务无 t.cli，与其它来源
-  // 一样走托管任务的统一回复路径（sendReply → --resume）。按「有无 t.cli」而非按 source 判（任务来源不变量）。
-  const isObservedCli = !!t?.cli;
-  // queued 场景 = 新建入队 / 中断后回排队；由用户从看板拉起（重新发起）；lease 存活 = worker 在起，不给重发
+  // queued 场景 = 新建入队 / 中断后回排队；lease 存活 = worker 在起，不给重发。
   const canRestart = !hasSid && ['awaiting-human', 'queued'].includes(t?.state) && !t?.lease?.alive && !t?.isArchive;
-  const canReply = hasSid && !processing && !isObservedCli;
+  const canReply = hasSid && !processing && !t?.isArchive && !t?.externalSession;
 
   box.style.display = 'block';
   toast.style.display = 'none';
@@ -1271,75 +1337,31 @@ function updateReplyBoxAvailability(taskKey) {
   stateTag.style.color = '';
   stateTag.style.display = '';
   hint.style.display = '';
-  // 状态头默认显示；实时会话（Mode B）分支会隐藏整条（见下方 mbSessionId 分支）
+  // 状态头默认显示；可回复时仅保留轻量输入框。
   if (stateTag.parentElement) stateTag.parentElement.style.display = '';
   // 清旧事件监听（防止上次 modal 的旧 handler 残留）
   send.onclick = null;
   restartBtn.onclick = null;
   text.onkeydown = null;
   text.oninput = null;
-  const interruptBtn = $('modalReplyInterrupt');
-  if (interruptBtn) { interruptBtn.style.display = 'none'; interruptBtn.onclick = null; }
-
-  // 有活 Mode B 会话 → 实时 composer：常开输入 + 打断 + 发送走 mbSend；处理中也能插话/打断（D-c，去掉旧"处理中禁发"）。
-  // 不清空 text.value（本函数可能在 live 中多次调，保住用户正在输入的内容）。
-  if (t?.mbSessionId) {
-    replyBody.style.display = 'flex';
-    text.disabled = false; send.disabled = false;
-    // 实时会话不显示状态头（"生成中·可插话/打断 / 看板持有的实时会话… / token 读数"整条去掉）——直接常开输入 + 打断
-    if (stateTag.parentElement) stateTag.parentElement.style.display = '';
-    stateTag.style.display = 'none';
-    hint.style.display = 'none';
-    if (mb && mb.id === t.mbSessionId) {
-      const running = mb.state === 'running' || mb.state === 'starting';
-      // 打断只在「正在生成」时有意义：非 running 用 display 隐藏（而非灰化占位），一轮收敛即消失。
-      if (interruptBtn) { interruptBtn.style.display = running ? '' : 'none'; interruptBtn.onclick = () => mbInterrupt(); }
-    }
-    updateReplyCount(text.value.length, countEl);
-    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.provider, me.model, me.effort); }
-    send.onclick = () => mbSend();
-    text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); mbSend(); } };
-    text.oninput = () => updateReplyCount(text.value.length, countEl);
-    return;
-  }
-
   // 本地其它客户端显式持有同一 session 时不允许并发写入；避免两个运行时进程竞争同一对话。
-  if (t?.externalSession?.pid) {
+  if (t?.externalSession) {
     stateTag.className = 'tag tag-amber';
-    stateTag.textContent = '会话已在其他客户端打开';
-    hint.innerHTML = `该 session 正由其他客户端使用（pid=<b>${t.externalSession.pid}</b>）· 请直接在原窗口回复，关闭后即可在看板继续对话。`;
-    return;
-  }
-
-  // 被旁观的 CLI 会话三态：正在算 → 等；空闲无进程 → 收养续接成 live（--resume）
-  if (isObservedCli) {
-    stateTag.className = 'tag';
-    stateTag.style.background = 'var(--brandS)';
-    stateTag.style.color = 'var(--brand)';
-    if (t.state === 'processing') {
-      stateTag.textContent = 'CLI · 处理中';
-      hint.innerHTML = 'session 正在算（可能是上一条看板回复在跑）· 等它收敛后可继续发';
-      return;
+    if (t.externalSession.status === 'checking') {
+      stateTag.textContent = '正在检查会话占用';
+      hint.innerHTML = '正在确认 Codex CLI / Desktop 是否持有此 session…';
+    } else if (t.externalSession.status === 'desktop') {
+      stateTag.textContent = '已在 Codex Desktop 打开';
+      hint.innerHTML = '该 session 已由正在运行的 <b>Codex Desktop</b> 托管· 请直接在 Desktop 原窗口回复；退出 Desktop 后即可在看板继续对话。';
+    } else {
+      stateTag.textContent = '会话已在其他客户端打开';
+      hint.innerHTML = `该 session 正由其他客户端使用（pid=<b>${t.externalSession.pid}</b>）· 请直接在原窗口回复，关闭后即可在看板继续对话。`;
     }
-    // 空闲且无占用：开放 composer，发消息 = 收养成 Mode B 实时会话并把消息作为首条发出（--resume + 全部历史），跳会话视图
-    stateTag.textContent = 'CLI · 可续接对话';
-    hint.innerHTML = t?.provider === 'codex'
-      ? '发消息将在看板通过 Codex <b>续接成实时会话</b>（带执行历史，可连续多轮）'
-      : '终端已关闭 · 发消息将在看板<b>续接成实时会话</b>（带全部历史，可连续多轮）';
-    replyBody.style.display = 'flex';
-    text.disabled = false; send.disabled = false;
-    text.value = '';
-    updateReplyCount(0, countEl);
-    if (typeof window.__seedReplyModel === 'function') { const me = currentActualModelEffort(taskKey); window.__seedReplyModel(me.provider, me.model, me.effort); }
-    send.onclick = () => sendCliContinue(taskKey);
-    text.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendCliContinue(taskKey); } };
-    text.oninput = () => updateReplyCount(text.value.length, countEl);
-    setTimeout(() => text.focus(), 60);
     return;
   }
 
   if (canReply) {
-    // 隐掉状态头（「可继续对话 / 同 session --resume，cache_read 命中省 token」提示）——直接常开输入即可，无需这条说明
+    // observed CLI 首次回复会在后端先物化，再走与其它来源相同的一次性 resume。
     if (stateTag.parentElement) stateTag.parentElement.style.display = '';
     stateTag.style.display = 'none';
     hint.style.display = 'none';
@@ -1358,7 +1380,7 @@ function updateReplyBoxAvailability(taskKey) {
   if (processing) {
     stateTag.className = 'tag tag-amber';
     stateTag.textContent = '处理中';
-    hint.innerHTML = '任务正在跑（<b>state=processing</b>）· 等 worker 收尾后可继续对话';
+    hint.innerHTML = '本轮正在执行；这里只轮询展示 JSONL，收敛后可继续回复';
     return;
   }
   if (t?.state === 'plan' && !t?.isArchive) {
@@ -1435,12 +1457,6 @@ window.restartTaskAction = restartTaskAction;
 // ===== 添加本地文件（新建任务 / 详情回复共用）=====
 // 取路径的文件名（Windows/Posix 分隔符都吃）
 function baseName(p) { return String(p || '').split(/[\\/]/).pop() || String(p || ''); }
-// 与后端 session-manager.appendAttachments 同款拼接格式（乐观回显用），改格式需两处同步。
-function attachSuffix(text, files) {
-  const list = (files || []).map((f) => String(f || '').trim()).filter(Boolean);
-  if (!list.length) return String(text || '');
-  return `${String(text || '')}\n\n[附加本地文件 · 请用 Read 工具读取]\n${list.map((f) => `- ${f}`).join('\n')}`;
-}
 // 附件管理器：维护一组绝对路径，「+」按钮调 /api/pick-file（Electron 多选）追加，chip 可删。
 function makeAttachController({ btnId, boxId }) {
   let files = [];
@@ -1507,63 +1523,18 @@ async function sendReply(taskKey) {
     text.value = '';
     replyAttachCtl.clear();
     updateReplyCount(0);
-    // reply 走 --resume 重挂了一个绑定该任务的 Mode B 会话（后端已 seed 历史 + 这条回复）。
-    // 立即刷 state 让 mbSessionId 现身、重载详情进 live（连 SSE 回放 seed → 历史 + 这条继续即时可见），
-    // 不再死等 10s（旧 setTimeout 期间消息不显示 + 页面冻在旧只读历史，体验差）。
     await refreshState();
-    if (modalOpen && modalPollTaskKey === taskKey) loadTaskDetail(taskKey);
+    if (modalOpen && modalPollTaskKey === taskKey) {
+      renderTaskSide(taskKey);
+      updateReplyBoxAvailability(taskKey);
+      showReplyToast('已发出；执行记录会随 JSONL 轮询更新', 'ok');
+    }
   } catch (e) {
     showReplyToast(e.message, 'err');
   } finally {
     send.disabled = false; text.disabled = false; send.classList.remove('busy');
   }
 }
-
-// CLI 会话「发送消息」= 收养成 Mode B 实时会话并把这条消息作为首条发出（--resume + 全部历史），跳会话视图。
-// 消息不塞进 adopt（createSession(prompt) 走 sendUserMessage 不进 transcript、视图看不到）——改为收养后由
-// 会话视图 synced 时 mbSend 乐观回显发出，保证消息可见。pendingCliMessage 只在收养成功后置、消费一次即清。
-let pendingCliMessage = null;
-// 收养 CLI session 成 Mode B live 会话：taskKey 透传绑该任务，msg 不塞进 adopt 而是置 pendingCliMessage，
-// 详情连上 live 会话 synced 后经 mbSend 乐观回显发出（保证可见），再跳详情进 live。
-// 续接（sendCliContinue）与 rewind（先截断再收养）共用。返回 api 结果（{ok} 或 {ok:false,error}）。
-async function adoptCliToLive({ taskKey, sessionId, provider, jsonlPath, msg, model, effort }) {
-  const body = { sessionId, taskKey, provider };
-  if (jsonlPath) body.jsonlPath = jsonlPath;
-  if (model) body.model = model;
-  if (effort) body.effort = effort;
-  const r = await api('/api/session/adopt', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  if (!r.ok) return r;
-  pendingCliMessage = msg;                                    // 详情连上 live 会话 synced 后自动发出
-  await refreshState();                                       // 让 mbSessionId 现身，详情才能分派到 live
-  const target = '#/task/' + encodeURIComponent(taskKey);
-  if (location.hash === target) loadTaskDetail(taskKey);      // 已在该详情：hash 不变，直接重载进 live
-  else location.hash = target;                                // 否则触发 router → loadTaskDetail
-  return { ok: true };
-}
-async function sendCliContinue(taskKey) {
-  const text = $('modalReplyText');
-  const send = $('modalReplySend');
-  const model = $('modalReplyModel').value;
-  const effort = $('modalReplyEffort').value;
-  const msg = text.value.trim();
-  if (!msg) { showReplyToast('消息不能为空', 'err'); return; }
-  const t = findTaskInState(taskKey);
-  const sessionId = t?.meta?.sessionId;
-  if (!sessionId) { showReplyToast('该会话无 sessionId，无法续接', 'err'); return; }
-  if (t?.state === 'processing') { showReplyToast('会话仍在运行——先退出终端再续接，避免两个进程同写一个会话', 'err'); return; }
-  send.disabled = true; text.disabled = true; send.classList.add('busy');
-  try {
-    const r = await adoptCliToLive({ taskKey, sessionId, provider: t?.provider || 'claude', jsonlPath: t?.cli?.jsonlPath, msg, model, effort });
-    if (!r.ok) { showReplyToast(r.error || '未知错误', 'err'); return; }
-  } catch (e) {
-    showReplyToast(e.message, 'err');
-  } finally {
-    send.disabled = false; text.disabled = false; send.classList.remove('busy');
-  }
-}
-window.sendCliContinue = sendCliContinue;
 
 // ---- Escape helpers ----
 function escapeHtml(s) {
@@ -1627,6 +1598,20 @@ function ccAccountUsageBarsHtml(cu, pollInfo) {
   const lastTxt = poll.lastRunAt ? hhmm(poll.lastRunAt) : '—';
   const foot = `<div class="cc-usage-note" style="margin-top:10px">上次刷新 ${lastTxt} · 基准约 ${intervalMin} 分钟、随机抖动拉取${poll.lastOk === false ? ' · <span style="color:var(--coral)">上次拉取失败</span>' : ''}</div>`;
   return `<div class="cc-usage">${ccUsageBody(cu)}${foot}</div>`;
+}
+
+// Codex has no equivalent local /usage command in this integration.  Its
+// rollout token_count events do carry the account rate-limit snapshot, so show
+// that read-only value and make the freshness explicit instead of claiming it
+// is a live API result.
+function codexAccountUsageBarsHtml(cu) {
+  if (!cu || cu.error === 'pending') return '<div class="cc-usage-note">用量加载中…（首次扫描本机 session JSONL）</div>';
+  if (!cu.ok || !cu.primary) return '<div class="cc-usage-note">最近 session 未记录可用的账号限额</div>';
+  const hours = cu.primary.windowMinutes ? (cu.primary.windowMinutes >= 1440 ? `${Math.round(cu.primary.windowMinutes / 1440)} 天` : `${Math.round(cu.primary.windowMinutes / 60)} 小时`) : '主额度';
+  const secondary = cu.secondary ? ccUsageBarHtml('次级额度', cu.secondary) : '';
+  const observed = cu.observedAt ? new Date(cu.observedAt).toLocaleString('zh-CN', { hour12: false }) : '—';
+  const plan = cu.planType ? ` · ${escapeHtml(cu.planType)}` : '';
+  return `<div class="cc-usage">${ccUsageBarHtml(hours, cu.primary)}${secondary}<div class="cc-usage-note" style="margin-top:10px">最近记录 ${escapeHtml(observed)}${plan} · 只读 session 记录，非实时查询</div></div>`;
 }
 
 // token 压缩显示（对齐 renderRuntime 的 compact：百万级用 K/M/B）
@@ -1768,21 +1753,18 @@ function renderTaskSide(taskKey) {
     ? `<div style="margin-top:10px;font-size:12px"><a href="${escapeAttr(t.business.commentUrl)}" target="_blank" style="color:var(--cyan)">↗ 已发 issue 评论</a></div>`
     : '';
   // 快捷操作（与看板卡片同一套全局动作，按状态统一）：完成/取消完成/归档/取消归档 对所有来源一致；
-  // 仅执行差异按 t.cli（被旁观 CLI）分支——其 processing 不干预终端进程、归档区额外「从看板移除」。
+  // 仅执行差异按 t.cli（被旁观 CLI）分支——其 processing 不干预外部进程、归档区额外「从看板移除」。
   const btns = [];
   const _bk = escapeAttr(t.taskKey);
   if (t.isArchive) {
     btns.push(`<button class="btn" onclick="unarchiveTaskAction('${_bk}')">↺ 取消归档</button>`);
     if (isObservedCli) btns.push(`<button class="btn btn-danger" onclick="removeCliSession('${escapeAttr(t.meta?.sessionId || '')}')">从看板移除</button>`);
+    else btns.push(`<button class="btn btn-danger" onclick="deleteTaskAction('${_bk}', true)">永久删除</button>`);
   } else if (t.state === 'plan') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="approveTaskAction('${_bk}')">▶ 确认排队</button>`);
     btns.push(`<button class="btn" onclick="archiveTask('${_bk}')">归档</button>`);
   } else if (['queued', 'processing'].includes(t.state)) {
-    // live 会话已收敛（idle/closed）但任务 state 还没轮询刷成 awaiting-human 的空窗期，不再显示「中断」——
-    // 与「打断」同源于 mb.state，result 一到即随 mbSyncLiveHead→renderTaskSide 一起隐藏，不必等 5s 轮询。
-    // 非 live 任务（无 mb / 不匹配）→ liveRunning 恒真，按 t.state 原逻辑显示，不受影响。
-    const liveRunning = !mb || mb.id !== t.mbSessionId || mb.state === 'running' || mb.state === 'starting';
-    if (!isObservedCli && liveRunning) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
+    if (!isObservedCli) btns.push(`<button class="btn btn-danger" onclick="cancelTaskAction('${_bk}')">中断</button>`);
   } else if (t.state === 'awaiting-human') {
     btns.push(`<button class="btn" style="color:var(--jade);border-color:color-mix(in oklab, var(--success) 40%, transparent)" onclick="completeTaskAction('${_bk}')">✓ 完成</button>`);
     btns.push(`<button class="btn" style="color:var(--cyan)" onclick="moveToPlanAction('${_bk}')">↩ 退回计划</button>`);
@@ -2227,7 +2209,7 @@ const LOCAL_CMD_CAVEAT_RE = /^\s*(?:<local-command-caveat>\s*)?Caveat: The messa
 //      只能按这个稳定首行识别，否则被错渲成右侧用户气泡。
 //      （注：⎿ "Launching skill: X" 那行回执本身是结构化 tool_result，已被 units 过滤配对，不经这里。）
 // 磁盘 jsonl 里 CC 那条带 isMeta:true（disk 路径靠 isMeta 也能归位），但 runner 注入的这条 isMeta 缺失、
-// 且 Mode B live 的 stream-json 输出根本不带 isMeta envelope，两路都只能按内容识别，否则被错渲成用户气泡。
+// 旧 session journal 的 stream-json 输出不带 isMeta envelope，只能按内容识别，否则会被错渲成用户气泡。
 const CC_SYNTHETIC_RE = /^\s*Your tool call was malformed and could not be parsed\. Please retry\.\s*$/;
 const INJECTED_RETRY_RE = /把工具调用输出成了文本[\s\S]*请用结构化工具重新发起这次调用/;
 const INTERRUPT_RE = /^\s*\[Request interrupted by user(?: for tool use)?\]\s*$/;
@@ -2252,46 +2234,6 @@ function pickCommandArgs(text) {
   return (m?.[1] ?? '').trim();
 }
 
-// 原地 rewind：改写某条历史 user 消息并从那里重新执行（对齐 CC 交互 double-Esc rewind：同一 session、同一张卡片；
-// 被截掉的原时间线直接丢弃、不备份）。统一入口覆盖观察态 CLI + 托管任务，后端截断 jsonl 后按 hosted 分派重跑：
-//   · hosted=false（观察态 cli 会话）→ 前端收养成 Mode B live 会话、把改写后的消息从截断处叶子重跑（同「续接」路径）。
-//   · hosted=true（托管任务）→ 后端已 park 空转会话 + 截断 + --resume 重跑，前端刷 state 让新 mbSessionId 现身进 live。
-window.rewindMessage = async (uuid) => {
-  const taskKey = modalPollTaskKey;
-  if (!taskKey) return;
-  // 从当前详情数据里找原文，预填编辑框
-  let original = '';
-  for (const rd of currentModalData?.rounds || []) {
-    const m = (rd.messages || []).find((x) => x.uuid === uuid);
-    if (m) { original = (m.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n'); break; }
-  }
-  const v = await customPrompt({
-    title: '改写并从这里重新执行（rewind）',
-    message: '<span style="color:var(--mut);font-size:11px">同一会话内 rewind：这条消息及之后的时间线被<b>替换</b>为你改写的内容重跑（原时间线丢弃，同 CC 交互的 rewind）。</span>',
-    initial: original,
-    placeholder: '改写这条消息…',
-  });
-  if (v === null || !v.trim()) return;
-  try {
-    // 后端截断 jsonl 到目标消息之前，返回 { hosted, sid? }
-    const r = await api('/api/task/rewind', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskKey, uuid, message: v.trim() }),
-    });
-    if (!r.ok) { customAlert({ title: 'rewind 失败', message: escapeHtml(r.error || '未知错误') }); return; }
-    if (r.hosted) {
-      // 托管任务：后端已 --resume 重跑 → 刷 state 让新 mbSessionId 现身、重载详情进 live（历史(截断后)+改写消息即时可见）
-      await refreshState();
-      if (modalOpen && modalPollTaskKey === taskKey) loadTaskDetail(taskKey);
-    } else {
-      // 观察态 CLI：截断后收养成 Mode B live 会话，把改写后的消息作新一轮从截断处重跑
-      const rr = await adoptCliToLive({ taskKey, sessionId: r.sid, msg: v.trim() });
-      if (!rr.ok) { customAlert({ title: 'rewind 后续接失败（jsonl 已截断，可在卡片里直接续接重发）', message: escapeHtml(rr.error || '未知错误') }); return; }
-    }
-  } catch (e) { customAlert({ title: 'rewind 失败', message: escapeHtml(e.message) }); }
-};
-
 // User turn（worker 外壳给 claude 的 prompt 模板，不是真人发送的 cc:；真人 cc: 在会话卡顶部单独展示）
 function renderUserTurn(m) {
   const textParts = (m.content || []).map((c) => {
@@ -2312,19 +2254,9 @@ function renderUserTurn(m) {
   const bubble = text.length > 800
     ? `<details><summary style="cursor:pointer;list-style:none;white-space:pre-wrap;word-break:break-word;line-height:1.7"><span style="color:var(--amber);font-size:10.5px;font-family:var(--mono);margin-right:6px;background:var(--amberS);padding:1px 6px;border-radius:4px">▸ prompt 模板 · ${text.length}c</span></summary><div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--hair);white-space:pre-wrap;word-break:break-word">${escaped}</div></details>`
     : escaped;
-  // 改写重跑按钮：消息有 uuid（观察态 cli 走 watchlist sid、托管任务走 meta.sessionId，两路 rewindTaskMessage 统一处理）+
-  // 该任务有可 rewind 的会话（t.cli 观察态 ∪ 有 meta.sessionId 的托管任务）+ 非归档。uuid 只在磁盘/seed 消息上有，
-  // live 流的最新消息无 uuid（不给按钮，本也不该 rewind 刚发的消息）。不按 source 前缀特判——按真实能力门控。
-  const _rwT = findTaskInState(modalPollTaskKey);
-  const canRewind = m.uuid && !!(_rwT?.cli || _rwT?.meta?.sessionId) && !_rwT?.isArchive
-    && !!providerDef(_rwT?.provider || 'claude')?.capabilities?.rewind;
-  const rewindBtn = canRewind
-    ? `<div class="msg-rewind"><button class="btn" style="font-size:10px;padding:2px 9px;color:var(--dim)" onclick="rewindMessage('${escapeAttr(m.uuid)}')" title="改写这条消息并从这里重跑（这条及之后的时间线被替换，原时间线丢弃）">⑂ 改写重跑</button></div>`
-    : '';
   return `
     <div class="msg-user">
       <div class="msg-user-bubble" title="${escapeAttr(fmtTime(m.at))}">${bubble || '<em style="color:var(--dim)">(empty)</em>'}</div>
-      ${rewindBtn}
     </div>
   `;
 }
@@ -2507,8 +2439,11 @@ function akClearForm() {
 function renderAkProviderPolicy(provider, selectedModels = [], selectedEfforts = []) {
   const def = providerDef(provider) || providerDef('claude');
   const models = providerModels(def).filter((m) => m.value !== '__custom__');
+  // 移除“自定义模型”编辑输入，但编辑旧密钥时不能静默丢掉其已有自定义 model 白名单。
+  const known = new Set(models.map((m) => m.value));
+  const preservedModels = selectedModels.filter((m) => m && !known.has(m));
   $('akModelsBox').innerHTML = models.map((m) => `<label><input type="checkbox" value="${escapeAttr(m.value)}"${selectedModels.includes(m.value) ? ' checked' : ''}> ${escapeHtml(m.name)}</label>`).join('')
-    + (def?.allowCustomModel ? `<label style="margin-top:5px">自定义模型（每行一个）<textarea id="akCustomModels" class="field-input mono" rows="2" placeholder="gpt-5.4">${escapeHtml(selectedModels.filter(Boolean).join('\n'))}</textarea></label>` : '');
+    + `<input type="hidden" id="akPreservedModels" value="${escapeAttr(JSON.stringify(preservedModels))}">`;
   $('akEffortsBox').innerHTML = providerEfforts(def).map((e) => `<label><input type="checkbox" value="${escapeAttr(e.value)}"${selectedEfforts.includes(e.value) ? ' checked' : ''}> ${escapeHtml(e.name)}</label>`).join('');
 }
 function akOpenModal(k) {
@@ -2592,9 +2527,9 @@ function initApiKeysPage() {
     const source = $('akSourceInput').value.trim();
     const provider = $('akProviderInput').value || 'claude';
     const allowedModels = [...document.querySelectorAll('#akModelsBox input:checked')].map((x) => x.value);
-    for (const model of ($('akCustomModels')?.value || '').split(/\r?\n|,/).map((s) => s.trim()).filter(Boolean)) {
-      if (!allowedModels.includes(model)) allowedModels.push(model);
-    }
+    try {
+      for (const model of JSON.parse($('akPreservedModels')?.value || '[]')) if (model && !allowedModels.includes(model)) allowedModels.push(model);
+    } catch { /* 保留字段损坏则按当前可见勾选项保存 */ }
     const allowedEfforts = [...document.querySelectorAll('#akEffortsBox input:checked')].map((x) => x.value);
     const allowedCwds = $('akCwdsInput').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     const allowQueued = $('akAllowQueued').checked;
@@ -3013,7 +2948,7 @@ function renderCwdMenu() {
   const q = ($('newTaskCwd').value || '').trim().toLowerCase();
   const list = newTaskCwdOptions.filter((c) => !q || c.cwd.toLowerCase().includes(q));
   menu.innerHTML = list.length
-    ? list.map((c) => `<div class="cwd-item" role="option" data-cwd="${escapeAttr(c.cwd)}"><span class="cwd-path" title="${escapeAttr(c.cwd)}">${escapeHtml(c.cwd)}</span><span class="cwd-src">${c.source === 'task' ? '任务' : 'CLI'}</span></div>`).join('')
+    ? list.map((c) => `<div class="cwd-item" role="option" data-cwd="${escapeAttr(c.cwd)}"><span class="cwd-path" title="${escapeAttr(c.cwd)}">${escapeHtml(c.cwd)}</span><span class="cwd-src">${c.source === 'project' ? '项目' : c.source === 'task' ? '任务' : 'CLI'}</span></div>`).join('')
     : `<div class="cwd-empty">${newTaskCwdOptions.length ? '无匹配目录' : '暂无已用过的目录 · 直接填路径或点「浏览」'}</div>`;
 }
 function closeCwdMenu() { $('newTaskCwdMenu')?.classList.remove('open'); }
@@ -3297,7 +3232,7 @@ $('newTaskSubmit').addEventListener('click', async () => {
       return;
     }
     closeNewTaskModal();
-    // queued → 已自动起会话执行：跳任务详情 #/task/<key>，详情见 mbSessionId 自动进 live（逐字 / 权限 / 打断）。
+    // queued → 已自动起 provider 会话执行：跳任务详情，后续由 JSONL 轮询展示。
     // plan → 待确认，留在看板由用户「确认执行」。
     if (r.sessionUiId && r.taskKey) { await refreshState(); location.hash = '#/task/' + encodeURIComponent(r.taskKey); }
     else await refreshState();
@@ -3423,7 +3358,7 @@ window.addCliFromSearch = async (sid, provider = 'claude') => {
   } catch (e) { errBox.textContent = e.message; errBox.style.display = 'block'; }
 };
 
-// S10 收养：终端起的 CLI 会话 → 看板 Mode B 交互会话（--resume 续接，带全部历史）
+// CLI 观察卡取消归档 / 取消完成：后端按来源分派；首次回复时会自动物化并 resume。
 // 取消归档 / 取消完成：统一端点（/api/unarchive、/api/task/uncomplete），后端按来源分派——所有来源同一入口
 window.unarchiveTaskAction = async (taskKey) => {
   try {
@@ -3475,12 +3410,11 @@ const CLAUDE_MODEL_META = [
   { value: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', desc: '最快 · 最省 token' },
 ];
 const CODEX_MODEL_META = [
-  { value: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', desc: '复杂、开放式任务的细节与打磨' },
-  { value: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', desc: '日常工作的均衡主力' },
-  { value: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', desc: '明确、可重复的高吞吐任务' },
-  { value: 'gpt-5.5', name: 'GPT-5.5', desc: '高能力代码与推理' },
-  { value: 'gpt-5.4', name: 'GPT-5.4', desc: '稳定的通用编码模型' },
-  { value: 'gpt-5.4-mini', name: 'GPT-5.4 mini', desc: '更快、更轻量的任务' },
+  { value: 'gpt-5.6-sol', name: 'gpt-5.6-sol', desc: 'Latest frontier agentic coding model.' },
+  { value: 'gpt-5.6-terra', name: 'gpt-5.6-terra', desc: 'Balanced agentic coding model for everyday work.' },
+  { value: 'gpt-5.6-luna', name: 'gpt-5.6-luna', desc: 'Fast and affordable agentic coding model.' },
+  { value: 'gpt-5.5', name: 'gpt-5.5', desc: 'Frontier model for complex coding, research, and real-world work.' },
+  { value: 'gpt-5.3-codex-spark', name: 'gpt-5.3-codex-spark', desc: 'Ultra-fast coding model.' },
 ];
 // 容错映射：实测 CC 上报 model 即这些干净短 id，偶发带 -YYYYMMDD 后缀 → 归一到 BASE_MODELS 的 canonical value；认不出保留原值（诚实显示，不回落）
 function normalizeModelValue(raw) {
@@ -3497,7 +3431,8 @@ function providerModels(def) {
   const modelMeta = def?.id === 'codex' ? CODEX_MODEL_META : CLAUDE_MODEL_META;
   const items = values.map((value) => modelMeta.find((m) => m.value === value)
     || { value, name: value, desc: '' });
-  if (def?.allowCustomModel) {
+  // Codex 新建任务只展示当前官方模型目录，避免“CLI 默认 / 自定义模型”混在受支持模型中。
+  if (def?.allowCustomModel && def?.id !== 'codex') {
     items.unshift({ value: '', name: 'CLI 默认模型', desc: '使用本机 Codex 配置的默认模型' });
     items.push({ value: '__custom__', name: '自定义模型…', desc: '输入 Codex CLI 支持的模型 ID' });
   }
@@ -3579,11 +3514,19 @@ function initNewTaskProviderPicker() {
   };
 }
 function providerEfforts(def) {
+  const codex = {
+    low: { name: 'Low', desc: 'Fast responses with lighter reasoning' },
+    medium: { name: 'Medium', desc: 'Balances speed and reasoning depth for everyday tasks' },
+    high: { name: 'High', desc: 'Greater reasoning depth for complex problems' },
+    xhigh: { name: 'Extra high', desc: 'Extra high reasoning depth for complex problems' },
+    max: { name: 'Max', desc: 'Maximum reasoning · consumes usage limits faster', more: true },
+    ultra: { name: 'Ultra', desc: 'Ultra reasoning · consumes usage limits faster', more: true },
+  };
   return (Array.isArray(def?.efforts) ? def.efforts : []).map((value) => ({
     value,
-    name: value === 'xhigh' ? 'xHigh' : value.charAt(0).toUpperCase() + value.slice(1),
+    ...(def?.id === 'codex' ? (codex[value] || { name: value }) : { name: value === 'xhigh' ? 'xHigh' : value.charAt(0).toUpperCase() + value.slice(1) }),
     isDefault: value === def?.defaultEffort,
-    info: value === 'max' || value === 'ultra' ? '最深推理 · 最慢、最耗额度' : '',
+    info: def?.id !== 'codex' && (value === 'max' || value === 'ultra') ? '最深推理 · 最慢、最耗额度' : '',
   }));
 }
 
@@ -3603,12 +3546,19 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
   };
   let models = providerModels(def);
   let efforts = providerEfforts(def);
-  let subEffort, subModels, slotModelName, slotModelDesc, slotEffortVal;
+  let subEffort, subMoreReasoning, subModels, slotModelName, slotModelDesc, slotEffortVal;
 
   function rebuildMenu() {
-    const effortItems = efforts.map((e) => `
+    const directEfforts = efforts.filter((e) => !e.more);
+    const deeperEfforts = efforts.filter((e) => e.more);
+    const effortItems = directEfforts.map((e) => `
       <button type="button" class="mes-item" data-eff="${escapeAttr(e.value)}" role="menuitemradio">
-        <span class="mes-item-lead"><span class="mes-item-name">${escapeHtml(e.name)}</span>${e.isDefault ? '<span class="mes-item-default">默认</span>' : ''}${e.info ? `<span class="mes-item-info" title="${escapeAttr(e.info)}">ⓘ</span>` : ''}</span>
+        <span class="mes-item-lead"><span class="mes-item-copy"><span class="mes-item-name">${escapeHtml(e.name)}</span>${e.desc ? `<span class="mes-item-desc">${escapeHtml(e.desc)}</span>` : ''}</span>${e.isDefault ? '<span class="mes-item-default">默认</span>' : ''}${e.info ? `<span class="mes-item-info" title="${escapeAttr(e.info)}">ⓘ</span>` : ''}</span>
+        <span class="mes-item-check" aria-hidden="true">✓</span>
+      </button>`).join('');
+    const moreEffortItems = deeperEfforts.map((e) => `
+      <button type="button" class="mes-item" data-eff="${escapeAttr(e.value)}" role="menuitemradio">
+        <span class="mes-item-lead"><span class="mes-item-copy"><span class="mes-item-name">${escapeHtml(e.name)}</span>${e.desc ? `<span class="mes-item-desc">${escapeHtml(e.desc)}</span>` : ''}</span></span>
         <span class="mes-item-check" aria-hidden="true">✓</span>
       </button>`).join('');
     const modelItems = models.map((m) => `
@@ -3623,9 +3573,11 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
         <button type="button" class="mes-row mes-row-nav" data-nav="effort"><span class="mes-row-label">Effort</span><span class="mes-row-val" data-slot="effort-val"></span><span class="mes-row-arrow" aria-hidden="true">›</span></button>
         <button type="button" class="mes-row mes-row-nav" data-nav="models"><span class="mes-row-label">更多模型</span><span class="mes-row-arrow" aria-hidden="true">›</span></button>
       </div>
-      <div class="mes-sub" data-sub="effort"><div class="mes-sub-head">${escapeHtml(EFFORT_HEAD)}</div>${effortItems}</div>
+      <div class="mes-sub" data-sub="effort"><div class="mes-sub-head">${escapeHtml(def?.id === 'codex' ? '推理更充分会更慢；选择 More reasoning 可用 Max / Ultra。' : EFFORT_HEAD)}</div>${effortItems}${deeperEfforts.length ? `<button type="button" class="mes-item mes-item-more" data-nav="more-reasoning"><span class="mes-item-lead"><span class="mes-item-copy"><span class="mes-item-name">More reasoning…</span><span class="mes-item-desc">Max and Ultra consume usage limits faster</span></span></span><span class="mes-row-arrow">›</span></button>` : ''}</div>
+      <div class="mes-sub" data-sub="more-reasoning"><div class="mes-sub-head">More reasoning</div>${moreEffortItems}</div>
       <div class="mes-sub" data-sub="models">${modelItems}</div>`;
     subEffort = menu.querySelector('.mes-sub[data-sub="effort"]');
+    subMoreReasoning = menu.querySelector('.mes-sub[data-sub="more-reasoning"]');
     subModels = menu.querySelector('.mes-sub[data-sub="models"]');
     slotModelName = menu.querySelector('[data-slot="model-name"]');
     slotModelDesc = menu.querySelector('[data-slot="model-desc"]');
@@ -3646,6 +3598,7 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
     btnEffort.textContent = e.name;
     subModels.querySelectorAll('.mes-item').forEach((it) => it.classList.toggle('active', it.dataset.model === modelSel.value));
     subEffort.querySelectorAll('.mes-item').forEach((it) => it.classList.toggle('active', it.dataset.eff === effortSel.value));
+    subMoreReasoning?.querySelectorAll('.mes-item').forEach((it) => it.classList.toggle('active', it.dataset.eff === effortSel.value));
   }
   // 容忍不在下拉里的真实 model id（带版本/未知）：先补一个 <option>，否则原生 select 会把未知 value 吞成 ''
   const setModel = (v) => {
@@ -3674,11 +3627,13 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
     openSub = which;
     subEffort.classList.toggle('open', which === 'effort');
     subModels.classList.toggle('open', which === 'models');
-    const sub = which === 'effort' ? subEffort : subModels;
+    subMoreReasoning?.classList.toggle('open', which === 'more-reasoning');
+    const sub = which === 'effort' ? subEffort : which === 'models' ? subModels : subMoreReasoning;
+    if (!sub) return;
     sub.classList.remove('flip');
     requestAnimationFrame(() => { if (sub.getBoundingClientRect().right > window.innerWidth - 8) sub.classList.add('flip'); });
   };
-  const hideSub = () => { openSub = null; subEffort.classList.remove('open'); subModels.classList.remove('open'); };
+  const hideSub = () => { openSub = null; subEffort.classList.remove('open'); subModels.classList.remove('open'); subMoreReasoning?.classList.remove('open'); };
 
   let scrollHost = null;
   const closeMenu = () => {
@@ -3772,418 +3727,6 @@ function scheduleStateRefresh() {
   if (stateTimer) clearInterval(stateTimer);
   stateTimer = setInterval(() => { if (!modalOpen) refreshState(); }, refreshStateMs);
 }
-
-// ==== Mode B 交互会话（S5：看板持有的 claude 会话 · 逐字 / 权限确认 / 打断）====
-let mb = null;   // { id, sse, transcript:[], liveText, perms:[], info, state, syncing }
-
-// 交互会话不再有独立视图——统一渲染进任务详情 #/task/<key>（loadTaskDetail 见 mbSessionId 时调本函数）。
-// 逐字 / 权限卡 / 打断 / 状态行渲染进 #modalBody；会话状态并入右侧 renderTaskSide；composer 走 #modalReplyBox。
-
-// 只关前端 SSE，不 close 后端进程（离开详情 / 切任务时用；会话继续跑，再进来重连回放）
-function mbDetach() {
-  mbStopStatusTimer();
-  if (mbFlushRaf) { cancelAnimationFrame(mbFlushRaf); mbFlushRaf = null; }
-  if (mb?.sse) { try { mb.sse.close(); } catch { /* ignore */ } }
-  mb = null;
-  // 后台任务栏属于会话——离开详情/切任务必须清掉，否则残留在下一个任务上
-  const bg = $('modalBgTasks');
-  if (bg) { bg.style.display = 'none'; bg.innerHTML = ''; }
-}
-
-function loadSession(id) {
-  if (mb && mb.id === id && mb.sse) return;   // 已在该会话，避免重复连
-  mbDetach();
-  mb = { id, sse: null, transcript: [], liveText: '', perms: [], info: {}, state: 'starting', syncing: true, liveUsage: null, turnStartedAt: null, gerundSeed: 0, bgTasks: [], bgOutFor: null };
-  $('modalBody').innerHTML = '<div style="color:var(--dim);padding:12px 0">连接实时会话…</div>';
-  mbSyncLiveHead();
-  const es = new EventSource(`/api/session/stream?id=${encodeURIComponent(id)}`);
-  mb.sse = es;
-  // info 里带后台任务当前全表：transcript 有上限（会 shift 丢头），万一回放里已无 background_tasks_changed
-  // 事件，仍能据此还原；回放中若有更新的该事件会覆盖它（回放尾 = 最新态）。
-  es.addEventListener('info', (e) => {
-    try {
-      mb.info = JSON.parse(e.data); mb.state = mb.info.state || mb.state;
-      if (Array.isArray(mb.info.backgroundTasks)) mb.bgTasks = mb.info.backgroundTasks;
-      mbSyncLiveHead();
-    } catch { /* ignore */ }
-  });
-  es.addEventListener('synced', () => {
-    mb.syncing = false; mbRenderBody(); mbSyncLiveHead(); mbRenderBgTasks();
-    updateReplyBoxAvailability(modalPollTaskKey);   // 装配 live composer（常开输入 + 打断 + mbSend）
-    // 从 CLI 详情「发送消息」收养而来：历史回放完成后自动发出用户那条消息（mbSend 乐观回显 → 可见）
-    if (pendingCliMessage) { const m = pendingCliMessage; pendingCliMessage = null; $('modalReplyText').value = m; mbSend(); }
-  });
-  es.onmessage = (e) => { let o; try { o = JSON.parse(e.data); } catch { return; } mbOnEvent(o); };
-  // EventSource 断线自动重连；重连后服务端会重发 info + 回放 transcript
-}
-
-function mbOnEvent(ev) {
-  if (!mb) return;
-  switch (ev.type) {
-    case 'message_delta': {
-      if (!mb.liveUsage) mb.liveUsage = { up: 0, outChars: 0, outReal: null, active: true, thinking: false };
-      if (ev.blockType === 'text') mb.liveText += ev.delta || '';
-      mb.liveUsage.thinking = ev.blockType === 'thinking';
-      mb.liveUsage.outChars += String(ev.delta || '').length;
-      if (!mb.turnStartedAt) { mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); }
-      mbScheduleLive();
-      return;
-    }
-    case 'message':
-      mb.transcript.push(ev);
-      if (ev.message?.role === 'assistant') {
-        mb.liveText = '';
-        const u = ev.message.usage;
-        if (u) {
-          if (!mb.liveUsage) mb.liveUsage = { up: 0, outChars: 0, outReal: null, active: true, thinking: false };
-          mb.liveUsage.up = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-          mb.liveUsage.outReal = u.output_tokens ?? null;
-        }
-      }
-      if (!mb.syncing) mbRenderBody();
-      return;
-    case 'turn_usage': {
-      const u = ev.usage || {};
-      if (!mb.liveUsage) mb.liveUsage = { up: 0, outChars: 0, outReal: null, active: true, thinking: false };
-      mb.liveUsage.up = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-      mb.liveUsage.outReal = u.output_tokens ?? mb.liveUsage.outReal;
-      mb.info.lastUsage = { ...u, contextWindow: ev.contextWindow ?? null };
-      if (!mb.syncing) mbUpdateLiveTokens();
-      return;
-    }
-    case 'turn_completed':
-      mb.liveText = ''; mb.state = 'idle'; mb.turnStartedAt = null;
-      if (mb.liveUsage) { mb.liveUsage.active = false; mb.liveUsage.thinking = false; }
-      if (!mb.syncing) { mbRenderBody(); mbSyncLiveHead(); }
-      return;
-    case 'session_initialized':
-      if (ev.sessionId) { mb.info.sessionId = ev.sessionId; mb.info.claudeSessionId = ev.provider === 'claude' ? ev.sessionId : null; }
-      if (ev.provider) mb.info.provider = ev.provider;
-      if (ev.model != null) mb.info.model = ev.model;
-      mb.state = 'running'; if (!mb.syncing) mbSyncLiveHead(); return;
-    case 'background_tasks':
-      mb.bgTasks = Array.isArray(ev.tasks) ? ev.tasks : []; if (!mb.syncing) mbRenderBgTasks(); return;
-    case 'approval_requested':
-      mb.perms.push({ requestId: ev.requestId, kind: ev.kind, toolName: ev.toolName || 'Tool', input: ev.input || {}, questions: ev.questions || null });
-      if (!mb.syncing) mbRenderBody(); return;
-    case 'approval_resolved':
-      mb.perms = mb.perms.filter((p) => p.requestId !== ev.requestId); if (!mb.syncing) mbRenderBody(); return;
-    case 'closed': mb.state = 'closed'; if (!mb.syncing) { mbSyncLiveHead(); mbRenderBody(); } return;
-    case 'error': mb.state = 'error'; mb.lastError = ev.error; if (!mb.syncing) mbSyncLiveHead(); return;
-    default: return;
-  }
-}
-
-// ---- 后台任务栏（消息流与发送区之间）----
-// 数据源：CC 的 system/background_tasks_changed 全量推送（见 session-manager）。不反读 jsonl、不扫进程——
-// 那两条路要么漏（subagent 没有独立进程、subagent 起的后台任务不进主 jsonl）、要么得靠猜。
-// task_type 取值见 CC 的 Task.ts；Monitor 与后台命令同为 local_bash（事件不带 kind，无法再细分），
-// 二者的 description 已足够区分，不强行猜。
-const MB_TASK_KIND = {
-  local_bash: '后台命令',
-  local_agent: 'subagent',
-  remote_agent: '云端会话',
-  in_process_teammate: '队友',
-  local_workflow: '工作流',
-  monitor_mcp: 'Monitor',
-  dream: 'dream',
-};
-
-function mbRenderBgTasks() {
-  const el = $('modalBgTasks');
-  if (!el) return;
-  const tasks = (mb?.bgTasks || []).filter((t) => t && t.task_id);
-  if (!tasks.length) { el.style.display = 'none'; el.innerHTML = ''; mb && (mb.bgOutFor = null); return; }
-  el.style.display = '';
-  const rows = tasks.map((t) => {
-    const kind = MB_TASK_KIND[t.task_type] || t.task_type || '任务';
-    const open = mb.bgOutFor === t.task_id;
-    return `<div class="bg-task-row">
-      <span class="bg-task-kind">${escapeHtml(kind)}</span>
-      <span class="bg-task-desc" title="${escapeAttr(t.description || t.task_id)}">${escapeHtml(t.description || t.task_id)}</span>
-      <button type="button" class="bg-task-act" onclick="mbToggleTaskOutput('${escapeAttr(t.task_id)}')">${open ? '收起' : '查看'}</button>
-      <button type="button" class="bg-task-act danger" onclick="mbStopTask('${escapeAttr(t.task_id)}')">停止</button>
-    </div>${open ? `<pre class="bg-task-out" id="mbTaskOut">加载中…</pre>` : ''}`;
-  }).join('');
-  el.innerHTML = `<div class="bg-tasks-inner">
-    <div class="bg-tasks-head"><b>后台任务 ${tasks.length}</b><span>主进程已让出，等它们完成</span></div>
-    ${rows}
-  </div>`;
-  if (mb.bgOutFor) mbLoadTaskOutput(mb.bgOutFor);
-}
-
-function mbToggleTaskOutput(taskId) {
-  if (!mb) return;
-  mb.bgOutFor = mb.bgOutFor === taskId ? null : taskId;
-  mbRenderBgTasks();
-}
-
-async function mbLoadTaskOutput(taskId) {
-  const pre = $('mbTaskOut');
-  if (!pre || !mb) return;
-  try {
-    const j = await api(`/api/session/task-output?id=${encodeURIComponent(mb.id)}&taskId=${encodeURIComponent(taskId)}`);
-    if (!j.ok) { pre.textContent = j.error || '读取失败'; return; }
-    pre.textContent = (j.truncated ? '…（只显示尾部）\n' : '') + (j.text || '（暂无输出）');
-    pre.scrollTop = pre.scrollHeight;
-  } catch (e) { pre.textContent = `读取失败：${e.message}`; }
-}
-
-// 停后台任务：走 CC 的 stop_task 控制请求（与 TaskStopTool 同一条 stopTask）。停掉后 CC 会推
-// background_tasks_changed（移除）→ 栏自动更新，这里不做乐观摘除。
-async function mbStopTask(taskId) {
-  if (!mb) return;
-  try {
-    const j = await api(`/api/session/stop-task?id=${encodeURIComponent(mb.id)}&taskId=${encodeURIComponent(taskId)}`, { method: 'POST' });
-    if (!j.ok) toast(`停止失败：${j.error}`);
-  } catch (e) { toast(`停止失败：${e.message}`); }
-}
-window.mbToggleTaskOutput = mbToggleTaskOutput;
-window.mbStopTask = mbStopTask;
-
-// 把 Mode B settled 事件转成 renderDetailTab 认识的 rounds 形状（复用工具/思考/token/每步计时渲染）。
-// stream-json 的 assistant 事件是增量（同 message.id 拆成 thinking/text/tool_use 各一条）——按 id 合并，
-// 与 Mode A parseCcSession 同语义，否则消息被拆开、tool_use 与 usage 对不上。
-function mbToRounds() {
-  const messages = [];
-  let curAsst = null;
-  for (const ev of mb.transcript) {
-    if (ev.type === 'message' && ev.message?.role === 'assistant') {
-      const mid = ev.message.id || null;
-      if (curAsst && mid && curAsst._mid === mid) {
-        for (const c of ev.message.content || []) {
-          const dup = curAsst.content.find((x) => x.type === c.type &&
-            (x.text === c.text || (x.name && x.name === c.name && JSON.stringify(x.input) === JSON.stringify(c.input))));
-          if (!dup) curAsst.content.push(c);
-        }
-        if (ev.message.usage) curAsst.usage = ev.message.usage;
-      } else {
-        curAsst = { role: 'assistant', _mid: mid, at: (ev.message.content || [])[0]?._ts || null, content: [...(ev.message.content || [])], usage: ev.message.usage || null, model: ev.message.model || null };
-        messages.push(curAsst);
-      }
-    } else if (ev.type === 'message' && ev.message?.role === 'user') {
-      curAsst = null;
-      let content = ev.message.content;
-      if (typeof content === 'string') content = [{ type: 'text', text: content }];
-      // uuid / isMeta：seed 的历史消息带（ccMessagesToModeBSeed 透传磁盘 uuid + isMeta）→ 详情可「改写重跑」、
-      // caveat/system-reminder/Skill 注入正文能归运行输出；live 流的新消息两者都不带（stream-json 无此 envelope），
-      // 那条路靠 renderCcFlow 的内容识别兜（SKILL_BODY_RE 等）。此处绝不能硬编 isMeta:false 覆盖 seed 的真值。
-      messages.push({ role: 'user', at: (content || [])[0]?._ts || null, uuid: ev.uuid || null, content: content || [], isMeta: !!ev.isMeta });
-    }
-  }
-  const inflight = mb.state === 'running' || mb.state === 'starting';
-  // 侧栏「任务信息」字段：live 会话不走 /api/worker-log，这里补齐 worker-log round 同款字段——
-  // cwd 取 session info（Session.cwd）；gitBranch 扫 transcript 事件（仿 logs.js）；
-  // 工作时长 Mode B jsonl 无 turn_duration → 每轮墙钟（user→本轮末 assistant 的 _ts 差）累加，不含用户输入间隔。
-  let gitBranch = mb.info?.gitBranch || null;   // resume/收养源分支（session info 带）；live 流事件通常不带 gitBranch
-  for (const ev of mb.transcript) { if (ev.gitBranch) gitBranch = ev.gitBranch; }
-  let workMs = 0;
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role !== 'user' || !messages[i].at) continue;
-    const start = new Date(messages[i].at).getTime();
-    let end = null;
-    for (let j = i + 1; j < messages.length && messages[j].role !== 'user'; j++) if (messages[j].at) end = new Date(messages[j].at).getTime();
-    if (end && end > start) workMs += end - start;
-  }
-  // 上下文用量：末条带 usage 的 assistant 消息 input+cache（= 模型本轮读入的上下文总量，与 Mode A logs.js 同口径）
-  const lastAsstU = [...messages].reverse().find((m) => m.role === 'assistant' && m.usage)?.usage;
-  const contextSize = lastAsstU
-    ? (lastAsstU.input_tokens || 0) + (lastAsstU.cache_read_input_tokens || 0) + (lastAsstU.cache_creation_input_tokens || 0)
-    : null;
-  return [{
-    round: 1, sessionId: mb.info?.sessionId || mb.info?.claudeSessionId || null, inflight, messages,
-    cwd: mb.info?.cwd || null, gitBranch,
-    ccSummary: { model: mb.info?.model || null, workMs: workMs > 0 ? workMs : null, contextSize },
-    humanCc: [],
-  }];
-}
-
-// live 会话状态并入右侧任务信息块（renderTaskSide 读 currentModalData 展示 live 轮次/token/● 实时）+
-// 同步打断按钮 disabled 与 composer 状态徽章。不再有独立会话头部 / 结束会话按钮（D-b：生命周期由任务态驱动）。
-function mbSyncLiveHead() {
-  if (!mb) return;
-  if (modalPollTaskKey) renderTaskSide(modalPollTaskKey);
-  // 打断按钮用 display 即时显隐（result → mb.state=idle 即隐藏），与 updateReplyBoxAvailability 装配逻辑一致。
-  const ib = $('modalReplyInterrupt'); if (ib) ib.style.display = (mb.state === 'running' || mb.state === 'starting') ? '' : 'none';
-  const st = $('modalReplyState');
-  if (st && mb.id && findTaskInState(modalPollTaskKey)?.mbSessionId === mb.id) {
-    st.className = 'tag ' + (mb.state === 'running' ? 'tag-amber' : 'tag-jade');
-    st.textContent = mb.state === 'running' ? '生成中 · 可插话/打断' : '实时会话 · 可继续';
-  }
-  mbUpdateLiveTokens();
-}
-
-// 实时 token 读数：上行(input+cache) message_start 即知真值；下行生成中按累计 delta 字符估算(~)、
-// 末尾 message_delta 给真值。CC 只在末尾发一次 message_delta —— 逐 token 增长不可得（两次实测证伪）。
-function mbUpdateLiveTokens() {
-  const el = document.getElementById('mbLiveTokens'); if (!el) return;
-  const u = mb && mb.liveUsage;
-  if (!u) { el.textContent = ''; return; }
-  const down = u.outReal != null ? Number(u.outReal).toLocaleString('en-US')
-    : '~' + Math.ceil(u.outChars / 4).toLocaleString('en-US');
-  el.textContent = `↑ ${Number(u.up).toLocaleString('en-US')} / ↓ ${down}${u.active ? ' · 生成中' : ''}`;
-}
-
-// 实时活动状态行（Claude Code 风格）：✻ Gerund…（Ns · ↓ tokens[· thinking with X effort]）
-// 数据源：turnStartedAt 计时 · liveUsage 下行(生成中 ~估算 / 末尾真值) · liveUsage.thinking(thinking_delta)
-//   · effort 来自 mb.info.effort（spawn 时 --effort 传入、经 s.info() 回传；收养会话未指定则省略档位）。
-const MB_GLYPHS = ['✻', '✳', '✽', '✢', '·', '✢', '✽', '✳'];
-const MB_GERUNDS = ['Accomplishing', 'Actualizing', 'Baking', 'Brewing', 'Churning', 'Cogitating', 'Computing', 'Conjuring', 'Crafting', 'Divining', 'Drizzling', 'Effecting', 'Forging', 'Germinating', 'Hatching', 'Herding', 'Ideating', 'Incubating', 'Manifesting', 'Marinating', 'Moseying', 'Mulling', 'Noodling', 'Percolating', 'Pondering', 'Processing', 'Puzzling', 'Reticulating', 'Ruminating', 'Shucking', 'Simmering', 'Smooshing', 'Spinning', 'Stewing', 'Synthesizing', 'Transmuting', 'Vibing', 'Whirring', 'Working', 'Wrangling'];
-let mbStatusTimer = null;
-let mbStatusTick = 0;
-
-function mbFmtK(n) { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n); }
-
-function mbStatusParts() {
-  const u = mb && mb.liveUsage;
-  const elapsed = (mb && mb.turnStartedAt) ? Math.max(0, Math.floor((Date.now() - mb.turnStartedAt) / 1000)) : 0;
-  const glyph = MB_GLYPHS[mbStatusTick % MB_GLYPHS.length];
-  const gerund = MB_GERUNDS[((mb?.gerundSeed || 0) + Math.floor(elapsed / 5)) % MB_GERUNDS.length];
-  let downTxt = '0';
-  if (u) {
-    if (u.outReal != null) downTxt = mbFmtK(u.outReal);
-    else if (u.outChars) downTxt = '~' + mbFmtK(Math.ceil(u.outChars / 4));
-  }
-  const eff = mb && mb.info && mb.info.effort;
-  const think = (u && u.thinking) ? (eff ? ` · thinking with ${eff} effort` : ' · thinking') : '';
-  return { glyph, rest: `${gerund}… (${elapsed}s · ↓ ${downTxt} tokens${think})` };
-}
-// glyph 每 300ms 循环切换，各装饰符号渲染宽度不一；用固定宽度 span 居中包裹，避免其后文本左右抖动
-function mbStatusHtml() { const { glyph, rest } = mbStatusParts(); return `<span class="mb-glyph">${glyph}</span> ${escapeHtml(rest)}`; }
-
-function mbTick() {
-  if (!mb || (mb.state !== 'running' && mb.state !== 'starting')) { mbStopStatusTimer(); return; }
-  mbStatusTick++;
-  const el = document.getElementById('mbStatus');
-  if (el) el.innerHTML = mbStatusHtml();
-}
-function mbStartStatusTimer() { if (!mbStatusTimer) mbStatusTimer = setInterval(mbTick, 300); }
-function mbStopStatusTimer() { if (mbStatusTimer) { clearInterval(mbStatusTimer); mbStatusTimer = null; } }
-
-function mbRenderBody() {
-  if (!mb) return;
-  const body = $('modalBody'); if (!body) return;
-  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
-  const rounds = mbToRounds();
-  // 供右侧 renderTaskSide 读 live 轮次/token/● 实时（live 模式不走 /api/worker-log，currentModalData 由此喂）
-  currentModalData = { rounds, hasInflight: mb.state === 'running' || mb.state === 'starting' };
-  syncContextRing(modalPollTaskKey);   // 底栏上下文环形跟随 live 上下文变化（多数 live 事件只走 mbRenderBody，不经 renderTaskSide）
-  let html = rounds[0].messages.length ? renderDetailTab({ rounds }, true) : '<div style="color:var(--dim);padding:12px 0">等待 Agent 响应…</div>';
-  if (mb.liveText) html += `<div class="cc-line cc-text"><span class="cc-dot">⏺</span><div class="mb-live" id="mbLive">${escapeHtml(mb.liveText)}</div></div>`;
-  const running = mb.state === 'running' || mb.state === 'starting';
-  if (running) html += `<div class="cc-dur cc-dur-total mb-status" id="mbStatus">${mbStatusHtml()}</div>`;
-  for (const p of mb.perms) {
-    html += ((p.kind === 'request_user_input' || p.toolName === 'AskUserQuestion') && (Array.isArray(p.questions) || Array.isArray(p.input?.questions)))
-      ? mbAskCardHtml(p)
-      : `<div class="perm-card">
-      <div class="pc-tool">🔐 Agent 请求使用工具 <span style="color:var(--amber)">${escapeHtml(p.toolName)}</span></div>
-      <pre>${escapeHtml(JSON.stringify(p.input, null, 2).slice(0, 2000))}</pre>
-      <div class="pc-actions">
-        <button class="btn btn-primary" onclick="mbRespond('${escapeAttr(p.requestId)}', true)">允许</button>
-        <button class="btn btn-danger" onclick="mbRespond('${escapeAttr(p.requestId)}', false)">拒绝</button>
-      </div></div>`;
-  }
-  body.innerHTML = html;
-  if (atBottom) scrollBodyToEnd(body);   // 含下一帧补滚：进 live 详情大段历史一次性渲染，布局稳定后才到真正底部
-  if (running) mbStartStatusTimer(); else mbStopStatusTimer();
-}
-
-// S8：AskUserQuestion 交互卡 —— 渲染问题 + 选项（单选 radio / 多选 checkbox），提交回传 answers
-function mbAskCardHtml(p) {
-  const qs = p.questions || p.input.questions || [];
-  const body = qs.map((q, qi) => {
-    const multi = !!q.multiSelect;
-    const opts = (q.options || []).map((o) => `
-      <label class="ask-opt">
-        <input type="${multi ? 'checkbox' : 'radio'}" name="q${qi}" value="${escapeAttr(o.label)}">
-        <span class="ask-opt-label">${escapeHtml(o.label)}</span>
-        ${o.description ? `<span class="ask-opt-desc">${escapeHtml(o.description)}</span>` : ''}
-      </label>`).join('');
-    return `<div class="ask-q" data-q="${escapeAttr(q.question)}">
-      ${q.header ? `<span class="ask-qhead">${escapeHtml(q.header)}</span>` : ''}
-      <div class="ask-qtext">${escapeHtml(q.question)}${multi ? ' <span class="ask-multi">(可多选)</span>' : ''}</div>
-      <div class="ask-opts">${opts}</div>
-    </div>`;
-  }).join('');
-  return `<div class="perm-card ask-card" data-req="${escapeAttr(p.requestId)}">
-    <div class="pc-tool">💬 Agent 想问你</div>
-    ${body}
-    <div class="pc-actions">
-      <button class="btn btn-primary" onclick="mbSubmitAnswers('${escapeAttr(p.requestId)}')">提交</button>
-      <button class="btn" onclick="mbRespond('${escapeAttr(p.requestId)}', false)">跳过</button>
-    </div></div>`;
-}
-
-// 收集 AskUserQuestion 选择 → answers{问题:选项(多选逗号分隔)} → 走 /respond 的 answers 通道
-window.mbSubmitAnswers = (requestId) => {
-  if (!mb) return;
-  const card = document.querySelector(`.ask-card[data-req="${requestId}"]`);
-  if (!card) return;
-  const answers = {};
-  card.querySelectorAll('.ask-q').forEach((qel) => {
-    const q = qel.getAttribute('data-q');
-    const checked = [...qel.querySelectorAll('input:checked')].map((i) => i.value);
-    if (checked.length) answers[q] = checked.join(', ');
-  });
-  if (!Object.keys(answers).length) { customAlert({ title: '请先选择', message: '至少选一个选项再提交' }); return; }
-  mb.perms = mb.perms.filter((x) => x.requestId !== requestId);
-  mbRenderBody();
-  api(`/api/session/respond?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId, allow: true, answers }) })
-    .catch((e) => customAlert({ title: '提交失败', message: escapeHtml(e.message) }));
-};
-
-// 逐字增量：只改 #mbLive 文本，不整刷（不存在则整刷一次建出来）
-// 高频 text_delta / token 增量合批到下一帧统一落地：原来每条 delta 都整写 DOM + 读 scrollHeight（强制同步 reflow），
-// 逐 token 推送下主线程被占满，正文与底部状态行一起卡顿。改为只标脏 + rAF，DOM 落地每帧至多一次、reflow 每帧至多一次。
-let mbFlushRaf = null;
-function mbScheduleLive() {
-  if (mbFlushRaf || !mb || mb.syncing) return;
-  mbFlushRaf = requestAnimationFrame(mbFlushLive);
-}
-function mbFlushLive() {
-  mbFlushRaf = null;
-  if (!mb) return;
-  const el = document.getElementById('mbLive');
-  if (!el) { if (mb.liveText) mbRenderBody(); return; }   // #mbLive 未建且有正文：整刷建结构；轮末 liveText 已清空则 no-op，免全量重渲染
-  el.textContent = mb.liveText;
-  mbUpdateLiveTokens();
-  const body = $('modalBody');
-  if (body && body.scrollHeight - body.scrollTop - body.clientHeight < 120) body.scrollTop = body.scrollHeight;
-}
-
-async function mbSend() {
-  if (!mb) return;
-  const ta = $('modalReplyText'); const msg = ta.value.trim();
-  if (!msg) return;
-  const attachments = replyAttachCtl.get();   // 读附件（发送成功后清空）
-  ta.value = ''; updateReplyCount(0);
-  mb.transcript.push({ type: 'user', message: { role: 'user', content: attachSuffix(msg, attachments) } });   // 乐观回显（含附件路径，与后端 transcript 一致）
-  mb.turnStartedAt = Date.now(); mb.gerundSeed = Math.floor(Math.random() * MB_GERUNDS.length); mb.liveUsage = null;   // 从发送即开始计时（CC 风格）
-  mb.state = 'running'; mbRenderBody(); mbSyncLiveHead();
-  // 绑定「文件任务」（有任务包）→ /api/task/reply（内部 sendUserMessage + 置任务 state=processing + lease）；
-  // 被旁观 / 收养但未物化的 CLI 会话（board 卡带 t.cli，无 runner-state 包）与未绑定会话 → 直接发到 live 会话
-  // stdin（/api/session/send）。关键：未物化 cli:* 不能走 /api/task/reply——那会进 replyToTask 的观察侧 replyCliSession
-  //（已废弃 ps1），既撞不到活的 runner、guard 又会误判终端占用而拒发。物化后的 cli 任务有包、无 t.cli → 走 task/reply。
-  const tk = mb.info?.taskKey;
-  const useTaskReply = tk && !findTaskInState(tk)?.cli;
-  const payload = { message: msg };
-  if (attachments.length) payload.attachments = attachments;   // 附加本地文件：后端拼进文本尾部让 Agent 读取
-  const r = useTaskReply
-    ? await api(`/api/task/reply?taskKey=${encodeURIComponent(tk)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch((e) => ({ ok: false, error: e.message }))
-    : await api(`/api/session/send?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch((e) => ({ ok: false, error: e.message }));
-  if (!r.ok) customAlert({ title: '发送失败', message: escapeHtml(r.error || '') });
-  else replyAttachCtl.clear();
-}
-window.mbRespond = async (requestId, allow) => {
-  if (!mb) return;
-  mb.perms = mb.perms.filter((p) => p.requestId !== requestId);
-  mbRenderBody();
-  const r = await api(`/api/session/respond?id=${encodeURIComponent(mb.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId, allow }) }).catch((e) => ({ ok: false, error: e.message }));
-  if (!r.ok) customAlert({ title: (allow ? '允许' : '拒绝') + '失败', message: escapeHtml(r.error || '') });
-};
-// 打断当前轮（interrupt control_request）；由 live 模式 composer 的「■ 打断」按钮调用
-// （按钮显隐/绑定在 updateReplyBoxAvailability 的 live 分支装配）。无「结束会话」入口（D-b：生命周期随任务态）。
-window.mbInterrupt = () => { if (mb) api(`/api/session/interrupt?id=${encodeURIComponent(mb.id)}`, { method: 'POST' }).catch(() => {}); };
 
 // ---- init ----
 refreshState().then(async () => {

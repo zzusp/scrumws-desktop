@@ -330,8 +330,11 @@ export class CodexAdapter {
     const requestId = requestKey(message.id);
     const approval = { id: message.id, method, params };
     this._approvals.set(requestId, approval);
-    if (this.bypass && method !== 'item/tool/requestUserInput' && method !== 'mcpServer/elicitation/request') {
-      this.respond(requestId, true, null, approval);
+    if (this.bypass) {
+      // 轻量后台轮次没有交互式弹窗：工具授权自动接受；主动提问/elicitation 明确跳过，
+      // 避免子进程无限等待一个已移除的 UI 控制通道。
+      const interactive = method === 'item/tool/requestUserInput' || method === 'mcpServer/elicitation/request';
+      this.respond(requestId, !interactive, null, approval);
       return;
     }
     const input = params.permissions || params;

@@ -1,8 +1,8 @@
-// 桥接层：Mode B 交互会话（session-manager）↔ 文件式任务生命周期（runner-state/）。
-// 任务进 queued 即起一个「绑定该任务」的 Mode B 会话当执行器；会话生命周期写回该任务 state.json/lease/meta：
+// 桥接层：provider 会话执行器（session-manager）↔ 文件式任务生命周期（runner-state/）。
+// 任务进 queued 即起一个绑定该任务的一次性会话；会话生命周期写回 state.json/lease/meta：
 //   起会话/发消息 → processing；一轮 result(idle) → awaiting-human；closed/error → awaiting-human。
 // 关键：桶完全由 state.json.state 决定（不靠 lease 活死）——idle-but-alive 也稳在 awaiting-human。
-// reply：live 会话在则复用（进程常驻多轮）；会话已死（服务重启）则按 task.provider 恢复原会话。
+// reply：正常情况下每轮都按 task.provider 恢复原 session；本轮收敛即关闭子进程。
 import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
@@ -12,7 +12,7 @@ import { appendSessionJournalEvent, readTaskSessionSeed } from './logs.js';
 import { ensureWorktree, checkoutBranchLatest } from './git.js';
 import { readConfig } from './runner-config.js';
 
-// taskKey → 内存会话 id（reply 复用 / 详情接 live SSE / 判活）
+// taskKey → 内存会话 id（执行中冲突判断与取消）
 const registry = new Map();
 const boundHandlers = new Map();   // taskKey → bind() 装的 onEvent 引用（parkTaskSession 精准解绑用，不误伤详情 SSE 订阅）
 const lastBeat = new Map();   // taskKey → 上次 heartbeat 落盘的 ms（节流，避免逐 token 写盘）
@@ -29,7 +29,7 @@ export function isLeakedToolTurn(content) {
     && (/<invoke\s+name=/.test(c.text || '') || /(^|\n)\s*court\s*(\n|$)/.test(c.text || '')));
 }
 
-// 该任务当前是否有活着的 Mode B 会话（供 /api/state 暴露 mbSessionId + reply 判复用）
+// 该任务当前是否有活着的 provider 子进程（供状态采集与并发回复 guard）
 export function getTaskSessionId(taskKey) {
   // file 任务经 bind() 注册 registry；收养会话未 bind，靠 session 自记 taskKey 反查
   const id = registry.get(taskKey) || getSessionIdByTaskKey(taskKey);
@@ -168,6 +168,7 @@ function bind(taskKey, id, provider) {
           }, 'session');
           removeLease(taskKey);
           leakRetry.delete(taskKey);
+          parkTaskSession(taskKey);
           scheduleDrain();
           return;
         }
@@ -181,6 +182,7 @@ function bind(taskKey, id, provider) {
           }
           removeLease(taskKey);
           leakRetry.delete(taskKey);
+          parkTaskSession(taskKey);
           scheduleDrain();
           return;
         }
@@ -197,7 +199,7 @@ function bind(taskKey, id, provider) {
         }
         leakRetry.delete(taskKey);
         convergeAwaitingOrDone(taskKey); // 决策 15：agent 本轮已声明完成 → 落 done(agent)，否则 awaiting-human
-        removeLease(taskKey);            // 一轮收敛：进程常驻但不算 processing
+        parkTaskSession(taskKey);        // 收敛后释放 provider；后续回复再启动一次原生 resume
         scheduleDrain();                 // 名额释放 → 放行等待中的 queued 任务
       } else if (ev.type === 'closed') {
         appendSessionJournalEvent(taskKey, ev);
@@ -217,6 +219,7 @@ function bind(taskKey, id, provider) {
           outcomeDetail: { ...(sd.outcomeDetail || {}), failureReason: ev.error || 'session error' },
         }, 'session');
         removeLease(taskKey);
+        parkTaskSession(taskKey);
         scheduleDrain();
       }
     } catch { /* 写盘失败不拖垮会话事件流 */ }
@@ -375,8 +378,7 @@ export function startTask(taskKey) {
   return { ok: true, taskKey, sessionUiId: r.id, resumed: sid || undefined };
 }
 
-// 回复任务：live 会话在则复用（多轮）；已死则按 provider 恢复。model/effort 覆盖仅在恢复重挂时生效
-// （live 会话的 model/effort 在 spawn 时已定、无法中途改）。
+// 回复任务：空闲时按 provider 恢复原 session。极短竞态内若本轮子进程仍活着则复用。
 export function replyTask(taskKey, message, model, effort, attachments) {
   const msg = String(message || '').trim();
   if (!msg) return { ok: false, error: 'message required' };
@@ -442,7 +444,7 @@ export function cancelTaskSession(taskKey) {
   return { ok: true, taskKey, killed: id, resolvedAt };
 }
 
-// 停手会话（退回 plan 用）：关掉可能仍活着的 idle Mode B 会话进程 + 删 lease，但**不改 state**（交调用方落 plan）。
+// 停手会话（退回 plan / 单轮收敛用）：关闭子进程 + 删 lease，但**不改 state**（交调用方落盘）。
 // 关键：先精准解绑本任务的 onEvent（用 boundHandlers 记的引用），否则 closeSession 触发的 'closed' 事件
 // 会把 state 翻回 awaiting-human、盖掉调用方随后落的 plan；不 removeAllListeners 以免误伤详情页 SSE 订阅。
 // 保留 meta.sessionId 不动 → 之后 startTask 据它让对应 provider 续上之前的对话。

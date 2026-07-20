@@ -126,7 +126,7 @@ Body（JSON，≤32 KB）：
 端点写任务包（`runtime/runner-state/<source>__<slug>/` 下的 `task.json` + `state.json`），然后：
 
 - `plan`（缺省）→ 任务落 **plan 桶**等用户在看板点「确认执行」才起会话。
-- `queued`（`plan:false`，需密钥开「允许直接执行」）→ **立即起绑定该任务的交互会话执行**：state=`processing`，`task.prompt` 作首条消息发给所选 Agent；统一 `turn_completed` 收敛 → `awaiting-human`（会话进程常驻，可从看板详情继续多轮）；服务重启等中断 → Runner Checker 收成 `awaiting-human`，看板回复按任务 `provider + sessionId` 恢复 Claude session 或 Codex thread。
+- `queued`（`plan:false`，需密钥开「允许直接执行」）→ **立即起绑定该任务的会话执行**：state=`processing`，`task.prompt` 作首条消息发给所选 Agent；统一 `turn_completed` 收敛 → `awaiting-human` 并释放本轮 provider 进程。详情轮询解析 provider 官方 JSONL；session 无活跃外部进程时，可在详情回复，由对应 adapter 恢复 Claude session 或 Codex thread。服务重启等中断由 Runner Checker 收成 `awaiting-human`。
 - 补充：`runner-config.json` 的 `planSources` 含某来源时，该来源任务**总是**先落 plan（即使传了 `plan:false`）。
 
 ## 错误对照表

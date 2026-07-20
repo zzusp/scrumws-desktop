@@ -84,15 +84,16 @@ try {
   assert.equal(meta.sessionId, 'thread-fixture-codex');
   assert.equal(meta.sessionHistory.length, 1);
   assert.deepEqual(meta.sessionHistory[0].provider, 'codex');
-  assert.equal(runner.getTaskSessionId(taskKey), first.sessionUiId, 'Codex process remains reusable while idle');
+  assert.equal(runner.getTaskSessionId(taskKey), null, 'one-shot Codex process is released after the turn');
 
   const second = runner.replyTask(taskKey, 'second turn', '', 'high');
   assert.equal(second.ok, true, JSON.stringify(second));
-  assert.equal(second.reused, true);
+  assert.equal(second.resumed, 'thread-fixture-codex');
   await waitFor(() => readJson('state.json').state === 'awaiting-human' && readJson('meta.json').rounds === 2, 'second turn completed');
 
   const parked = runner.parkTaskSession(taskKey);
   assert.equal(parked.ok, true);
+  assert.equal(parked.killed, null);
   const task = readJson('task.json');
   task.prompt = 'third turn after restart';
   fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify(task, null, 2));
@@ -113,7 +114,7 @@ try {
   const detail = readWorkerLog(taskKey);
   assert.equal(detail.provider, 'codex');
   assert.equal(detail.rounds.length, 3);
-  assert.deepEqual(detail.rounds.map((round) => round.messages.at(-1)?.content?.[0]?.text), ['answer-1', 'answer-2', 'answer-1']);
+  assert.deepEqual(detail.rounds.map((round) => round.messages.at(-1)?.content?.[0]?.text), ['answer-1', 'answer-1', 'answer-1']);
   const journalText = fs.readFileSync(path.join(taskDir, 'session-events.jsonl'), 'utf8');
   assert.equal(journalText.includes('message_delta'), false, 'high-frequency deltas stay out of the task package');
 

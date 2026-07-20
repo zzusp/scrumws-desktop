@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { P } from './paths.js';
 import { parse } from './timeutil.js';
 import { leaseAlive } from './lease.js';
@@ -428,10 +429,10 @@ function readCliWorkerLog(taskKey) {
     if (!codex.ok) return { ok: false, error: codex.error, taskKey };
     const messages = codex.messages || [];
     return {
-      ok: true, taskKey, safeKey: `cli__${sid}`, provider: 'codex', isArchive: false,
+      ok: true, taskKey, safeKey: `cli__${sid}`, provider: 'codex', origin: 'external-cli', isArchive: false,
       state: meta.archivedAt ? 'archived' : meta.doneAt ? 'done' : 'awaiting-human',
       rounds: [{ round: 1, provider: 'codex', sessionId: sid, at: null, startedAt: messages[0]?.at || null, endedAt: messages[messages.length - 1]?.at || null,
-        intent: 'cli-interactive', metaUsage: null, metaCostUsd: null, ccSummary: null, messages, humanCc: [],
+        intent: 'cli-interactive', metaUsage: null, metaCostUsd: null, ccSummary: codex.workMs > 0 ? { workMs: codex.workMs } : null, messages, humanCc: [],
         systemInit: { model: codex.model || null, effort: codex.effort || null, cwd: codex.cwd || null, toolsCount: null }, cwd: codex.cwd || null,
         gitBranch: null, inflight: false }],
       hasInflight: false, runnerLogTail: null, checkerLogTail: null,
@@ -444,6 +445,7 @@ function readCliWorkerLog(taskKey) {
     jsonlPath = found.jsonlPath;
   }
   let text = '';
+  rememberWorkerLogSource(taskKey, jsonlPath);
   try { text = fs.readFileSync(jsonlPath, 'utf8'); }
   catch (e) { return { ok: false, error: `读取失败: ${e.message}`, taskKey }; }
   const parsed = parseCcSession(text);
@@ -479,6 +481,7 @@ function readCliWorkerLog(taskKey) {
     taskKey,
     safeKey: `cli__${sid}`,
     provider: DEFAULT_PROVIDER,
+    origin: 'external-cli',
     isArchive: false,
     // SSE 判收敛（server.js payload.state!=='processing' → done）+ 前端指纹用；随进程信号收敛即刷新详情
     state: active ? 'processing' : 'awaiting-human',
@@ -649,6 +652,141 @@ function readJournalWorkerLog({ taskKey, safeKey, dir, archiveDir, task, meta, m
   };
 }
 
+// 详情页高频轮询只比较这些文件的 stat，不再每次重读、解析整份 JSONL。
+// sessionId -> JSONL 路径一旦定位成功便稳定，缓存可避免 Codex rollout 的递归目录扫描。
+const workerLogSourceCache = new Map();
+const workerLogTaskSources = new Map();
+function rememberWorkerLogSource(taskKey, file) {
+  if (!taskKey || !file) return;
+  let files = workerLogTaskSources.get(taskKey);
+  if (!files) { files = new Set(); workerLogTaskSources.set(taskKey, files); }
+  files.add(file);
+}
+function cachedSessionSource(provider, sessionId, hintedPath = null) {
+  const key = `${provider}:${sessionId}`;
+  const cached = workerLogSourceCache.get(key);
+  if (cached && fs.existsSync(cached)) return cached;
+  if (hintedPath && fs.existsSync(hintedPath)) {
+    workerLogSourceCache.set(key, hintedPath);
+    return hintedPath;
+  }
+  if (provider === 'codex') {
+    const found = _collectCodexCli.locateCodexRollout(sessionId);
+    if (found?.jsonlPath) workerLogSourceCache.set(key, found.jsonlPath);
+    return found?.jsonlPath || null;
+  }
+  const local = path.join(P.ccProjectDir, `${sessionId}.jsonl`);
+  if (fs.existsSync(local)) {
+    workerLogSourceCache.set(key, local);
+    return local;
+  }
+  const found = _collectCli.locateJsonlBySid(sessionId);
+  if (found?.jsonlPath) workerLogSourceCache.set(key, found.jsonlPath);
+  return found?.jsonlPath || null;
+}
+
+function statRevisionPart(file) {
+  try {
+    const stat = fs.statSync(file);
+    return `${file}\0${stat.size}\0${stat.mtimeMs}`;
+  } catch {
+    return `${file}\0missing`;
+  }
+}
+
+// 返回只用于变更判断的短 revision。调用成本是若干次 stat + 两个小 JSON，
+// JSONL 未变化时客户端无需下载 2MB+ payload，也不会在 Electron 主线程同步 parse。
+export function readWorkerLogRevision(taskKey) {
+  const parts = [];
+  const addedFiles = new Set();
+  const add = (file) => {
+    if (!file || addedFiles.has(file)) return;
+    addedFiles.add(file);
+    parts.push(statRevisionPart(file));
+  };
+  for (const file of workerLogTaskSources.get(taskKey) || []) add(file);
+  const isDetachedCli = typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey);
+
+  if (isDetachedCli) {
+    const shortSid = taskKey.slice(4);
+    const entry = Object.entries(_cliWatchlist.readWatchlist().sessions || {}).find(([sid]) => sid.startsWith(shortSid));
+    if (!entry) return { ok: false, error: 'cli session not in watchlist', taskKey };
+    const [sid, meta] = entry;
+    // 只纳入当前会话元数据；其他 watchlist 会话变化不能让本详情误判为有新内容。
+    parts.push(JSON.stringify(meta || {}));
+    const provider = meta?.provider === 'codex' ? 'codex' : DEFAULT_PROVIDER;
+    add(cachedSessionSource(provider, sid, meta?.jsonlPath || null));
+  } else {
+    const safeKey = safeKeyOf(taskKey);
+    if (!safeKey) return { ok: false, error: 'invalid taskKey', taskKey };
+    const activeDir = path.join(P.runnerRoot, safeKey);
+    const archiveDir = path.join(P.archiveRoot, safeKey);
+    const dir = fs.existsSync(activeDir) ? activeDir : (fs.existsSync(archiveDir) ? archiveDir : null);
+    if (!dir) return { ok: false, error: 'task not found', taskKey };
+
+    // lease heartbeat 和 runner/checker 日志会周期写入，但不代表 transcript 变化；不能纳入 revision。
+    for (const name of ['task.json', 'meta.json', 'state.json', 'rounds.jsonl', SESSION_JOURNAL_FILE]) {
+      add(path.join(dir, name));
+    }
+    const task = readJson(path.join(dir, 'task.json')) || {};
+    const meta = readJson(path.join(dir, 'meta.json')) || {};
+    const provider = task.provider || DEFAULT_PROVIDER;
+    const history = Array.isArray(meta.sessionHistory) ? meta.sessionHistory : [];
+    const sessions = history.length ? history : (meta.sessionId ? [{ sessionId: meta.sessionId, provider, jsonlPath: meta.jsonlPath }] : []);
+    for (const session of sessions) {
+      if (!session?.sessionId) continue;
+      const sessionProvider = session.provider || provider;
+      if (sessionProvider !== DEFAULT_PROVIDER && sessionProvider !== 'codex') continue;
+      add(cachedSessionSource(sessionProvider, session.sessionId, session.jsonlPath || null));
+    }
+    // 首轮初始化期间 sessionId 尚未落 meta；新建 JSONL 会改变项目目录 mtime。
+    if (provider === DEFAULT_PROVIDER && !sessions.length) add(P.ccProjectDir);
+  }
+
+  const revision = createHash('sha1').update(parts.sort().join('\n')).digest('hex');
+  return { ok: true, taskKey, revision };
+}
+
+// Codex 托管任务也以官方 rollout JSONL 为执行记录事实源；session-events journal 只作旧数据回落。
+function readCodexJsonlWorkerLog({ taskKey, safeKey, dir, archiveDir, task, meta, maxSessions }) {
+  const state = readJson(path.join(dir, 'state.json'));
+  const lease = readJson(path.join(dir, 'lease.json'));
+  const history = (Array.isArray(meta?.sessionHistory) ? meta.sessionHistory : [])
+    .filter((entry) => (entry?.provider || task?.provider) === 'codex' && entry?.sessionId);
+  if (!history.length && meta?.sessionId) history.push({ provider: 'codex', sessionId: meta.sessionId, round: 1 });
+  const rounds = [];
+  let parsedRounds = 0;
+  for (const entry of history.slice(-Math.max(1, maxSessions))) {
+    const parsed = _collectCodexCli.readCodexCliSessionHistory(entry.sessionId, entry.jsonlPath || null);
+    if (!parsed.ok) {
+      rounds.push({ round: entry.round || rounds.length + 1, provider: 'codex', sessionId: entry.sessionId, error: parsed.error });
+      continue;
+    }
+    parsedRounds++;
+    const messages = parsed.messages || [];
+    rounds.push({
+      round: entry.round || rounds.length + 1,
+      provider: 'codex', sessionId: entry.sessionId, at: entry.at || null,
+      startedAt: messages[0]?.at || entry.at || null,
+      endedAt: messages[messages.length - 1]?.at || null,
+      intent: 'codex-rollout', metaUsage: null, metaCostUsd: null,
+      ccSummary: { sessionId: entry.sessionId, numTurns: null, totalCostUsd: null, tokens: null, contextSize: null, model: parsed.model || task?.model || null, workMs: null },
+      messages, humanCc: [],
+      systemInit: { model: parsed.model || task?.model || null, effort: parsed.effort || task?.effort || null, cwd: parsed.cwd || task?.cwd || null, toolsCount: null },
+      cwd: parsed.cwd || task?.cwd || null, gitBranch: null, status: null,
+    });
+  }
+  // app-server 极早期失败、旧任务或测试 provider 可能还没有官方 rollout；此时 journal 仍是可靠回落。
+  if (!parsedRounds) return readJournalWorkerLog({ taskKey, safeKey, dir, archiveDir, task, meta, maxSessions });
+  const inflight = state?.state === 'processing' && leaseAlive(lease) && dir !== archiveDir;
+  if (inflight) rounds[rounds.length - 1].inflight = true;
+  return {
+    ok: true, taskKey, safeKey, provider: 'codex', isArchive: dir === archiveDir,
+    state: state?.state || null, rounds, hasInflight: inflight,
+    runnerLogTail: null, checkerLogTail: null,
+  };
+}
+
 // worker-log 端点：从 CC 官方 jsonl 拼 sessionHistory[] 多轮内容（阶段 3 起，替代旧 watch-worker-*.log）
 export function readWorkerLog(taskKey, maxSessions = 20) {
   // 未物化的 CLI 会话（无任务包）→ 直接从 CC jsonl 拼历史；物化后有包（meta.sessionId 指向同一 jsonl）→ 走下面统一路径
@@ -667,6 +805,9 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
   let meta = null;
   try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch { }
   const provider = task.provider || DEFAULT_PROVIDER;
+  if (provider === 'codex') {
+    return readCodexJsonlWorkerLog({ taskKey, safeKey, dir, archiveDir, task, meta, maxSessions });
+  }
   if (provider !== DEFAULT_PROVIDER) {
     return readJournalWorkerLog({ taskKey, safeKey, dir, archiveDir, task, meta, maxSessions });
   }
@@ -710,6 +851,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
       rounds.push({ round: s.round || null, provider, sessionId: s.sessionId, at: s.at || null, body: '（CC jsonl 文件不存在，可能已被清或历史久远）' });
       continue;
     }
+    rememberWorkerLogSource(taskKey, jsonlFile);
     let text = '';
     try {
       // 读整个 jsonl（一般 <5MB）
@@ -785,6 +927,7 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
     }
     if (inflightSid) {
       const jsonlFile = path.join(P.ccProjectDir, `${inflightSid}.jsonl`);
+      rememberWorkerLogSource(taskKey, jsonlFile);
       try {
         const text = fs.readFileSync(jsonlFile, 'utf8');
         const parsed = parseCcSession(text);
