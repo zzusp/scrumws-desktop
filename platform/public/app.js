@@ -1548,7 +1548,35 @@ function stripDirectivePrefix(s) { return String(s || '').replace(/^\s*cc[:：]\
 // （court<invoke name=…><parameter…>），marked v9 默认原样吐 HTML → 浏览器当标签吞内容 / 破版 / XSS。
 // 覆写 renderer.html 把裸 HTML 转义成字面量显示，markdown（粗体/表格/代码）不受影响。
 if (window.marked?.use) {
-  window.marked.use({ renderer: { html: (t) => escapeHtml(typeof t === 'string' ? t : (t?.text ?? '')) } });
+  const localFileUrlFromMarkdownHref = (href) => {
+    const raw = String(href ?? '').trim();
+    if (!raw || /^file:/i.test(raw)) return /^file:/i.test(raw) ? raw : null;
+    if (/^[a-z]:[\\/]/i.test(raw)) {
+      const path = raw.replace(/\\/g, '/');
+      return `file:///${path.split('/').map(encodeURIComponent).join('/')}`;
+    }
+    // marked 会把 Markdown 链接中的反斜杠当转义符，UNC 路径有时只剩一个反斜杠。
+    if (/^\\+[^\\/]+[\\/]/.test(raw)) {
+      const path = raw.replace(/\\/g, '/').replace(/^\/+/, '');
+      return `file://${path.split('/').map(encodeURIComponent).join('/')}`;
+    }
+    if (raw.startsWith('/')) return `file://${raw.split('/').map(encodeURIComponent).join('/')}`;
+    return null;
+  };
+  const safeMarkdownHref = (href) => {
+    const normalized = localFileUrlFromMarkdownHref(href) || String(href ?? '').trim();
+    try { return encodeURI(normalized).replace(/%25/g, '%'); } catch { return null; }
+  };
+  window.marked.use({ renderer: {
+    html: (t) => escapeHtml(typeof t === 'string' ? t : (t?.text ?? '')),
+    // 所有消息链接都新开请求，由 Electron 主进程决定打开网页、本地文件或拒绝未知协议。
+    link: (href, title, text) => {
+      const safeHref = safeMarkdownHref(href);
+      if (!safeHref) return text;
+      const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+      return `<a href="${escapeAttr(safeHref)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+    },
+  } });
 }
 
 // ---- Claude Code 账号级用量渲染（数据经官方 CLI /usage 查得，见后端 claude-usage.js）----
