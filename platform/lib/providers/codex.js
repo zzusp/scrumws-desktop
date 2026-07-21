@@ -1,6 +1,27 @@
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+
+// 0.144.6 会要求该字段，但旧模型服务返回的缓存记录没有它；每次启动前补齐，
+// 让 app-server 能直接读取缓存并完成握手。服务后续刷新仍可能覆盖此字段，因此
+// 必须在每次 spawn 前执行，而不是只在一次启动时修复。
+function repairModelsCache() {
+  const file = path.join(os.homedir(), '.codex', 'models_cache.json');
+  let cache;
+  try { cache = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return; }
+  if (!Array.isArray(cache?.models)) return;
+  let changed = false;
+  for (const model of cache.models) {
+    if (!model || typeof model !== 'object' || Object.hasOwn(model, 'supports_reasoning_summaries')) continue;
+    model.supports_reasoning_summaries = false;
+    changed = true;
+  }
+  if (!changed) return;
+  try { fs.writeFileSync(file, JSON.stringify(cache, null, 2), 'utf8'); } catch { /* 缓存不可写时交由 CLI 自行刷新 */ }
+}
 
 function nowStr() { return new Date().toISOString(); }
 function requestKey(id) { return `${typeof id}:${String(id)}`; }
@@ -131,6 +152,7 @@ export class CodexAdapter {
     const args = [...this.argsPrefix, 'app-server', '--listen', 'stdio://'];
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
+    repairModelsCache();
     if (this.taskKey) {
       env.SCRUMWS_TASK_KEY = this.taskKey;
       env.SCRUMWS_API_BASE = `http://127.0.0.1:${Number(process.env.SCRUMWS_PORT) || 8799}`;
