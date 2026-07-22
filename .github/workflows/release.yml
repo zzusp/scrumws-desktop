@@ -89,7 +89,17 @@ jobs:
           cache: npm
 
       - name: Install deps
-        run: npm ci
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci && exit 0
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::npm ci 连续 3 次失败"
+              exit 1
+            fi
+            echo "::warning::npm ci 第 $attempt 次失败，15 秒后重试"
+            sleep 15
+          done
 
       # macOS 未签名：关掉签名自动发现，否则 electron-builder 在无证书 runner 上会因找不到
       # 签名身份报错。产物是未签名 dmg/zip，用户端首次运行需绕 Gatekeeper（见 docs/ops/release.md）。
