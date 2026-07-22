@@ -2511,6 +2511,11 @@ function syncMaxRunnersInput() {
 // 编辑 = 回填表单改配置（POST update，密钥本体不变）；复制 = 按现有配置克隆（明文不可复原，生成的是新钥）。
 let akKeysCache = [];      // 最近一次列表（编辑/复制回填用）
 let akEditingId = null;    // 非 null = 表单处于「编辑」模式，提交走 update
+function akCopyIcon(copied = false) {
+  return copied
+    ? '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>'
+    : '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
+}
 async function refreshApiKeys() {
   const box = $('akListBox');
   if (!box) return;
@@ -2526,9 +2531,9 @@ async function refreshApiKeys() {
     <thead><tr><th>密钥</th><th>来源</th><th>限制</th><th>最近活跃</th><th>状态</th><th>备注</th><th></th></tr></thead>
     <tbody>${keys.map((k) => `
       <tr>
-        <td class="mono" title="创建于 ${escapeAttr(k.createdAt || '—')}"><div class="ak-key-cell"><span>${escapeHtml(k.prefix)}…</span><button class="btn ak-key-copy" data-ak-copy="${escapeAttr(k.id)}" ${k.plaintext ? '' : 'disabled'} title="${k.plaintext ? '复制原密钥明文' : '旧版本密钥未留存原文'}">⧉</button></div></td>
+        <td class="mono" title="创建于 ${escapeAttr(k.createdAt || '—')}"><div class="ak-key-cell"><span>${escapeHtml(k.prefix)}…</span><button class="btn ak-key-copy" data-ak-copy="${escapeAttr(k.id)}" ${k.plaintext ? '' : 'disabled'} title="${k.plaintext ? '复制原密钥明文' : '旧版本密钥未留存原文'}" aria-label="${k.plaintext ? '复制原密钥明文' : '旧版本密钥未留存原文'}">${akCopyIcon()}</button></div></td>
         <td class="mono">${escapeHtml(k.source)}</td>
-        <td style="font-size:11.5px;min-width:150px" title="${escapeAttr(akPolicyTitle(k))}">${akPolicyCell(k)}</td>
+        <td class="ak-policy-cell" style="font-size:11.5px" title="${escapeAttr(akPolicyTitle(k))}">${akPolicyCell(k)}</td>
         <td class="mono">${akLivenessCell(k)}</td>
         <td>${k.disabled ? '<span class="tag tag-amber">已禁用</span>' : '<span class="tag tag-jade">启用</span>'}</td>
         <td style="min-width:110px">${escapeHtml(k.label)}</td>
@@ -2771,8 +2776,17 @@ function initApiKeysPage() {
       if (!k?.plaintext) return;
       try {
         await navigator.clipboard.writeText(k.plaintext);
-        copyBtn.textContent = '已复制';
-        setTimeout(() => { copyBtn.textContent = '复制'; }, 1500);
+        copyBtn.innerHTML = akCopyIcon(true);
+        copyBtn.classList.add('copied');
+        copyBtn.title = '已复制';
+        copyBtn.setAttribute('aria-label', '已复制');
+        setTimeout(() => {
+          if (!copyBtn.isConnected) return;
+          copyBtn.innerHTML = akCopyIcon();
+          copyBtn.classList.remove('copied');
+          copyBtn.title = '复制原密钥明文';
+          copyBtn.setAttribute('aria-label', '复制原密钥明文');
+        }, 1500);
       } catch {
         // 剪贴板不可用（如无焦点）：弹窗展示原文手动复制
         customAlert({ title: '密钥原文（手动复制）', message: `<code style="word-break:break-all">${escapeHtml(k.plaintext)}</code>` });
