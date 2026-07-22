@@ -529,6 +529,25 @@ function openCardMenu(event, taskKey, section) {
 }
 window.openCardMenu = openCardMenu;
 
+function openAkMenu(event, keyId) {
+  const menu = $('cardMenu');
+  const k = akKeysCache.find((item) => item.id === keyId);
+  if (!menu || !k) return;
+  menu.innerHTML = `
+    <button class="btn" data-ak-edit="${escapeAttr(k.id)}">编辑</button>
+    <button class="btn" data-ak-toggle="${escapeAttr(k.id)}" data-ak-to="${k.disabled ? '0' : '1'}">${k.disabled ? '启用' : '禁用'}</button>
+    <button class="btn btn-danger" data-ak-del="${escapeAttr(k.id)}" data-ak-name="${escapeAttr(`${k.prefix}…（${k.label}）`)}">删除</button>`;
+  menu.style.display = 'flex';
+  const r = event.currentTarget.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  menu.style.left = Math.max(6, r.right - mw) + 'px';
+  menu.style.top = Math.max(6, r.bottom + 4 + mh > window.innerHeight - 6 ? r.top - mh - 4 : r.bottom + 4) + 'px';
+  menu.onclick = () => closeCardMenu();
+  cardMenuCloser = (e) => { if (!menu.contains(e.target)) closeCardMenu(); };
+  setTimeout(() => { document.addEventListener('mousedown', cardMenuCloser, true); window.addEventListener('scroll', closeCardMenu, true); }, 0);
+}
+window.openAkMenu = openAkMenu;
+
 // ================= 看板筛选（来源 / CLI / 工作目录 / 关键字 / sessionId）=================
 // 视图层筛选：状态存 boardFilter，renderLifecycle 渲染前按 matchesBoardFilter 过滤各桶（计数随之显可见数）。
 // 来源 / 工作目录用自定义下拉（不用原生 select，选项面板对齐新建任务 .cwd-menu 范式），选项从真实任务数据动态取；
@@ -2504,20 +2523,17 @@ async function refreshApiKeys() {
     return;
   }
   box.innerHTML = `<div class="ak-table-wrap"><table class="ak-table">
-    <thead><tr><th>密钥</th><th>来源</th><th>备注</th><th>限制</th><th>最近活跃</th><th>状态</th><th></th></tr></thead>
+    <thead><tr><th>密钥</th><th>来源</th><th>限制</th><th>最近活跃</th><th>状态</th><th>备注</th><th></th></tr></thead>
     <tbody>${keys.map((k) => `
       <tr>
-        <td class="mono" title="仅前缀，明文不可再取 · 创建于 ${escapeAttr(k.createdAt || '—')}">${escapeHtml(k.prefix)}…</td>
+        <td class="mono" title="创建于 ${escapeAttr(k.createdAt || '—')}"><div class="ak-key-cell"><span>${escapeHtml(k.prefix)}…</span><button class="btn ak-key-copy" data-ak-copy="${escapeAttr(k.id)}" ${k.plaintext ? '' : 'disabled'} title="${k.plaintext ? '复制原密钥明文' : '旧版本密钥未留存原文'}">⧉</button></div></td>
         <td class="mono">${escapeHtml(k.source)}</td>
-        <td style="min-width:110px">${escapeHtml(k.label)}</td>
         <td style="font-size:11.5px;min-width:150px" title="${escapeAttr(akPolicyTitle(k))}">${akPolicyCell(k)}</td>
         <td class="mono">${akLivenessCell(k)}</td>
         <td>${k.disabled ? '<span class="tag tag-amber">已禁用</span>' : '<span class="tag tag-jade">启用</span>'}</td>
+        <td style="min-width:110px">${escapeHtml(k.label)}</td>
         <td style="white-space:nowrap;text-align:right">
-          <button class="btn" data-ak-edit="${escapeAttr(k.id)}" title="修改此密钥的备注/来源/策略（密钥本体不变）">编辑</button>
-          <button class="btn" data-ak-copy="${escapeAttr(k.id)}" ${k.plaintext ? '' : 'disabled'} title="${k.plaintext ? '复制原密钥明文到剪贴板' : '该密钥创建于明文不留存的旧版本，无法复制原文'}">复制</button>
-          <button class="btn" data-ak-toggle="${escapeAttr(k.id)}" data-ak-to="${k.disabled ? '0' : '1'}">${k.disabled ? '启用' : '禁用'}</button>
-          <button class="btn btn-danger" data-ak-del="${escapeAttr(k.id)}" data-ak-name="${escapeAttr(`${k.prefix}…（${k.label}）`)}">删除</button>
+          <button class="btn card-menu-btn" title="操作" onclick="event.stopPropagation();openAkMenu(event,'${escapeAttr(k.id)}')">···</button>
         </td>
       </tr>`).join('')}
     </tbody></table></div>`;
@@ -2632,7 +2648,7 @@ function akPolicyCell(k) {
   parts.push(`组合 ${pairs.length} 条`);
   parts.push(`目录 ${k.allowedCwds.length} 个`);
   if (k.allowQueued) parts.push('<span style="color:var(--amber)">直执</span>');
-  return parts.join(' · ');
+  return `<span class="ak-policy-lines">${parts.map((part) => `<span>${part}</span>`).join('')}</span>`;
 }
 function akPolicyTitle(k) {
   const lines = [];
@@ -2738,8 +2754,8 @@ function initApiKeysPage() {
   $('akModalCancelBtn').addEventListener('click', akCloseModal);
   $('akModalX').addEventListener('click', akCloseModal);
   $('akModal').addEventListener('click', (e) => { if (e.target === $('akModal')) akCloseModal(); });
-  // 列表操作走事件委托：refreshApiKeys 整块重渲染，行内按钮不逐个绑
-  $('akListBox').addEventListener('click', async (e) => {
+  // 列表与浮层菜单统一走事件委托：refreshApiKeys 整块重渲染，按钮不逐个绑
+  document.addEventListener('click', async (e) => {
     const editBtn = e.target.closest('[data-ak-edit]');
     const copyBtn = e.target.closest('[data-ak-copy]');
     const toggleBtn = e.target.closest('[data-ak-toggle]');
