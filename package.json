@@ -25,14 +25,16 @@
     "appId": "com.zzusp.scrumws-desktop",
     "productName": "ScrumWS",
     "asar": false,
-    "files": ["electron/**", "platform/**", "package.json"],
+    "files": ["electron/**", "platform/**", "build/icon.png", "package.json"],
     "directories": { "output": "dist" },
     "win": {
+      "icon": "build/icon.ico",
       "target": ["nsis"],
       "artifactName": "${productName}-${version}-win-${arch}.${ext}"
     },
     "nsis": { "oneClick": true, "perMachine": false },
     "mac": {
+      "icon": "build/icon.png",
       "category": "public.app-category.developer-tools",
       "target": [
         { "target": "dmg", "arch": ["arm64", "x64"] },

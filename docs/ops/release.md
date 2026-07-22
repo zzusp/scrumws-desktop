@@ -71,5 +71,5 @@ tag 已存在但 CI 没跑成（或想重跑）时，去 Actions → Release →
 
 ## 待办 / 已知限制
 
-- **应用图标**：当前托盘用占位 bitmap（`electron/tray.js`），未提供 `build/icon.ico` / `build/icon.icns`，打包会回退默认 Electron 图标。UI 风格定稿后补图标资源到 `build/`。
+- **应用图标**：Windows 打包使用 `build/icon.ico`，开发态窗口、任务栏和托盘使用随包携带的 `build/icon.png`；macOS 打包暂复用 PNG，由 electron-builder 转换。
 - **自动更新**：暂未接入 electron-updater / 更新服务器；发新版需用户手动下载。如需自动更新再引入 `latest.yml` 发布与更新源配置。

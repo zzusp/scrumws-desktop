@@ -3,12 +3,14 @@ import { loadConfig } from './config.js';
 import { startServer } from './server-host.js';
 import { createTray } from './tray.js';
 import { localPathFromLink } from './link-utils.js';
+import { appIconPath } from './icon.js';
 
 let mainWindow = null;
 let tray = null;
 let quitting = false;
 
 const gotLock = app.requestSingleInstanceLock();
+app.setAppUserModelId('com.zzusp.scrumws-desktop');
 if (!gotLock) {
   // 已有实例在跑：把焦点交给它（second-instance 事件），自己退出，防双实例
   app.quit();
@@ -37,6 +39,7 @@ if (!gotLock) {
       show: false,
       autoHideMenuBar: true,
       backgroundColor: '#111111',
+      icon: appIconPath,
       webPreferences: { contextIsolation: true },
     });
     mainWindow.loadURL(`http://127.0.0.1:${port}/`);
