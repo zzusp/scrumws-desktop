@@ -33,6 +33,31 @@ function tickClock() {
 }
 tickClock(); setInterval(() => { tickClock(); tickLiveTimers(); }, 1000);
 
+// ---- 应用版本与更新提示：当前版本始终展示；仅有更高正式 Release 时启用下载链接 ----
+async function refreshAppVersion() {
+  const link = $('appVersion');
+  const text = $('appVersionText');
+  if (!link || !text) return;
+  try {
+    const info = await api('/api/app-version');
+    text.textContent = info.updateAvailable ? `发现 v${info.latestVersion}` : `v${info.currentVersion}`;
+    link.title = info.updateAvailable ? `当前 v${info.currentVersion}，点击下载 v${info.latestVersion}` : `当前版本 v${info.currentVersion}`;
+    link.classList.toggle('has-update', !!info.updateAvailable);
+    if (info.updateAvailable && info.releaseUrl) {
+      link.href = info.releaseUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+    } else {
+      link.removeAttribute('href');
+      link.removeAttribute('target');
+      link.removeAttribute('rel');
+    }
+  } catch {
+    text.textContent = '版本未知';
+    link.title = '暂时无法读取应用版本';
+  }
+}
+
 // ---- 状态 ----
 let stateData = null;
 let providerCatalog = [];
@@ -4028,6 +4053,7 @@ function scheduleStateRefresh() {
 }
 
 // ---- init ----
+refreshAppVersion();
 refreshState().then(async () => {
   await ensureProviderCatalog();
   initReplyModelSelector();

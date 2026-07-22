@@ -131,6 +131,13 @@ svg.ic{flex:none;width:16px;height:16px;stroke:currentColor;fill:none;stroke-wid
 .topnav a.active{color:var(--sidebar-accent-foreground);background:var(--sidebar-accent);font-weight:600}
 .shell.collapsed .topnav a{justify-content:center;padding:8px 0}
 .shell.collapsed .topnav{gap:4px;padding-top:8px}
+.app-version{display:flex;align-items:center;gap:8px;min-height:30px;padding:6px 10px;border-radius:var(--r-lg);color:var(--dim);font:10.5px/1.35 var(--mono);text-decoration:none;white-space:nowrap}
+.app-version:hover{color:var(--mut);background:var(--sidebar-accent)}
+.app-version.has-update{color:var(--primary);background:color-mix(in oklab,var(--primary) 10%,transparent);font-weight:600}
+.app-version-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.app-version:not(.has-update) .app-version-dot{display:none}
+.shell.collapsed .app-version{justify-content:center;padding:8px 0}
+.shell.collapsed .app-version .sb-label{display:none}
 
 /* 设置页：控制行（原侧边栏底部控件迁入，折叠不再错位）*/
 .set-list{display:flex;flex-direction:column;gap:2px;margin-bottom:4px}
@@ -796,6 +803,10 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <span class="sb-label">设置</span>
       </a>
     </nav>
+    <a class="app-version" id="appVersion" title="正在读取应用版本">
+      <span class="app-version-dot" aria-hidden="true"></span>
+      <span class="sb-label" id="appVersionText">版本 —</span>
+    </a>
   </aside>
 
   <!-- ===== 内容区：授权横幅 + 主盒（盒内自带面包屑顶栏，占满右侧竖向空间）===== -->

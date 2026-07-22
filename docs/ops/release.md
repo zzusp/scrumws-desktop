@@ -69,7 +69,11 @@ tag 已存在但 CI 没跑成（或想重跑）时，去 Actions → Release →
 
 遵循 [语义化版本](https://semver.org/lang/zh-CN/) `MAJOR.MINOR.PATCH`：破坏性改动进 MAJOR，向后兼容的功能进 MINOR，修 bug 进 PATCH。tag 一律带 `v` 前缀（`v0.1.1`），`package.json` 的 `version` 不带前缀（`0.1.1`）。
 
+## 更新提示
+
+桌面端启动后通过本地 `/api/app-version` 查询 GitHub 最新正式 Release，结果缓存 6 小时。存在更高版本时，侧边栏底部显示可点击更新提示并打开系统浏览器下载；当前不静默下载或安装。
+
 ## 待办 / 已知限制
 
 - **应用图标**：当前托盘用占位 bitmap（`electron/tray.js`），未提供 `build/icon.ico` / `build/icon.icns`，打包会回退默认 Electron 图标。UI 风格定稿后补图标资源到 `build/`。
-- **自动更新**：暂未接入 electron-updater / 更新服务器；发新版需用户手动下载。如需自动更新再引入 `latest.yml` 发布与更新源配置。
+- **自动安装**：当前只提示并引导用户打开 GitHub Release 手动下载，未接入 `electron-updater` 静默下载或安装。
