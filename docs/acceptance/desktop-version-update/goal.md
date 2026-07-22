@@ -12,7 +12,12 @@
 | 侧边栏版本与更新提示 | 已完成 | 页面常驻版本；有更新时显示可点击提示 |
 | 文档与发布链路 | 已完成 | README/发版说明/CHANGELOG 与新行为一致 |
 | 本地验收 | 已完成 | 自动化检查、服务实跑、Windows 打包均通过 |
-| 发布 0.2.0 | 待开始 | tag、Actions、正式 Release 和产物均已回查 |
+| 发布 0.2.0 | 已完成 | tag、Actions、正式 Release 和产物均已回查 |
+
+## Sub goal 进展
+
+- Round 1：版本 API、侧边栏提示、文档、本地服务与 Windows 打包通过。
+- Round 2：修复 macOS Bash 3 上传兼容、CI Node 版本与依赖下载抖动；Release 第三轮全绿，`v0.2.0` 正式发布。
 
 ## 重大决策
 
