@@ -8,7 +8,10 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
+
 ### Added
+- 侧边栏常驻显示当前桌面端版本；检测到更高的 GitHub 正式 Release 时提示用户打开下载页。
 - GitHub Actions 发版流水线：`vX.Y.Z` tag 触发，并行打包 Windows(nsis) + macOS(dmg/zip, arm64+x64)，自动读 `CHANGELOG.md` 对应段落填 Release 正文。
 
 ### Changed
@@ -22,5 +25,6 @@
 - 桌面端首个基线版本：Electron 托盘常驻壳 + 进程内调度平台，从 `dashboard/` 迁移而来，平台核逻辑与磁盘契约不变。
 - 任务执行走 Mode B 交互会话引擎（`session-manager` 直起 `claude` stream-json，跨平台）。
 
-[Unreleased]: https://github.com/zzusp/scrumws-desktop/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zzusp/scrumws-desktop/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/zzusp/scrumws-desktop/releases/tag/v0.2.0
 [0.1.0]: https://github.com/zzusp/scrumws-desktop/releases/tag/v0.1.0

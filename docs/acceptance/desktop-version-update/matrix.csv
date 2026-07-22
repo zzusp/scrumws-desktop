@@ -1,0 +1,11 @@
+case,round-1
+当前版本读取,PASS
+高版本 Release 提示,PASS
+同版本或低版本不提示,PASS
+非法 tag 不误报,PASS
+网络失败保留当前版本,PASS
+检查结果缓存,PASS
+侧边栏版本结构,PASS
+本地服务 API,PASS
+Windows 安装包,PASS
+GitHub Release 全平台产物,PENDING

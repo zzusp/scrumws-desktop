@@ -18,6 +18,7 @@ import { createApiKey, updateApiKey, listApiKeys, setApiKeyDisabled, deleteApiKe
 import { createExternalTask, externalTaskStatus, resumeExternalTask } from './lib/external-ingest.js';
 import { P } from './lib/paths.js';
 import { normalizeProvider } from './lib/providers/registry.js';
+import { getAppVersionInfo } from './lib/app-version.js';
 
 const HOST = '127.0.0.1'; // owner 本机自查，不对外
 const PORT = Number(process.env.SCRUMWS_PORT) || 8799;
@@ -78,6 +79,7 @@ const server = http.createServer(async (req, res) => {
     // 缓存 + single-flight：3s 内的并发请求（多标签页 / modal 关闭补拉）合并成一次扫描；
     // UI 最快也只有 5s 一轮，故永不被降级，对外行为不变
     if (pathname === '/api/state') return sendJson(res, 200, await getState({ maxAgeMs: 3000 }));
+    if (pathname === '/api/app-version') return sendJson(res, 200, await getAppVersionInfo());
     if (pathname === '/api/providers') {
       const runtime = await getProviderRuntime();
       const config = providerConfig();

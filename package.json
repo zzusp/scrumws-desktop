@@ -1,6 +1,6 @@
 {
   "name": "scrumws-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "ScrumWS 任务看板 · 桌面端（Electron）",
   "author": "zzusp <peng_zzu@163.com>",

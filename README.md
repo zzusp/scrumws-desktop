@@ -34,6 +34,8 @@ npm run release 0.1.1            # 发版；--dry-run 可先零副作用自检
 CI 会校验 tag 版本 == package.json 版本、抽 `CHANGELOG.md` 对应段落作 Release 正文、并行打 Win/Mac、draft→正式发布。
 完整流程与 macOS 未签名包的运行说明见 [`docs/ops/release.md`](docs/ops/release.md)，版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 
+桌面端侧边栏底部常驻显示当前版本。启动后会查询 GitHub 最新正式 Release；发现更高版本时显示更新提示，点击后由系统浏览器打开下载页。应用不会静默下载或安装更新。
+
 配置优先级：env（`SCRUMWS_PORT` / `SCRUMWS_DATA_ROOT` / `SCRUMWS_SCHEDULER=1`）> `%APPDATA%\scrumws-desktop\config.json` > 默认值。
 进程内调度器只跑守护 **Runner Checker**（收孤儿任务）；`runtime/scheduler.lock` 跨进程互斥，多实例只有一个真调度。
 任务执行 = **统一会话引擎**：`session-manager` 通过 provider adapter 分别连接 Claude Code stream-json 或 Codex `app-server` JSON-RPC；queued 任务即自动起会话，一轮收敛后释放 provider 进程。新任务在桌面端显式选择 provider，旧任务缺少 `provider` 时按 Claude Code 解释。Codex 使用本机 CLI 登录态，模型可留空以继承 CLI 默认值。
