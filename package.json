@@ -7,7 +7,7 @@
   "type": "module",
   "main": "electron/main.js",
   "bin": { "scrumws-task": "platform/cli.js" },
-  "engines": { "node": ">=20.11" },
+  "engines": { "node": ">=22.12" },
   "scripts": {
     "start": "electron .",
     "start:web": "node platform/standalone.js",
