@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install deps
@@ -106,7 +106,10 @@ jobs:
         shell: bash
         run: |
           TAG="v${{ needs.prepare.outputs.version }}"
-          mapfile -t FILES < <(find dist -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \))
+          FILES=()
+          while IFS= read -r file; do
+            FILES+=("$file")
+          done < <(find dist -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \))
           if [ ${#FILES[@]} -eq 0 ]; then
             echo "::error::dist/ 下没有可上传的安装包"
             exit 1
