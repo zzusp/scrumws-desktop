@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'scrumws-provider-data-'));
 process.env.SCRUMWS_DATA_ROOT = sandbox;
+process.env.SCRUMWS_CODEX_SESSIONS = path.join(sandbox, 'codex-sessions');
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const platformLib = path.join(here, '../../../../platform/lib');
@@ -15,6 +16,7 @@ const { writeConfig } = await importLib('runner-config.js');
 const { createTask, editTask, readTaskEdit } = await importLib('task-actions.js');
 const { createApiKey, listApiKeys } = await importLib('api-keys.js');
 const { createExternalTask, externalTaskStatus } = await importLib('external-ingest.js');
+const { collectState } = await importLib('collect.js');
 
 const readTask = (taskKey) => {
   const safeKey = taskKey.replace(/:/g, '__').replace(/#/g, '_');
@@ -30,6 +32,7 @@ try {
       claude: { model: 'claude-sonnet-5', effort: 'medium' },
       codex: { model: 'gpt-config-default', effort: 'high' },
     },
+    workDirectories: [sandbox],
   });
 
   // provider 缺失仍按 Claude，不能被本机 defaultProvider=codex 改义；新包必须显式落 provider。
@@ -137,6 +140,32 @@ try {
     fs.chmodSync(fakeClaude, 0o755);
   }
   process.env.PATH = fakeBin;
+
+  // 外部平台 resume 不会通过 ScrumWS runner 回写 state.json；卡片必须从 Codex rollout 的真实 turn 状态派生。
+  const resumedSid = '11111111-1111-4111-8111-111111111111';
+  const resumedKey = 'external:codex-resume';
+  const resumedDir = path.join(sandbox, 'runtime', 'runner-state', 'external__codex-resume');
+  const rolloutDir = path.join(process.env.SCRUMWS_CODEX_SESSIONS, '2026', '07', '22');
+  const rolloutPath = path.join(rolloutDir, `rollout-2026-07-22-${resumedSid}.jsonl`);
+  fs.mkdirSync(rolloutDir, { recursive: true });
+  fs.mkdirSync(resumedDir, { recursive: true });
+  fs.writeFileSync(path.join(resumedDir, 'task.json'), JSON.stringify({
+    taskKey: resumedKey, source: 'external', kind: 'interactive', provider: 'codex', title: 'external resume', prompt: 'resume', cwd: sandbox,
+  }, null, 2));
+  fs.writeFileSync(path.join(resumedDir, 'state.json'), JSON.stringify({ state: 'awaiting-human', enteredAt: '2026-07-22 10:00:00' }, null, 2));
+  fs.writeFileSync(path.join(resumedDir, 'meta.json'), JSON.stringify({ sessionId: resumedSid, jsonlPath: rolloutPath }, null, 2));
+  fs.writeFileSync(rolloutPath, [
+    JSON.stringify({ type: 'session_meta', payload: { session_id: resumedSid, cwd: sandbox } }),
+    JSON.stringify({ timestamp: '2026-07-22T10:01:00.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'resume-turn' } }),
+  ].join('\n') + '\n');
+  const runningState = await collectState();
+  assert.equal(runningState.lifecycle.processing.some((item) => item.taskKey === resumedKey), true);
+  assert.equal(runningState.lifecycle.awaitingHuman.some((item) => item.taskKey === resumedKey), false);
+  fs.appendFileSync(rolloutPath, JSON.stringify({ timestamp: '2026-07-22T10:02:00.000Z', type: 'event_msg', payload: { type: 'task_complete', duration_ms: 1_000 } }) + '\n');
+  const settledState = await collectState();
+  assert.equal(settledState.lifecycle.processing.some((item) => item.taskKey === resumedKey), false);
+  assert.equal(settledState.lifecycle.awaitingHuman.some((item) => item.taskKey === resumedKey), true);
+
   const { start } = await import(pathToFileURL(path.join(platformLib, '../server.js')).href);
   const running = await start();
   try {
@@ -159,7 +188,7 @@ try {
     process.env.PATH = originalPath;
   }
 
-  console.log('PASS provider data: legacy defaults/lock, API key scope, external ingest, independent runtime HTTP');
+  console.log('PASS provider data: legacy defaults/lock, API key scope, external ingest/resume state, independent runtime HTTP');
 } finally {
   fs.rmSync(sandbox, { recursive: true, force: true });
 }

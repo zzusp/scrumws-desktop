@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { P } from './paths.js';
 import { getProviderDefinition, normalizeProvider, validateProviderSelection } from './providers/registry.js';
+import { listWorkDirectories } from './runner-config.js';
 
 // 外部任务 API 的密钥件（swak_ = ScrumWS Api Key）。铸造/存储模式对齐 cloud/src/auth.js：
 // 随机 32B base64url、明文只在创建响应里回一次、落盘只存 sha256。每个 key 绑定一个 source——
@@ -62,11 +63,56 @@ function normPolicyArr(v, allowEmpty, max = 20) {
   return out;
 }
 
-// 配置校验（create / update 共用）：label 必填；source 规则与 createTask.source 一致；
-// 策略白名单**三项必选**（全不选 = 没有权限）：allowedModels / allowedEfforts 在绑定 provider 内校验、
-// allowedCwds 须为绝对路径（请求省略对应字段时取首项为默认）；allowQueued（默认 false）= 是否允许
-// plan:false 直进 queued 自动执行（关闭时该密钥只能建 plan 任务，须看板确认）。
-function validateKeyConfig({ label, source, provider, allowedModels, allowedEfforts, allowedCwds, allowQueued }) {
+function legacyPolicyPairs(allowedModels, allowedEfforts, definition) {
+  const models = normPolicyArr(allowedModels, definition.allowCustomModel);
+  if (!models.length) return { error: 'allowedModels 必选：至少勾选一个可用模型（第一个为该密钥默认）' };
+  for (const model of models) {
+    const selected = validateProviderSelection({ provider: definition.id, model });
+    if (!selected.ok) return { error: `allowedModels 非法：${selected.error}` };
+  }
+  const efforts = normPolicyArr(allowedEfforts, definition.id === 'codex');
+  if (!efforts.length) return { error: 'allowedEfforts 必选：至少勾选一个可用 effort（第一个为该密钥默认）' };
+  for (const effort of efforts) {
+    const selected = validateProviderSelection({ provider: definition.id, effort });
+    if (!selected.ok) return { error: `allowedEfforts 非法：${selected.error}` };
+  }
+  return { pairs: models.flatMap((model) => efforts.map((effort) => ({ model, effort }))) };
+}
+
+// 存量密钥没有组合字段，读取时按原「模型白名单 × effort 白名单」语义解释，避免升级后扩权或失权。
+export function policyPairsOf(key) {
+  if (Array.isArray(key?.allowedModelEfforts) && key.allowedModelEfforts.length) {
+    return key.allowedModelEfforts.map((item) => ({ model: String(item?.model ?? '').trim(), effort: String(item?.effort ?? '').trim() }));
+  }
+  const models = Array.isArray(key?.allowedModels) ? key.allowedModels : [];
+  const efforts = Array.isArray(key?.allowedEfforts) ? key.allowedEfforts : [];
+  return models.flatMap((model) => efforts.map((effort) => ({ model: String(model ?? '').trim(), effort: String(effort ?? '').trim() })));
+}
+
+function policyPairsFromInput(allowedModelEfforts, allowedModels, allowedEfforts, definition) {
+  // 保留数组入参仅用于 API 调用方平滑迁移；管理表单一律提交组合字段。
+  if (!Array.isArray(allowedModelEfforts)) return legacyPolicyPairs(allowedModels, allowedEfforts, definition);
+  const pairs = [];
+  const seen = new Set();
+  for (const raw of allowedModelEfforts) {
+    const model = String(raw?.model ?? '').trim();
+    const effort = String(raw?.effort ?? '').trim();
+    if (!effort) return { error: 'allowedModelEfforts 中每条组合都必须选择 effort' };
+    const selected = validateProviderSelection({ provider: definition.id, model, effort });
+    if (!selected.ok) return { error: `allowedModelEfforts 非法：${selected.error}` };
+    const id = `${model}\u0000${effort}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    pairs.push({ model, effort });
+    if (pairs.length >= 20) break;
+  }
+  if (!pairs.length) return { error: 'allowedModelEfforts 必选：至少添加一条模型 + effort 组合（第一条为该密钥默认）' };
+  return { pairs };
+}
+
+// 配置校验（create / update 共用）：策略组合和目录均必选。目录只可从「工作目录」菜单维护的列表中选择；
+// 外部任务本身仍可使用该目录的子目录。allowQueued（默认 false）决定是否能 plan:false 直进 queued。
+function validateKeyConfig({ label, source, provider, allowedModelEfforts, allowedModels, allowedEfforts, allowedCwds, allowQueued }) {
   const lab = String(label || '').trim().slice(0, 100);
   const src = String(source || '').trim();
   const providerId = normalizeProvider(provider);
@@ -74,25 +120,28 @@ function validateKeyConfig({ label, source, provider, allowedModels, allowedEffo
   if (!lab) return { ok: false, error: 'label required' };
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(src)) return { ok: false, error: `非法 source：${src}（仅 [A-Za-z0-9_-]、首字符字母数字）` };
   if (!definition) return { ok: false, error: `未知 provider：${providerId}` };
-  const models = normPolicyArr(allowedModels, definition.allowCustomModel);
-  if (!models.length) return { ok: false, error: 'allowedModels 必选：至少勾选一个可用模型（第一个为该密钥默认）' };
-  for (const m of models) {
-    const selected = validateProviderSelection({ provider: providerId, model: m });
-    if (!selected.ok) return { ok: false, error: `allowedModels 非法：${selected.error}` };
-  }
-  const efforts = normPolicyArr(allowedEfforts, providerId === 'codex');
-  if (!efforts.length) return { ok: false, error: 'allowedEfforts 必选：至少勾选一个可用 effort（第一个为该密钥默认）' };
-  for (const e of efforts) {
-    const selected = validateProviderSelection({ provider: providerId, effort: e });
-    if (!selected.ok) return { ok: false, error: `allowedEfforts 非法：${selected.error}` };
-  }
+  const pairResult = policyPairsFromInput(allowedModelEfforts, allowedModels, allowedEfforts, definition);
+  if (pairResult.error) return { ok: false, error: pairResult.error };
+  const pairs = pairResult.pairs;
   const cwds = [];
+  const configured = new Set(listWorkDirectories().map((cwd) => path.resolve(cwd).toLowerCase()));
   for (const c of normStrArr(allowedCwds)) {
     if (!path.isAbsolute(c)) return { ok: false, error: `allowedCwds 须为绝对路径：${c}` };
-    cwds.push(path.resolve(c));
+    const cwd = path.resolve(c);
+    if (!configured.has(cwd.toLowerCase())) return { ok: false, error: `allowedCwds 必须从「工作目录」菜单已配置的目录中选择：${cwd}` };
+    cwds.push(cwd);
   }
-  if (!cwds.length) return { ok: false, error: 'allowedCwds 必填：至少一个可访问目录（绝对路径；第一行为该密钥默认）' };
-  return { ok: true, cfg: { label: lab, source: src, provider: providerId, allowedModels: models, allowedEfforts: efforts, allowedCwds: cwds, allowQueued: !!allowQueued } };
+  if (!cwds.length) return { ok: false, error: 'allowedCwds 必填：至少选择一个「工作目录」菜单已配置的目录（第一项为该密钥默认）' };
+  return {
+    ok: true,
+    cfg: {
+      label: lab, source: src, provider: providerId, allowedModelEfforts: pairs,
+      // 两份派生数组继续返回给未迁移的调用方；真正的授权判定只认组合。
+      allowedModels: [...new Set(pairs.map((item) => item.model))],
+      allowedEfforts: [...new Set(pairs.map((item) => item.effort))],
+      allowedCwds: cwds, allowQueued: !!allowQueued,
+    },
+  };
 }
 
 // 创建 key：返回 {ok, key(存盘条目), plaintext}。
@@ -140,8 +189,9 @@ function publicView(k) {
     id: k.id, label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt,
     provider: normalizeProvider(k.provider),
     disabled: !!k.disabled, lastUsedAt: k.lastUsedAt || null,
-    allowedModels: Array.isArray(k.allowedModels) ? k.allowedModels : [],
-    allowedEfforts: Array.isArray(k.allowedEfforts) ? k.allowedEfforts : [],
+    allowedModelEfforts: policyPairsOf(k),
+    allowedModels: Array.isArray(k.allowedModels) ? k.allowedModels : [...new Set(policyPairsOf(k).map((item) => item.model))],
+    allowedEfforts: Array.isArray(k.allowedEfforts) ? k.allowedEfforts : [...new Set(policyPairsOf(k).map((item) => item.effort))],
     allowedCwds: Array.isArray(k.allowedCwds) ? k.allowedCwds : [],
     allowQueued: !!k.allowQueued,
     plaintext: k.plaintext || null,

@@ -991,9 +991,19 @@ export function readWorkerLog(taskKey, maxSessions = 20) {
 }
 
 
-// 编辑任务描述：写 task.json.description。纯用户备注（比如开始前记任务内容、归档前记进展），
-// 不拼进任何 claude prompt；任意状态（含归档）都可编辑，空串 = 清除
+// 编辑任务描述：任务包写 task.json.description，未物化 CLI 会话写 watchlist.note。纯用户备注
+// （比如开始前记任务内容、归档前记进展），不拼进任何 Agent prompt；任意状态（含归档）都可编辑，空串 = 清除
 export function setTaskDescription(taskKey, newDesc) {
+  // 未物化的 CLI 会话没有任务包；卡片读取的描述来自 watchlist.note，需写回同一来源。
+  if (typeof taskKey === 'string' && taskKey.startsWith('cli:') && !hasTaskPackage(taskKey)) {
+    const shortSid = taskKey.slice(4);
+    const entry = Object.entries(_cliWatchlist.readWatchlist().sessions || {}).find(([sid]) => sid.startsWith(shortSid));
+    if (!entry) return { ok: false, error: 'cli session not in watchlist' };
+    const note = String(newDesc || '').trim().slice(0, 2000);
+    const r = _cliWatchlist.upsertWatchlist(entry[0], { note });
+    if (!r.ok) return r;
+    return { ok: true, taskKey, description: r.entry.note || null };
+  }
   const safeKey = safeKeyOf(taskKey);
   if (!safeKey) return { ok: false, error: 'invalid taskKey' };
   let dir = null;

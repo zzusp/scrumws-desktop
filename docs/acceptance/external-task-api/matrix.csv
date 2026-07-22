@@ -18,6 +18,10 @@ C2,按 externalKey 查状态（台账解析）,PASS,PASS,PASS,PASS,PASS,PASS,PAS
 C3,跨 source 查他人任务 → 404,PASS,PASS,PASS,PASS,PASS,PASS,PASS,PASS
 C4,未登记 externalKey → 404,PASS,PASS,PASS,PASS,PASS,PASS,PASS,PASS
 C5,查状态无鉴权 → 401,PASS,PASS,PASS,PASS,PASS,PASS,PASS,PASS
+C6,plan 任务不可借 resume 绕过看板确认,-,-,-,-,-,-,-,-,PASS
+C7,跨 source 密钥续接他人任务 → 404,-,-,-,-,-,-,-,-,PASS
+C8,续接无鉴权 → 401,-,-,-,-,-,-,-,-,PASS
+C9,按 externalKey 续接 awaiting-human 任务 → processing,-,-,-,-,-,-,-,-,PASS
 D1,禁用密钥后 → 401,PASS,PASS,PASS,PASS,PASS,PASS,PASS,PASS
 D2,重新启用后恢复可用,PASS,PASS,PASS,PASS,PASS,PASS,PASS,PASS
 D3,任务删除后同 externalKey 重建（台账掉旧建新）,PASS,PASS,PASS,PASS,PASS,PASS,PASS,PASS

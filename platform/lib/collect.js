@@ -9,7 +9,7 @@ import * as scheduler from './scheduler.js';
 import { normalizeModelContextLimits, providerConfig, readConfig } from './runner-config.js';
 import { leaseAlive } from './lease.js';
 import { collectCliSessions, readAttachedSessions, backgroundTaskCountBySid, readClaudeSessionCwd } from './collect-cli.js';
-import { collectCodexCliSessions, readCodexAttachedSession } from './collect-codex-cli.js';
+import { collectCodexCliSessions, readCodexAttachedSession, readCodexCliSessionActivity } from './collect-codex-cli.js';
 import { getTaskSessionId } from './task-runner.js';
 import { modelContextLimits, usageSnapshot } from './claude-usage.js';
 import { getDailyUsage } from './daily-usage.js';
@@ -132,8 +132,15 @@ function collectOne(safeTaskKey, dir, now, isArchive = false, attachedSessions =
   // 会话活性：看板 Mode B 活会话 ∪ CC 注册表(~/.claude/sessions)里有活进程持有该 sessionId
   // （task-runner 的 claude -p --resume 也登记在 att，看板重启后 mbSessionId 丢失仍据此判活）
   const sessionAlive = !!mbSessionId || !!externalSession;
+  // 外部平台创建的 Codex 任务由外部客户端 resume 时，不会回写本地 state.json；以 rollout 的
+  // task_started/task_complete 为准仅派生卡片展示态，避免把外部会话变更误写进任务包。
+  const externalCodexActivity = provider === 'codex' && effectiveState === 'awaiting-human' && !mbSessionId && meta?.sessionId
+    ? readCodexCliSessionActivity(meta.sessionId, meta.jsonlPath || null)
+    : null;
+  const externalCodexRunning = externalCodexActivity?.ok === true && externalCodexActivity.isRunning;
   // 后台维度（统一：与 cli 任务同字段 backgroundTaskCount）
-  const { backgroundTaskCount, displayState } = deriveBackgroundState(effectiveState, sessionAlive, meta?.sessionId);
+  const { backgroundTaskCount, displayState: backgroundDisplayState } = deriveBackgroundState(effectiveState, sessionAlive, meta?.sessionId);
+  const displayState = externalCodexRunning ? 'processing' : backgroundDisplayState;
 
   return {
     taskKey,

@@ -40,9 +40,13 @@ CI 会校验 tag 版本 == package.json 版本、抽 `CHANGELOG.md` 对应段落
 
 任务详情在 processing / awaiting-human / done 下都从 Claude session JSONL 或 Codex rollout JSONL 还原完整执行记录，不使用 SSE 逐字流。检测到 session 正在 App 外终端中运行时，ScrumWS 保持只读；外部进程退出后，详情回复会由对应 provider adapter 启动一次原生 resume，收敛后释放子进程。执行语义详见 [`docs/api/external-api-guide.md`](docs/api/external-api-guide.md)「提交之后会发生什么」章。
 
+## 工作目录
+
+「工作目录」菜单维护新建任务表单的目录候选，配置保存在本机 `runner-config.json.workDirectories`。它只保存目录路径，不修改已有任务的 `cwd`、worktree 信息或 `taskKey`；误选的 Claude worktree 路径会自动收敛到所属仓库根目录。该列表与云端派活/手机中继使用的 `cloudAllowedCwds` 安全白名单完全独立。
+
 ## 外部接入（API 密钥）
 
-外部系统（钉钉派发器、issue 检查器、任意脚本/机器人）可凭 **API 密钥**向桌面端发起/查询任务：在「API 密钥」菜单页生成密钥（绑定 provider + 来源 + 模型/effort/目录白名单 + 直执权限，可编辑/复制），调用方经 `/api/external/*` 接入——支持 `whoami` 自省权限范围、`externalKey` 幂等去重（重试不重复建任务）、来源心跳（页面显示活跃状态）；任务默认落 plan 桶（看板确认后执行），「直执」密钥可 `plan:false` 直接排队执行。
+外部系统（钉钉派发器、issue 检查器、任意脚本/机器人）可凭 **API 密钥**向桌面端发起、查询、续接任务：在「API 密钥」菜单页生成密钥（绑定 provider + 来源 + 逐条模型/effort 组合 + 从「工作目录」选择的目录白名单 + 直执权限，可编辑/复制），调用方经 `/api/external/*` 接入——支持 `whoami` 自省权限范围、`externalKey` 幂等去重（重试不重复建任务）、来源心跳（页面显示活跃状态）；任务默认落 plan 桶（看板确认后执行），「直执」密钥可 `plan:false` 直接排队执行。
 
 **接入指导（契约 / 步骤 / 多语言示例 / 排错）：[`docs/api/external-api-guide.md`](docs/api/external-api-guide.md)**
 
@@ -52,6 +56,7 @@ CI 会校验 tag 版本 == package.json 版本、抽 `CHANGELOG.md` 对应段落
 
 - **为什么**：任务执行的本质是一个可恢复的 provider 会话（Claude session 或 Codex thread）。来源不改变「它是一个能 plan / 排队 / 处理中 / 待人工 / 完成 / 退回计划 / 编辑 / 归档的任务」——这些能力对所有来源一视同仁。
 - **怎么落地**：改 `lib/task-actions.js`（任务动作）、`public/app.js` 的 `cardActionButtons`（按钮门控）、`lib/collect*.js`（聚合出卡）时，按 `state` 分支，不写 `startsWith('cli:')` / `source === 'cli'` / `isCli` 这类来源判断。`source` 只用于展示（角标 / 图标）与入库归类。
+- **未物化 CLI 会话的元数据**：这类观察态会话没有任务包，标题和描述分别保存在 `cli-watchlist.json` 的 `customTitle`、`note`；一旦物化为任务包，后续统一写入 `task.json`。
 - **现状偏差（待收敛，非目标态）**：历史代码仍有多处按来源特判——`moveTaskToPlan` / `completeTask` / `uncompleteTask` 拒绝 `cli:`、`replyToTask` 把 cli 路由到另一条 runner、`app.js` 用 `isCli` 抹掉退回计划 / 中断按钮、`collect-cli.js` 从 watchlist 单独出卡等。这些与本不变量冲突，后续应逐步统一到「按状态、不按来源」。
 
 ## Electron 宿主适配（迁移时踩的点，改平台核前先读）

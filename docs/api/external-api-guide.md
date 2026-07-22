@@ -10,12 +10,13 @@
 
 ---
 
-## 快速开始（4 步）
+## 快速开始（5 步）
 
-1. **拿密钥**：让桌面端使用者在「API 密钥」菜单页点「＋ 生成密钥」——选择 Claude Code 或 Codex provider，填备注、来源（source）、勾选可用模型 / effort、填可访问目录、按需勾「允许直接执行」。一把密钥只绑定一个 provider。生成后把明文（`swak_…`）交给你；日后遗失可在列表行内「复制」再次取回。
+1. **拿密钥**：让桌面端使用者在「API 密钥」菜单页点「＋ 生成密钥」——选择 Claude Code 或 Codex provider，填备注、来源（source），逐条添加可用的 model + effort 组合，并从「工作目录」菜单维护的目录中选择可访问目录，按需勾「允许直接执行」。一把密钥只绑定一个 provider。生成后把明文（`swak_…`）交给你；日后遗失可在列表行内「复制」再次取回。
 2. **自省**（可选但推荐）：`GET /api/external/whoami` 确认密钥可用并拿到自己的权限范围，据此决定调用参数。
 3. **发起任务**：`POST /api/external/task/create`（带 `externalKey` 幂等键，重试/重复检测不会重复建任务）。
 4. **查询状态**：`GET /api/external/task/status`（按 `taskKey` 或 `externalKey`）。
+5. **续接已收敛任务**：`POST /api/external/task/resume`（按同一标识附上下一条 `message`，由绑定 provider 原生 resume）。
 
 ```bash
 KEY='swak_xxxxxxxx'
@@ -28,6 +29,10 @@ curl -s -X POST http://127.0.0.1:8799/api/external/task/create \
 # ③ 查询
 curl -s -H "Authorization: Bearer $KEY" \
   'http://127.0.0.1:8799/api/external/task/status?externalKey=来源侧唯一事件id'
+# ④ 续接（仅 awaiting-human / done）
+curl -s -X POST http://127.0.0.1:8799/api/external/task/resume \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"externalKey":"来源侧唯一事件id","message":"请根据最新反馈继续处理"}'
 ```
 
 ---
@@ -50,9 +55,8 @@ Authorization: Bearer swak_…
 |---|---|---|
 | `provider` | 固定执行引擎：`claude` / `codex` | 请求不能跨 provider 覆盖；`whoami` 会返回该值 |
 | `source` | 来源标签 | 该密钥建的任务一律记为此来源（**请求体里传 `source` 无效**）；查询也只能查到本来源的任务 |
-| `allowedModels` | 可用模型白名单（必选） | 请求省略 `model` → 用白名单**首项**；传白名单外的值 → `400 model 不在该密钥允许范围：…` |
-| `allowedEfforts` | 可用 effort 白名单（必选） | 同上（省略取首项 / 越界 400） |
-| `allowedCwds` | 可访问目录白名单（必选，绝对路径） | 任务 `cwd` 须**等于某项或在其之下**（Windows 大小写不敏感）；省略取首项；越界 400 |
+| `allowedModelEfforts` | model + effort 组合白名单（必选） | 每条 `{model, effort}` 是一个允许组合；请求同时省略 model 和 effort 时取首条；传入的两项必须共同命中一条组合 |
+| `allowedCwds` | 可访问目录白名单（必选） | 只能选择「工作目录」菜单已维护的目录；任务 `cwd` 须等于某项或在其之下（Windows 大小写不敏感），省略取首项 |
 | `allowQueued` | 允许直接执行（默认关） | 关：显式传 `plan:false` → `400 该密钥不允许直接排队执行…`（只能建 plan 任务，看板确认后执行）；开：`plan:false` 直进 queued **立即自动起对应 provider 会话执行** |
 
 密钥配置可在「API 密钥」页随时**编辑**（即时生效，无需换钥）。**推荐调用方启动时先调 `whoami` 拿权限范围**，而不是硬编码模型/目录——密钥被编辑后调用方无需改代码。
@@ -66,12 +70,12 @@ Authorization: Bearer swak_…
 ```json
 { "ok": true, "key": {
     "label": "钉钉群消息派发器", "source": "chat", "provider": "claude", "prefix": "swak_xH1jnAo", "createdAt": "2026-07-17 21:04:26",
-    "allowedModels": ["claude-opus-4-8"], "allowedEfforts": ["xhigh"],
+    "allowedModelEfforts": [{"model":"claude-opus-4-8","effort":"xhigh"}],
     "allowedCwds": ["D:\\baibu-agent"], "allowQueued": true } }
 ```
 
-- 各白名单**首项即该密钥的默认值**（请求省略对应字段时采用）。
-- Codex 的空字符串模型表示“使用本机 Codex CLI 默认模型”，例如 `"allowedModels":[""]`。
+- `allowedModelEfforts` 的**首条即默认组合**；调用方传 model 与 effort 时必须共同命中同一条。只传其中一项且能匹配多条组合时，服务端会要求补齐另一项，避免歧义。
+- 为兼容旧调用方，响应仍带由组合派生的 `allowedModels`、`allowedEfforts`；鉴权依据始终是 `allowedModelEfforts`。
 - 无副作用、可随意调（也会刷新「API 密钥」页的「最近活跃」）。
 
 ### `POST /api/external/task/create` — 发起任务
@@ -84,8 +88,8 @@ Body（JSON，≤32 KB）：
 | `prompt` | string | **是** | 交给所绑定 Agent 的指令正文 |
 | `provider` | string | 否 | 不建议传；若传入，必须与密钥绑定 provider 相同，否则 400 |
 | `externalKey` | string | 建议 | 幂等键（≤200 字符，来源侧唯一事件 id，如消息时间戳 / issue 编号）。同 source 同键重复调用**不重复建任务** |
-| `model` | string | 否 | 须在密钥 `allowedModels` 内；省略取首项 |
-| `effort` | string | 否 | 须在密钥 `allowedEfforts` 内；省略取首项 |
+| `model` | string | 否 | 与 `effort` 共同须命中密钥的一条 `allowedModelEfforts`；两项均省略取首条组合 |
+| `effort` | string | 否 | 与 `model` 共同校验；仅传一项且存在多条匹配组合时需补齐另一项 |
 | `cwd` | string | 否 | Agent 工作目录绝对路径，须在 `allowedCwds` 范围内（等于某项或其子目录）；省略取首项 |
 | `plan` | boolean | 否 | 缺省 `true` → 落 **plan 桶**（看板人工确认后执行）；`false` → 直进 queued 自动执行（**需密钥开 `allowQueued`**） |
 | `description` | string | 否 | 纯备注（不进 prompt），超 2000 字截断 |
@@ -117,6 +121,29 @@ Body（JSON，≤32 KB）：
 - `outcome`：收敛结果（如 `completed` / `cancelled`），未收敛为 `null`。
 - 跨来源 / 不存在 / externalKey 未登记一律 `404 {"ok":false,"error":"task not found"}`（不泄露其它来源任务的存在性）。
 
+### `POST /api/external/task/resume` — 续接任务
+
+Body（JSON，≤32 KB）：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `taskKey` | string | 二选一 | 要续接的任务标识；只能是当前密钥的来源与 provider 创建的任务 |
+| `externalKey` | string | 二选一 | 来源侧幂等键；服务端先解析为任务 |
+| `message` | string | **是** | 续接会话的下一条用户指令 |
+| `model` | string | 否 | 覆盖本任务模型；与 `effort` 须命中密钥当前允许的同一组合 |
+| `effort` | string | 否 | 覆盖本任务推理档位；省略时沿用任务原值并复核密钥当前策略 |
+
+成功（HTTP 200）：
+
+```json
+{ "ok": true, "taskKey": "chat:20260717103012-482", "state": "processing", "resumed": "provider-session-id" }
+```
+
+- 只接受 `awaiting-human` 和 `done` 任务；`plan` 仍须由看板人工确认，不能用此接口绕过确认，`processing` 则拒绝并发续接。
+- 与查询相同，跨来源 / provider 或不存在的目标统一返回 `404 {"ok":false,"error":"task not found"}`。
+- 任务必须已有可恢复的 provider session；历史会话从未成功建立时返回 `400 无 sessionId 可恢复（会话从未成功起过，请重新发起）`。
+- 密钥策略在续接时再次校验：任务原 model、effort、cwd 若已不在该密钥的当前白名单内，续接会被拒绝。
+
 ### `POST /api/external/heartbeat` — 来源心跳
 
 仅带鉴权头、无 body → `200 {"ok":true}`。定时进程**每 tick 打一下**，「API 密钥」页即显示该来源活跃（5 分钟内亮绿点）。失败静默即可（桌面端没起 = 显示离线，本来就是正确状态）。
@@ -140,6 +167,8 @@ Body（JSON，≤32 KB）：
 | 400 | `该密钥不允许直接排队执行（plan:false）…` | 密钥未开「允许直接执行」→ 去掉 `plan:false` 或请使用者开权限 |
 | 400 | `该密钥未配置…（策略必选=无权限）…` | 明文留存前的旧版密钥 → 重新生成 |
 | 400 | `externalKey 超长（≤200 字符）` | 幂等键过长 |
+| 400 | `只有 awaiting-human/done 任务可续接…` | 目标尚未收敛，或是必须由看板确认的 plan 任务 |
+| 400 | `无 sessionId 可恢复…` | 任务未成功建立过 provider 会话，不能原生 resume |
 | 404 | `task not found` | 查询目标不存在 / 不属于本来源 |
 | 403 | `本端点仅限看板页面使用…` | 程序化调用打到了看板内部端点 `/api/task/create` → 改走本文密钥通道 |
 | 连接拒绝 | — | 桌面端未运行 → 稍后重试（见下） |
@@ -175,7 +204,7 @@ const headers = { Authorization: `Bearer ${process.env.SCRUMWS_KEY}`, 'Content-T
 const me = await fetch(`${BASE}/api/external/whoami`, { headers }).then(r => r.json());
 const r = await fetch(`${BASE}/api/external/task/create`, {
   method: 'POST', headers,
-  body: JSON.stringify({ title: '标题', prompt: '指令', model: me.key.allowedModels[0], externalKey: 'evt-001' }),
+  body: JSON.stringify({ title: '标题', prompt: '指令', model: me.key.allowedModelEfforts[0].model, effort: me.key.allowedModelEfforts[0].effort, externalKey: 'evt-001' }),
   signal: AbortSignal.timeout(15000),
 }).then(r => r.json());
 ```

@@ -1,4 +1,4 @@
-// 验证 sub goal 2：renameTask 内部按来源分派（CLI→watchlist / 分身→task.json）。
+// 验证 sub goal 2：标题与描述按来源分派（CLI→watchlist / 分身→task.json）。
 // 用独立临时数据根（SCRUMWS_DATA_ROOT），造完即删，零污染真实 ~/.scrumws。
 // 跑：node docs/acceptance/unify-task-source/scripts/verify-rename.mjs
 import fs from 'node:fs';
@@ -9,7 +9,7 @@ const TMP = path.join(os.tmpdir(), `scrumws-verify-rename-${process.pid}`);
 process.env.SCRUMWS_DATA_ROOT = TMP;   // 必须在 import paths.js 前设（模块加载即读 env）
 
 const { P } = await import('../../../../platform/lib/paths.js');
-const { renameTask } = await import('../../../../platform/lib/logs.js');
+const { renameTask, setTaskDescription } = await import('../../../../platform/lib/logs.js');
 const wl = await import('../../../../platform/lib/cli-watchlist.js');
 
 let pass = 0, fail = 0;
@@ -29,6 +29,11 @@ try {
   check('CLI 写入 watchlist.customTitle', wl.readWatchlist().sessions[sid]?.customTitle === 'CLI-title-A', wl.readWatchlist().sessions[sid]?.customTitle);
   renameTask('cli:11111111', '');
   check('CLI 空标题 -> null（清除）', wl.readWatchlist().sessions[sid]?.customTitle === null, wl.readWatchlist().sessions[sid]?.customTitle);
+  r = setTaskDescription('cli:11111111', 'CLI-note-A');
+  check('CLI 保存描述 ok', r.ok === true, r);
+  check('CLI 写入 watchlist.note', wl.readWatchlist().sessions[sid]?.note === 'CLI-note-A', wl.readWatchlist().sessions[sid]?.note);
+  setTaskDescription('cli:11111111', '');
+  check('CLI 清空描述 -> null', wl.readWatchlist().sessions[sid]?.note === null, wl.readWatchlist().sessions[sid]?.note);
   r = renameTask('cli:99999999', 'x');
   check('CLI 不在 watchlist -> 报错', r.ok === false && /not in watchlist/.test(r.error || ''), r);
 
@@ -43,6 +48,13 @@ try {
   renameTask('manual:test1', '');
   const tj2 = JSON.parse(fs.readFileSync(path.join(safeDir, 'task.json'), 'utf8'));
   check('分身 空标题 -> 删字段（恢复默认）', tj2.customTitle === undefined, tj2.customTitle);
+  r = setTaskDescription('manual:test1', '任务包-note-B');
+  check('分身 保存描述 ok', r.ok === true, r);
+  const tj3 = JSON.parse(fs.readFileSync(path.join(safeDir, 'task.json'), 'utf8'));
+  check('分身 写入 task.json.description', tj3.description === '任务包-note-B', tj3.description);
+  setTaskDescription('manual:test1', '');
+  const tj4 = JSON.parse(fs.readFileSync(path.join(safeDir, 'task.json'), 'utf8'));
+  check('分身 清空描述 -> 删字段', tj4.description === undefined, tj4.description);
 } finally {
   fs.rmSync(TMP, { recursive: true, force: true });
 }

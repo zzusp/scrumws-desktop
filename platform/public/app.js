@@ -696,6 +696,7 @@ function renderLifecycle(lifecycle) {
 // ---- 归档：按工作目录分目录；二级目录内可按 provider / 来源 / 关键字筛选 ----
 let archiveFilter = { provider: '', source: '', keyword: '' };
 let archiveFilterAbort = null;
+let archiveRootQuery = '';
 function archiveBucketOf(t) {
   // 归档目录的一级维度就是任务实际工作目录；CLI 观察态回落 cli.cwd，无目录的历史任务单独归类。
   return String(t.cwd || t.cli?.cwd || '未设置工作目录').trim() || '未设置工作目录';
@@ -713,6 +714,20 @@ function archiveTaskMatches(t) {
   const q = archiveFilter.keyword.trim().toLowerCase();
   return !q || [t.title, t.description, t.taskKey, t.meta?.sessionId].filter(Boolean).join(' ').toLowerCase().includes(q);
 }
+function archiveRootTaskMatches(t) {
+  const q = archiveRootQuery.trim().toLowerCase();
+  return !q || [t.title, t.description, t.taskKey, t.meta?.sessionId, archiveBucketOf(t), t.source, t.provider]
+    .filter(Boolean).join(' ').toLowerCase().includes(q);
+}
+function archiveRootTaskHtml(task) {
+  const title = task.title || task.taskKey;
+  const bucket = archiveBucketOf(task);
+  const when = archiveTaskTime(task);
+  return `<button class="archive-recent-task" title="${escapeAttr(title)}" onclick="openTaskModal('${escapeAttr(task.taskKey)}')">
+    <span class="archive-recent-top"><span class="archive-recent-title">${escapeHtml(title)}</span>${cliTagHtml(task)}</span>
+    <span class="archive-recent-meta"><span title="${escapeAttr(bucket)}">${escapeHtml(bucket)}</span><span>${escapeHtml(fmtTime(when) || '时间未知')}</span></span>
+  </button>`;
+}
 function renderArchive(lifecycle) {
   const target = $('archiveContent');
   if (!target) return;
@@ -723,14 +738,55 @@ function renderArchive(lifecycle) {
     const folders = new Map();
     for (const task of tasks) {
       const key = archiveBucketOf(task);
-      const current = folders.get(key) || { count: 0 };
+      const current = folders.get(key) || { key, tasks: [], count: 0, newest: '' };
+      current.tasks.push(task);
       current.count++;
+      if (String(archiveTaskTime(task)) > String(current.newest)) current.newest = archiveTaskTime(task);
       folders.set(key, current);
     }
-    const rows = [...folders.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const rows = [...folders.values()].sort((a, b) => String(b.newest).localeCompare(String(a.newest)) || a.key.localeCompare(b.key));
+    const shownTasks = tasks.filter(archiveRootTaskMatches).sort((a, b) => String(archiveTaskTime(b)).localeCompare(String(archiveTaskTime(a))));
+    const shownFolders = rows.filter((folder) => folder.tasks.some(archiveRootTaskMatches));
+    const newest = rows[0]?.newest || '';
+    const rootBody = archiveRootQuery.trim()
+      ? (shownTasks.length
+        ? `<div class="archive-search-result-head"><span>搜索结果</span><span class="tag tag-mut">${shownTasks.length} 项</span></div><div class="archive-search-results">${shownTasks.map(archiveRootTaskHtml).join('')}</div>`
+        : '<div class="archive-empty">没有匹配的归档任务</div>')
+      : `<div class="archive-root-layout">
+          <section class="archive-directory-panel"><div class="archive-section-head"><div><h3>工作目录</h3><p>按最近归档排序</p></div><span class="tag tag-mut">${rows.length} 个目录</span></div>
+            <div class="archive-folders">${rows.map((folder) => {
+              const providers = [...new Set(folder.tasks.map((task) => String(task.provider || 'claude').toLowerCase()))].map(cliLabel).join(' · ');
+              return `<button class="archive-folder" title="${escapeAttr(folder.key)}" onclick="openArchiveFolder('${encodeURIComponent(folder.key)}')"><span class="archive-folder-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6.5h6l1.6 2H20v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><path d="M4 10h16"/></svg></span><span class="archive-folder-main"><span class="archive-folder-name">${escapeHtml(folder.key)}</span><span class="archive-folder-meta">${folder.count} 个任务 · ${escapeHtml(providers)}</span><span class="archive-folder-time">最近归档 ${escapeHtml(fmtTime(folder.newest) || '—')}</span></span><span class="archive-folder-arrow">›</span></button>`;
+            }).join('')}</div>
+          </section>
+          <aside class="archive-recent-panel"><div class="archive-section-head"><div><h3>近期归档</h3><p>最近完成并收纳的任务</p></div></div><div class="archive-recent-list">${tasks.slice().sort((a, b) => String(archiveTaskTime(b)).localeCompare(String(archiveTaskTime(a)))).slice(0, 6).map(archiveRootTaskHtml).join('')}</div></aside>
+        </div>`;
     target.innerHTML = `
-      <div class="archive-intro"><div><h2>任务归档</h2><p>按工作目录整理；进入目录后可筛选和恢复任务。</p></div><span class="tag tag-mut">${tasks.length} 项</span></div>
-      ${rows.length ? `<div class="archive-folders">${rows.map(([key, info]) => `<button class="archive-folder" title="${escapeAttr(key)}" onclick="openArchiveFolder('${encodeURIComponent(key)}')"><span class="archive-folder-icon">▰</span><span class="archive-folder-main"><span class="archive-folder-name">${escapeHtml(key)}</span><span class="archive-folder-meta">${info.count} 个任务</span></span><span class="archive-folder-arrow">›</span></button>`).join('')}</div>` : '<div class="archive-empty">暂无已归档任务</div>'}`;
+      <section class="archive-hero"><div><span class="archive-eyebrow">ARCHIVE</span><h2>任务归档</h2><p>历史任务按工作目录沉淀；可跨目录检索，进入目录后恢复或永久删除。</p></div><div class="archive-stats"><span><b>${tasks.length}</b>归档任务</span><span><b>${rows.length}</b>工作目录</span><span><b>${escapeHtml(fmtTime(newest) || '—')}</b>最近归档</span></div></section>
+      ${rows.length ? `<div class="archive-root-search"><span class="archive-search-icon">⌕</span><input class="field-input" id="archiveRootSearch" value="${escapeAttr(archiveRootQuery)}" placeholder="搜索所有归档任务：标题、描述、任务 ID、会话或工作目录"><button class="btn" id="archiveRootSearchClear" ${archiveRootQuery ? '' : 'disabled'}>清除</button></div>${archiveRootQuery ? `<div class="archive-search-scope">${shownFolders.length} 个工作目录中匹配</div>` : ''}${rootBody}` : '<div class="archive-empty">暂无已归档任务</div>'}`;
+    const rootSearch = $('archiveRootSearch');
+    if (rootSearch) {
+      let composing = false;
+      // 一级页需要按关键字即时换结果，但 renderArchive 会替换 input 节点；重绘后显式恢复光标。
+      // 组合输入期间不重绘，避免中文输入法的候选词被中断。
+      const refreshRootSearch = (input) => {
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? start;
+        archiveRootQuery = input.value;
+        renderArchive(stateData?.lifecycle);
+        const next = $('archiveRootSearch');
+        if (!next) return;
+        next.focus();
+        next.setSelectionRange(Math.min(start, next.value.length), Math.min(end, next.value.length));
+      };
+      rootSearch.addEventListener('compositionstart', () => { composing = true; });
+      rootSearch.addEventListener('compositionend', () => { composing = false; });
+      rootSearch.addEventListener('input', (event) => {
+        if (composing || event.isComposing) return;
+        refreshRootSearch(event.currentTarget);
+      });
+    }
+    $('archiveRootSearchClear')?.addEventListener('click', () => { archiveRootQuery = ''; renderArchive(stateData?.lifecycle); });
     return;
   }
   const inFolder = tasks.filter((task) => archiveBucketOf(task) === bucket).sort((a, b) => String(archiveTaskTime(b)).localeCompare(String(archiveTaskTime(a))));
@@ -760,7 +816,26 @@ function renderArchive(lifecycle) {
     items: [{ value: '', label: '全部来源' }, ...sources.map((s) => ({ value: s, label: sourceLabel(s) }))],
     onPick: (value) => { archiveFilter.source = value; renderArchive(stateData?.lifecycle); },
   });
-  $('archiveKeywordFilter')?.addEventListener('input', (e) => { archiveFilter.keyword = e.target.value; renderArchive(stateData?.lifecycle); });
+  const archiveKeywordInput = $('archiveKeywordFilter');
+  if (archiveKeywordInput) {
+    let composing = false;
+    const refreshArchiveKeyword = (input) => {
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? start;
+      archiveFilter.keyword = input.value;
+      renderArchive(stateData?.lifecycle);
+      const next = $('archiveKeywordFilter');
+      if (!next) return;
+      next.focus();
+      next.setSelectionRange(Math.min(start, next.value.length), Math.min(end, next.value.length));
+    };
+    archiveKeywordInput.addEventListener('compositionstart', () => { composing = true; });
+    archiveKeywordInput.addEventListener('compositionend', () => { composing = false; });
+    archiveKeywordInput.addEventListener('input', (event) => {
+      if (composing || event.isComposing) return;
+      refreshArchiveKeyword(event.currentTarget);
+    });
+  }
   $('archiveFilterClear')?.addEventListener('click', () => { archiveFilter = { provider: '', source: '', keyword: '' }; renderArchive(stateData?.lifecycle); });
 }
 function bindArchiveFilterDropdown({ btnId, menuId, current, items, onPick }) {
@@ -1205,9 +1280,9 @@ function findTaskKeyBySession(sid) {
   return null;
 }
 
-// ---- hash 路由：#/board · #/archive · #/dashboard · #/settings · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
+// ---- hash 路由：#/board · #/archive · #/dashboard · #/apikeys · #/workdirs · #/settings · #/task/<taskKey>（旧 /<tab> 后缀兼容忽略）----
 // 详情页已归一：#/session/<id>（历史链接）重定向到其归属任务的 #/task/<taskKey>。
-const ROUTE_VIEWS = ['board', 'archive', 'runtime', 'dashboard', 'apikeys', 'settings', 'task'];
+const ROUTE_VIEWS = ['board', 'archive', 'runtime', 'dashboard', 'apikeys', 'workdirs', 'settings', 'task'];
 function router() {
   const h = location.hash || '#/board';
   let view = 'board';
@@ -1227,6 +1302,7 @@ function router() {
   else if (h.startsWith('#/runtime')) view = 'runtime';
   else if (h.startsWith('#/dashboard')) view = 'dashboard';
   else if (h.startsWith('#/apikeys')) view = 'apikeys';
+  else if (h.startsWith('#/workdirs')) view = 'workdirs';
   else if (h.startsWith('#/settings')) view = 'settings';
 
   const fullBleed = view === 'task';   // 满宽满高布局（pageWrap 外）
@@ -1249,6 +1325,7 @@ function router() {
   if (view === 'archive') renderArchive(stateData?.lifecycle);
   if (view === 'settings') refreshCloudStatus();
   if (view === 'apikeys') refreshApiKeys();
+  if (view === 'workdirs') refreshWorkDirectories();
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', router);
@@ -2451,39 +2528,92 @@ function akFillForm(k) {
   $('akLabelInput').value = k.label;
   $('akSourceInput').value = k.source;
   $('akProviderInput').value = k.provider || 'claude';
-  renderAkProviderPolicy(k.provider || 'claude', k.allowedModels || [], k.allowedEfforts || []);
-  $('akCwdsInput').value = k.allowedCwds.join('\n');
+  renderAkProviderPolicy(k.provider || 'claude', akPolicyPairs(k));
   $('akAllowQueued').checked = !!k.allowQueued;
 }
 function akClearForm() {
   $('akLabelInput').value = '';
   $('akSourceInput').value = '';
-  $('akCwdsInput').value = '';
   $('akAllowQueued').checked = false;
   $('akProviderInput').value = 'claude';
   renderAkProviderPolicy('claude');
 }
 
-function renderAkProviderPolicy(provider, selectedModels = [], selectedEfforts = []) {
-  const def = providerDef(provider) || providerDef('claude');
-  const models = providerModels(def).filter((m) => m.value !== '__custom__');
-  // 移除“自定义模型”编辑输入，但编辑旧密钥时不能静默丢掉其已有自定义 model 白名单。
-  const known = new Set(models.map((m) => m.value));
-  const preservedModels = selectedModels.filter((m) => m && !known.has(m));
-  $('akModelsBox').innerHTML = models.map((m) => `<label><input type="checkbox" value="${escapeAttr(m.value)}"${selectedModels.includes(m.value) ? ' checked' : ''}> ${escapeHtml(m.name)}</label>`).join('')
-    + `<input type="hidden" id="akPreservedModels" value="${escapeAttr(JSON.stringify(preservedModels))}">`;
-  $('akEffortsBox').innerHTML = providerEfforts(def).map((e) => `<label><input type="checkbox" value="${escapeAttr(e.value)}"${selectedEfforts.includes(e.value) ? ' checked' : ''}> ${escapeHtml(e.name)}</label>`).join('');
+function akPolicyPairs(k) {
+  if (Array.isArray(k?.allowedModelEfforts) && k.allowedModelEfforts.length) return k.allowedModelEfforts;
+  const models = Array.isArray(k?.allowedModels) ? k.allowedModels : [];
+  const efforts = Array.isArray(k?.allowedEfforts) ? k.allowedEfforts : [];
+  return models.flatMap((model) => efforts.map((effort) => ({ model, effort })));
 }
-function akOpenModal(k) {
+function renderAkProviderPolicy(provider, pairs = []) {
+  const def = providerDef(provider) || providerDef('claude');
+  const defaults = pairs.length ? pairs : [{ model: def.defaultModel, effort: def.defaultEffort }];
+  $('akPoliciesBox').innerHTML = defaults.map((pair, index) => `
+    <div data-ak-policy-row style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:8px;border:1px solid var(--hair);border-radius:var(--r-md);background:var(--card)">
+      <span style="font:11px var(--mono);color:var(--dim);min-width:18px">${index + 1}</span>
+      <select id="akPolicyModel${index}" data-ak-policy-model style="display:none"></select>
+      <select id="akPolicyEffort${index}" data-ak-policy-effort style="display:none"></select>
+      <div class="mes-wrap" id="akPolicyMesWrap${index}">
+        <button type="button" class="mes-btn form-size" id="akPolicyMesBtn${index}" aria-haspopup="true" aria-expanded="false" title="选择 model 与 effort 档位">
+          <span class="mes-btn-model"></span><span class="mes-btn-effort"></span><span class="mes-btn-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="mes-menu" id="akPolicyMesMenu${index}" role="menu"></div>
+      </div>
+      <button type="button" class="btn btn-danger" data-ak-policy-remove ${defaults.length === 1 ? 'disabled title="至少保留一条组合"' : ''}>移除</button>
+    </div>`).join('');
+  defaults.forEach((pair, index) => {
+    const control = initModelEffortSelector({
+      wrapId: `akPolicyMesWrap${index}`, btnId: `akPolicyMesBtn${index}`, menuId: `akPolicyMesMenu${index}`,
+      modelSelectId: `akPolicyModel${index}`, effortSelectId: `akPolicyEffort${index}`,
+      inScroll: true, allowDefaultModel: true,
+    });
+    control?.setProvider(def.id, String(pair.model ?? ''), String(pair.effort ?? ''));
+  });
+}
+function akSelectedCwds() {
+  return [...document.querySelectorAll('#akCwdsBox input:checked')].map((input) => input.value);
+}
+function renderAkWorkDirectories(selectedCwds = []) {
+  const box = $('akCwdsBox');
+  const hint = $('akCwdsHint');
+  if (!box || !hint) return;
+  const selected = new Set(selectedCwds.map((cwd) => String(cwd).toLowerCase()));
+  const configured = Array.isArray(workDirectories) ? workDirectories : [];
+  const unavailable = selectedCwds.filter((cwd) => !configured.some((item) => String(item).toLowerCase() === String(cwd).toLowerCase()));
+  box.innerHTML = configured.map((cwd) => `<label class="ak-cwd-choice"><input type="checkbox" value="${escapeAttr(cwd)}"${selected.has(String(cwd).toLowerCase()) ? ' checked' : ''}><span class="ak-cwd-choice-body"><span class="ak-cwd-check" aria-hidden="true">✓</span><code>${escapeHtml(cwd)}</code></span></label>`).join('');
+  if (!configured.length) {
+    hint.innerHTML = '暂无可选目录。请先到 <a href="#/workdirs">工作目录</a> 菜单添加目录。';
+  } else if (unavailable.length) {
+    hint.textContent = `当前密钥有 ${unavailable.length} 个目录未在“工作目录”菜单配置；保存前请先添加或取消该目录。`;
+    hint.style.color = 'var(--coral)';
+  } else {
+    hint.textContent = '任务 cwd 可使用所选目录及其子目录。';
+    hint.style.color = 'var(--dim)';
+  }
+}
+async function refreshAkWorkDirectories(selectedCwds = []) {
+  const hint = $('akCwdsHint');
+  if (hint) hint.textContent = '加载工作目录…';
+  try {
+    const r = await api('/api/work-directories');
+    if (!r?.ok) throw new Error(r?.error || '加载失败');
+    workDirectories = Array.isArray(r.directories) ? r.directories : [];
+    renderAkWorkDirectories(selectedCwds);
+  } catch (e) {
+    if (hint) { hint.textContent = `工作目录加载失败：${e.message}`; hint.style.color = 'var(--coral)'; }
+  }
+}
+async function akOpenModal(k) {
   akEditingId = k ? k.id : null;
   $('akModalTitle').textContent = k ? '编辑密钥' : '生成密钥';
   $('akCreateBtn').textContent = k ? '保存修改' : '生成密钥';
   $('akModalHint').textContent = k
-    ? `正在编辑 ${k.prefix}…（密钥本体与使用记录不变，只改配置）· 策略三项必选（全不选 = 没有权限）`
-    : '策略三项必选（全不选 = 没有权限）· 请求省略对应字段时取第一个勾选项 / 第一行为该密钥默认';
+    ? `正在编辑 ${k.prefix}…（密钥本体与使用记录不变，只改配置）· 至少配置一条模型 + effort 组合和一个工作目录`
+    : '至少配置一条模型 + effort 组合和一个工作目录 · 省略 model 与 effort 时使用第一条组合，cwd 使用第一项';
   $('akCreateErr').style.display = 'none';
   if (k) akFillForm(k); else akClearForm();
   $('akModal').style.display = 'flex';
+  await refreshAkWorkDirectories(k?.allowedCwds || []);
   setTimeout(() => { $('akLabelInput').focus(); }, 40);
 }
 function akCloseModal() {
@@ -2493,14 +2623,13 @@ function akCloseModal() {
 
 // 策略列：紧凑摘要（详情进 title tooltip）；缺任一项 = 旧格式无策略钥，建任务会被拒（策略必选=无权限）
 function akPolicyCell(k) {
-  if (!k.allowedModels?.length || !k.allowedEfforts?.length || !k.allowedCwds?.length) {
+  const pairs = akPolicyPairs(k);
+  if (!pairs.length || !k.allowedCwds?.length) {
     return '<span class="tag tag-amber" title="旧格式密钥缺策略，建任务会被拒；请删除后重新生成">未配置（无权限）</span>';
   }
   const parts = [];
   parts.push(escapeHtml(providerDef(k.provider || 'claude')?.label || k.provider || 'Claude Code'));
-  const modelNames = k.allowedModels.map((model) => model || 'CLI 默认');
-  parts.push(`模型 ${modelNames.length === 1 ? escapeHtml(modelNames[0].replace(/^claude-/, '')) : modelNames.length + ' 个'}`);
-  parts.push(`effort ${k.allowedEfforts.length === 1 ? escapeHtml(k.allowedEfforts[0]) : k.allowedEfforts.length + ' 档'}`);
+  parts.push(`组合 ${pairs.length} 条`);
   parts.push(`目录 ${k.allowedCwds.length} 个`);
   if (k.allowQueued) parts.push('<span style="color:var(--amber)">直执</span>');
   return parts.join(' · ');
@@ -2508,8 +2637,7 @@ function akPolicyCell(k) {
 function akPolicyTitle(k) {
   const lines = [];
   lines.push(`Provider：${providerDef(k.provider || 'claude')?.label || k.provider || 'Claude Code'}`);
-  lines.push(`可用模型：${k.allowedModels?.length ? k.allowedModels.map((m) => m || 'CLI 默认').join(', ') : '（缺）'}`);
-  lines.push(`可用 effort：${k.allowedEfforts?.length ? k.allowedEfforts.join(', ') : '（缺）'}`);
+  lines.push(`允许组合：${akPolicyPairs(k).length ? akPolicyPairs(k).map((pair) => `${pair.model || 'CLI 默认'} + ${pair.effort || '默认 effort'}`).join('；') : '（缺）'}`);
   lines.push(`可访问目录：${k.allowedCwds?.length ? k.allowedCwds.join('；') : '（缺）'}`);
   lines.push(`直接执行：${k.allowQueued ? '允许（plan:false 直进 queued）' : '不允许（只能建 plan 任务）'}`);
   return lines.join('\n');
@@ -2548,23 +2676,23 @@ function renderApiKeyPlaintext(created) {
 function initApiKeysPage() {
   const createBtn = $('akCreateBtn');
   if (!createBtn) return;
+  initProviderPicker({ valueId: 'akProviderInput', btnId: 'akProviderBtn', menuId: 'akProviderMenu', pickerId: 'akProviderPicker' });
   createBtn.addEventListener('click', async () => {
     const err = $('akCreateErr');
     err.style.display = 'none';
     const label = $('akLabelInput').value.trim();
     const source = $('akSourceInput').value.trim();
     const provider = $('akProviderInput').value || 'claude';
-    const allowedModels = [...document.querySelectorAll('#akModelsBox input:checked')].map((x) => x.value);
-    try {
-      for (const model of JSON.parse($('akPreservedModels')?.value || '[]')) if (model && !allowedModels.includes(model)) allowedModels.push(model);
-    } catch { /* 保留字段损坏则按当前可见勾选项保存 */ }
-    const allowedEfforts = [...document.querySelectorAll('#akEffortsBox input:checked')].map((x) => x.value);
-    const allowedCwds = $('akCwdsInput').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    const allowedModelEfforts = [...document.querySelectorAll('[data-ak-policy-row]')].map((row) => ({
+      model: row.querySelector('[data-ak-policy-model]')?.value ?? '',
+      effort: row.querySelector('[data-ak-policy-effort]')?.value ?? '',
+    }));
+    const allowedCwds = akSelectedCwds();
     const allowQueued = $('akAllowQueued').checked;
-    // 策略三项必选（全不选 = 没有权限）：前端先拦一道，后端仍强制校验
-    if (!allowedModels.length || !allowedEfforts.length || !allowedCwds.length) {
+    // 组合与目录必选：前端先拦一道，后端仍强制校验。
+    if (!allowedModelEfforts.length || allowedModelEfforts.some((pair) => !pair.effort) || !allowedCwds.length) {
       // .form-err 类默认 display:none，必须显式 block（置 '' 只是清掉内联样式、等于仍隐藏）
-      err.textContent = '策略必选：可用模型、可用 effort、可访问目录都至少选/填一项（全不选 = 没有权限）';
+      err.textContent = '策略必选：至少添加一条模型 + effort 组合，并选择一个工作目录（全不选 = 没有权限）';
       err.style.display = 'block';
       return;
     }
@@ -2574,7 +2702,7 @@ function initApiKeysPage() {
       const r = await api(isEdit ? '/api/apikeys/update' : '/api/apikeys/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: akEditingId || undefined, label, source, provider, allowedModels, allowedEfforts, allowedCwds, allowQueued }),
+        body: JSON.stringify({ id: akEditingId || undefined, label, source, provider, allowedModelEfforts, allowedCwds, allowQueued }),
       });
       if (!r.ok) { err.textContent = r.error || (isEdit ? '保存失败' : '生成失败'); err.style.display = 'block'; return; }
       akCloseModal();
@@ -2583,8 +2711,30 @@ function initApiKeysPage() {
     } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
     finally { createBtn.disabled = false; }
   });
-  $('akNewBtn').addEventListener('click', () => akOpenModal(null));
+  $('akNewBtn').addEventListener('click', () => { akOpenModal(null); });
   $('akProviderInput').addEventListener('change', () => renderAkProviderPolicy($('akProviderInput').value));
+  $('akAddPolicyBtn').addEventListener('click', () => {
+    const pairs = [...document.querySelectorAll('[data-ak-policy-row]')].map((row) => ({
+      model: row.querySelector('[data-ak-policy-model]')?.value ?? '',
+      effort: row.querySelector('[data-ak-policy-effort]')?.value ?? '',
+    }));
+    const def = providerDef($('akProviderInput').value) || providerDef('claude');
+    pairs.push({ model: def.defaultModel, effort: def.defaultEffort });
+    renderAkProviderPolicy($('akProviderInput').value, pairs);
+  });
+  $('akPoliciesBox').addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-ak-policy-remove]');
+    if (!remove) return;
+    const pairs = [...document.querySelectorAll('[data-ak-policy-row]')].map((row) => ({
+      model: row.querySelector('[data-ak-policy-model]')?.value ?? '',
+      effort: row.querySelector('[data-ak-policy-effort]')?.value ?? '',
+    }));
+    const row = remove.closest('[data-ak-policy-row]');
+    const index = [...document.querySelectorAll('[data-ak-policy-row]')].indexOf(row);
+    if (pairs.length <= 1 || index < 0) return;
+    pairs.splice(index, 1);
+    renderAkProviderPolicy($('akProviderInput').value, pairs);
+  });
   $('akModalCancelBtn').addEventListener('click', akCloseModal);
   $('akModalX').addEventListener('click', akCloseModal);
   $('akModal').addEventListener('click', (e) => { if (e.target === $('akModal')) akCloseModal(); });
@@ -2642,6 +2792,88 @@ function initApiKeysPage() {
   });
 }
 initApiKeysPage();
+
+// ---- 工作目录页（#/workdirs）：新建任务下拉的独立目录集合 ----
+// 目录集合只写 runner-config.workDirectories；已有任务的 cwd / worktree / taskKey 完全不碰。
+let workDirectories = [];
+async function refreshWorkDirectories() {
+  const box = $('workDirListBox');
+  if (!box) return;
+  try {
+    const r = await api('/api/work-directories');
+    if (!r?.ok) throw new Error(r?.error || '加载失败');
+    workDirectories = Array.isArray(r.directories) ? r.directories : [];
+    renderWorkDirectories();
+  } catch (e) {
+    box.innerHTML = `<div style="color:var(--coral);font-size:12.5px">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+function renderWorkDirectories() {
+  const box = $('workDirListBox');
+  if (!box) return;
+  if (!workDirectories.length) {
+    box.innerHTML = '<div style="color:var(--dim);font-size:12.5px">暂无工作目录。添加后会出现在新建任务的目录下拉中。</div>';
+    return;
+  }
+  box.innerHTML = `<div class="ak-table-wrap"><table class="ak-table"><thead><tr><th>目录路径</th><th style="width:88px">操作</th></tr></thead><tbody>${workDirectories.map((cwd, index) => `
+    <tr><td><code style="font-family:var(--mono);font-size:11.5px;word-break:break-all">${escapeHtml(cwd)}</code></td><td><button class="btn btn-danger" data-workdir-remove="${index}">移除</button></td></tr>`).join('')}</tbody></table></div>`;
+}
+async function saveWorkDirectories(next, hint) {
+  let r = null;
+  try {
+    r = await api('/api/work-directories', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ directories: next }),
+    });
+  } catch (e) { r = { ok: false, error: e.message }; }
+  if (!r?.ok) {
+    if (hint) { hint.style.color = 'var(--coral)'; hint.textContent = r?.error || '保存失败'; }
+    return false;
+  }
+  workDirectories = Array.isArray(r.directories) ? r.directories : [];
+  renderWorkDirectories();
+  // 已打开的新建任务弹窗时同步可选项，不改它正在填写的 cwd。
+  loadNewTaskCwds();
+  if (hint) { hint.style.color = 'var(--jade)'; hint.textContent = '已保存'; }
+  return true;
+}
+function initWorkDirectoriesPage() {
+  const input = $('workDirInput');
+  const addBtn = $('workDirAddBtn');
+  const browseBtn = $('workDirBrowseBtn');
+  const list = $('workDirListBox');
+  const hint = $('workDirHint');
+  if (!input || !addBtn || !browseBtn || !list || !hint) return;
+  const add = async () => {
+    const cwd = input.value.trim();
+    if (!cwd) { hint.style.color = 'var(--coral)'; hint.textContent = '请输入目录绝对路径，或点击“浏览”选择'; return; }
+    addBtn.disabled = true;
+    const saved = await saveWorkDirectories([...workDirectories, cwd], hint);
+    if (saved) { input.value = ''; hint.textContent = '已添加（若选择的是 worktree，已保存其仓库根目录）'; }
+    addBtn.disabled = false;
+  };
+  addBtn.addEventListener('click', add);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  browseBtn.addEventListener('click', async () => {
+    browseBtn.disabled = true;
+    try {
+      const r = await api('/api/pick-dir', { method: 'POST' });
+      if (r.ok && r.dir) { input.value = r.dir; hint.style.color = 'var(--dim)'; hint.textContent = '已选择目录，点击“添加”保存'; }
+      else if (!r.ok) { hint.style.color = 'var(--coral)'; hint.textContent = r.error || '目录选择失败'; }
+    } catch (e) { hint.style.color = 'var(--coral)'; hint.textContent = e.message; }
+    finally { browseBtn.disabled = false; }
+  });
+  list.addEventListener('click', async (e) => {
+    const button = e.target.closest('[data-workdir-remove]');
+    if (!button) return;
+    const index = Number(button.dataset.workdirRemove);
+    if (!Number.isInteger(index) || !workDirectories[index]) return;
+    button.disabled = true;
+    const saved = await saveWorkDirectories(workDirectories.filter((_, i) => i !== index), hint);
+    if (saved) hint.textContent = '已移除；已有任务保持不变';
+    if (!saved) button.disabled = false;
+  });
+}
+initWorkDirectoriesPage();
 
 // ---- 设置页「云端」区块 ----
 // 三个输入缺一不可：注册密钥答「这台机器有资格加入这个云端吗」（实例级、一把管全体），配对码答
@@ -2899,7 +3131,7 @@ $('newTaskBtn').addEventListener('click', () => {
   $('newTaskPrompt').value = '';
   $('newTaskDesc').value = '';
   $('newTaskCwd').value = '';              // 工作目录（可选）
-  loadNewTaskCwds();                       // 填充「已有工作目录」下拉（现有任务 cwd + 近期 CLI session cwd）
+  loadNewTaskCwds();                       // 填充「工作目录」菜单维护的目录下拉
   newTaskProviderCtl?.setProvider(newTaskProviderCtl?.preferredProvider() || 'claude');
   syncNewTaskProviderCapabilities();
   resetNewTaskExtras();                    // req4/5/6：定时 / worktree / 动态工作流 归默认
@@ -2963,7 +3195,7 @@ async function openEditTask(taskKey) {
 }
 window.openEditTask = openEditTask;
 
-// req3/req1：工作目录 自定义下拉（不用原生 datalist）+ 浏览按钮
+// 工作目录自定义下拉（不用原生 datalist）：只读「工作目录」菜单维护的列表。
 let newTaskCwdOptions = [];
 async function loadNewTaskCwds() {
   try { newTaskCwdOptions = (await api('/api/task/cwds'))?.cwds || []; }
@@ -2976,8 +3208,8 @@ function renderCwdMenu() {
   const q = ($('newTaskCwd').value || '').trim().toLowerCase();
   const list = newTaskCwdOptions.filter((c) => !q || c.cwd.toLowerCase().includes(q));
   menu.innerHTML = list.length
-    ? list.map((c) => `<div class="cwd-item" role="option" data-cwd="${escapeAttr(c.cwd)}"><span class="cwd-path" title="${escapeAttr(c.cwd)}">${escapeHtml(c.cwd)}</span><span class="cwd-src">${c.source === 'project' ? '项目' : c.source === 'task' ? '任务' : 'CLI'}</span></div>`).join('')
-    : `<div class="cwd-empty">${newTaskCwdOptions.length ? '无匹配目录' : '暂无已用过的目录 · 直接填路径或点「浏览」'}</div>`;
+    ? list.map((c) => `<div class="cwd-item" role="option" data-cwd="${escapeAttr(c.cwd)}"><span class="cwd-path" title="${escapeAttr(c.cwd)}">${escapeHtml(c.cwd)}</span><span class="cwd-src">已管理</span></div>`).join('')
+    : `<div class="cwd-empty">${newTaskCwdOptions.length ? '无匹配目录' : '暂无工作目录 · 可直接填路径，或先到“工作目录”菜单添加'}</div>`;
 }
 function closeCwdMenu() { $('newTaskCwdMenu')?.classList.remove('open'); }
 function openCwdMenu() { renderCwdMenu(); $('newTaskCwdMenu')?.classList.add('open'); }
@@ -3467,12 +3699,11 @@ function providerModels(def) {
   return items.length ? items : [{ value: '', name: 'CLI 默认模型', desc: '' }];
 }
 
-let newTaskProviderCtl = null;
-function initNewTaskProviderPicker() {
-  const value = $('newTaskProvider');
-  const btn = $('newTaskProviderBtn');
-  const menu = $('newTaskProviderMenu');
-  const picker = $('newTaskProviderPicker');
+function initProviderPicker({ valueId, btnId, menuId, pickerId, onChange = null }) {
+  const value = $(valueId);
+  const btn = $(btnId);
+  const menu = $(menuId);
+  const picker = $(pickerId);
   if (!value || !btn || !menu || !picker) return null;
   const name = btn.querySelector('.provider-btn-name');
   const meta = btn.querySelector('.provider-btn-meta');
@@ -3521,8 +3752,7 @@ function initNewTaskProviderPicker() {
     value.value = next.id;
     render();
     value.dispatchEvent(new Event('change'));
-    newTaskMesCtl?.setProvider(next.id);
-    syncNewTaskProviderCapabilities();
+    onChange?.(next.id);
     return true;
   };
   btn.addEventListener('click', (event) => { event.stopPropagation(); open ? close() : openMenu(); });
@@ -3540,6 +3770,16 @@ function initNewTaskProviderPicker() {
     setLocked(locked) { btn.dataset.locked = locked ? '1' : ''; syncButton(); if (locked) close(); },
     preferredProvider() { return definitions().find((item) => item.enabled !== false)?.id || value.value; },
   };
+}
+let newTaskProviderCtl = null;
+function initNewTaskProviderPicker() {
+  return initProviderPicker({
+    valueId: 'newTaskProvider', btnId: 'newTaskProviderBtn', menuId: 'newTaskProviderMenu', pickerId: 'newTaskProviderPicker',
+    onChange: (provider) => {
+      newTaskMesCtl?.setProvider(provider);
+      syncNewTaskProviderCapabilities();
+    },
+  });
 }
 function providerEfforts(def) {
   const codex = {
@@ -3561,7 +3801,7 @@ function providerEfforts(def) {
 // 单实例初始化：modelSelectId / effortSelectId 是隐藏 select（value 载体，后端读它）。
 // 回复条装配时按任务实际 model/effort 播种（见 __seedReplyModel）；新建表单播种默认值。
 // inScroll=true：宿主在 overflow:auto 容器内（新建任务表单）——主菜单改 fixed 定位挂 viewport，按上下空间自动选方向。
-function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortSelectId, providerSelectId = null, inScroll = false }) {
+function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortSelectId, providerSelectId = null, inScroll = false, allowDefaultModel = false }) {
   const wrap = $(wrapId), btn = $(btnId), menu = $(menuId);
   const modelSel = $(modelSelectId), effortSel = $(effortSelectId);
   if (!wrap || !btn || !menu || !modelSel || !effortSel) return null;
@@ -3613,6 +3853,7 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
   }
 
   const curModel = () => models.find((m) => m.value === modelSel.value && m.value !== '__custom__')
+    || (!modelSel.value && allowDefaultModel && Array.from(modelSel.options).some((option) => option.value === '') ? { value: '', name: 'CLI 默认模型', desc: '' } : null)
     || (modelSel.value ? { value: modelSel.value, name: modelSel.value, desc: '' } : models.find((m) => m.value === '') || models[0]);
   const curEffort = () => efforts.find((e) => e.value === effortSel.value) || efforts[0] || { value: '', name: '—' };
 
@@ -3630,7 +3871,7 @@ function initModelEffortSelector({ wrapId, btnId, menuId, modelSelectId, effortS
   }
   // 容忍不在下拉里的真实 model id（带版本/未知）：先补一个 <option>，否则原生 select 会把未知 value 吞成 ''
   const setModel = (v) => {
-    if (v && !Array.from(modelSel.options).some((o) => o.value === v)) modelSel.add(new Option(v, v));
+    if (!Array.from(modelSel.options).some((o) => o.value === v) && (v || allowDefaultModel)) modelSel.add(new Option(v || 'CLI 默认模型', v));
     modelSel.value = v; render();
   };
   const setEffort = (v) => { effortSel.value = v; render(); };

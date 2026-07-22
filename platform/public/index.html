@@ -366,17 +366,19 @@ select.field-input{background:var(--card)}
 .fp-foot{display:flex;justify-content:flex-end;border-top:1px solid var(--hair);padding-top:10px}
 .fp-foot .btn{font-size:11.5px;padding:5px 12px}
 
-/* ---------- 任务归档：一级目录 → 二级任务列表 ---------- */
+/* ---------- 任务归档：一级工作台 → 二级任务列表 ---------- */
 .archive-shell{max-width:1120px;margin:0 auto;width:100%}
-.archive-intro{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:2px 0 18px}
-.archive-intro h2{font-family:var(--display);font-size:18px;letter-spacing:-.02em}
-.archive-intro p{font-size:12px;color:var(--mut);margin-top:5px}
-.archive-folders{display:grid;grid-template-columns:repeat(auto-fill,minmax(205px,1fr));gap:10px}
-.archive-folder{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:14px;border:1px solid var(--hair);border-radius:var(--r-lg);background:var(--card);color:var(--ink);cursor:pointer;transition:transform .14s,border-color .14s,background .14s}
-.archive-folder:hover{transform:translateY(-1px);border-color:var(--hair2);background:var(--raise)}
-.archive-folder-icon{display:grid;place-items:center;width:32px;height:28px;border-radius:8px;background:var(--amberS);color:var(--amber);font-size:17px;flex:none}
-.archive-folder-main{min-width:0;flex:1}.archive-folder-name{display:block;font-family:var(--mono);font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.archive-folder-meta{font-size:11px;color:var(--dim);margin-top:3px}
+.archive-hero{display:flex;align-items:end;justify-content:space-between;gap:24px;padding:22px 24px;margin:2px 0 14px;border:1px solid var(--hair);border-radius:var(--r-xl);background:linear-gradient(118deg,color-mix(in oklab,var(--brandS) 65%,var(--card)),var(--card) 58%)}
+.archive-eyebrow{display:block;margin-bottom:7px;font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--brand)}.archive-hero h2{font-family:var(--display);font-size:22px;letter-spacing:-.03em}.archive-hero p{max-width:520px;font-size:12px;line-height:1.65;color:var(--mut);margin-top:6px}
+.archive-stats{display:flex;gap:18px;align-items:flex-end;flex:none}.archive-stats span{display:flex;flex-direction:column;gap:3px;font-size:10.5px;color:var(--dim);white-space:nowrap}.archive-stats b{font-family:var(--mono);font-size:15px;font-weight:650;color:var(--ink)}.archive-stats span:last-child b{font-size:11px;font-weight:500}
+.archive-root-search{display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:14px;border:1px solid var(--hair);border-radius:var(--r-lg);background:var(--card)}.archive-root-search .field-input{flex:1;min-width:0;border:none;background:transparent;padding:5px 0;box-shadow:none}.archive-root-search .field-input:focus{box-shadow:none}.archive-root-search .btn{font-size:11.5px;padding:5px 10px}.archive-search-icon{font-size:19px;color:var(--dim);line-height:1}
+.archive-root-layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(250px,.8fr);gap:14px;align-items:start}.archive-directory-panel,.archive-recent-panel{padding:15px;border:1px solid var(--hair);border-radius:var(--r-xl);background:var(--card)}.archive-section-head{display:flex;align-items:start;justify-content:space-between;gap:12px;margin:0 0 12px}.archive-section-head h3{font-size:13px;font-weight:650;color:var(--ink)}.archive-section-head p{margin-top:3px;font-size:11px;color:var(--dim)}
+.archive-folders{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:9px}.archive-folder{display:flex;align-items:center;gap:11px;width:100%;min-height:88px;text-align:left;padding:13px;border:1px solid var(--hair);border-radius:var(--r-lg);background:transparent;color:var(--ink);cursor:pointer;transition:transform .14s,border-color .14s,background .14s}
+.archive-folder:hover{transform:translateY(-1px);border-color:color-mix(in oklab,var(--brand) 28%,var(--hair));background:color-mix(in oklab,var(--brandS) 40%,transparent)}
+.archive-folder-icon{display:grid;place-items:center;width:32px;height:32px;border:1px solid var(--hair);border-radius:9px;color:var(--mut);flex:none}.archive-folder-icon svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.archive-folder-main{min-width:0;flex:1}.archive-folder-name{display:block;font-family:var(--mono);font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.archive-folder-meta,.archive-folder-time{display:block;font-size:10.5px;color:var(--dim);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.archive-folder-time{color:var(--mut)}
 .archive-folder-arrow{color:var(--dim);font-size:16px}
+.archive-recent-list,.archive-search-results{display:flex;flex-direction:column;gap:7px}.archive-recent-task{display:flex;flex-direction:column;gap:6px;width:100%;padding:10px;border:1px solid var(--hair);border-radius:var(--r-lg);background:transparent;color:var(--ink);text-align:left;cursor:pointer;transition:border-color .14s,background .14s}.archive-recent-task:hover{border-color:color-mix(in oklab,var(--brand) 22%,var(--hair));background:color-mix(in oklab,var(--brandS) 32%,transparent)}.archive-recent-top,.archive-recent-meta{display:flex;align-items:center;gap:7px;min-width:0}.archive-recent-title{min-width:0;flex:1;font-size:11.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.archive-recent-meta{justify-content:space-between;color:var(--dim);font-family:var(--mono);font-size:10px}.archive-recent-meta span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.archive-recent-meta span:last-child{flex:none}.archive-search-result-head{display:flex;align-items:center;justify-content:space-between;margin:2px 0 10px;font-size:12px;font-weight:600}.archive-search-scope{margin:-4px 0 11px;font-size:11px;color:var(--dim)}.archive-search-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:9px}.archive-search-results .archive-recent-task{min-height:80px}
 .archive-list-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}.archive-back{font-size:12px;padding:6px 10px}.archive-list-title{font-family:var(--display);font-size:16px}
 .archive-filter-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--hair);border-radius:var(--r-lg);background:var(--card);margin-bottom:12px}
 .archive-filter-row .fp-dd{min-width:142px;flex:0 1 190px}.archive-filter-row .fp-dd-btn{padding:6px 9px;font-size:12px}.archive-filter-row .archive-query{min-width:220px;flex:1;padding:6px 9px;font-size:12px}.archive-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px;align-items:start}.archive-empty{padding:42px 18px;text-align:center;color:var(--dim);border:1px dashed var(--hair2);border-radius:var(--r-lg);font-size:12.5px}
@@ -579,6 +581,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
 .provider-option-name{font-size:12.5px;font-weight:650;color:var(--ink)}
 .provider-option-desc{font-size:10.5px;color:var(--mut);line-height:1.4}
 .provider-option-state{font-size:10px;font-family:var(--mono);color:var(--dim);flex:none}
+.ak-provider-picker{position:relative;display:inline-flex}.ak-provider-picker .provider-btn{min-width:168px}.ak-cwd-options{display:flex;flex-direction:column;gap:2px;padding:2px 0}.ak-cwd-choice{position:relative;display:block;cursor:pointer}.ak-cwd-choice input{position:absolute;opacity:0;pointer-events:none}.ak-cwd-choice-body{display:flex;align-items:center;gap:8px;min-height:32px;padding:5px 7px;border-radius:var(--r-sm);background:transparent;transition:background .15s,box-shadow .15s}.ak-cwd-choice:hover .ak-cwd-choice-body{background:var(--raise)}.ak-cwd-choice input:checked + .ak-cwd-choice-body{background:color-mix(in oklab,var(--brandS) 34%,transparent)}.ak-cwd-choice input:focus-visible + .ak-cwd-choice-body{box-shadow:var(--focus-ring)}.ak-cwd-check{display:grid;place-items:center;width:16px;height:16px;border:1px solid var(--hair2);border-radius:5px;color:transparent;font-size:11px;font-weight:800;line-height:1;flex:none;transition:border-color .15s,color .15s}.ak-cwd-choice input:checked + .ak-cwd-choice-body .ak-cwd-check{background:transparent;border-color:var(--brand);color:var(--brand)}.ak-cwd-choice code{min-width:0;font-family:var(--mono);font-size:11.5px;color:var(--ink2);word-break:break-all}.ak-permission-toggle{display:inline-flex;align-items:center;gap:9px;max-width:100%;padding:8px 11px;border:1px solid var(--hair);border-radius:var(--r-md);background:var(--card);color:var(--ink2);cursor:pointer;user-select:none;transition:border-color .15s,background .15s}.ak-permission-toggle:hover{background:var(--raise);border-color:var(--hair2)}.ak-permission-toggle input{position:absolute;opacity:0;pointer-events:none}.ak-permission-toggle>span:last-child{display:flex;flex-direction:column;gap:2px;font-size:12px}.ak-permission-toggle b{font-weight:650;color:var(--ink)}.ak-permission-toggle small{font-size:10.5px;color:var(--mut)}.ak-switch{position:relative;width:30px;height:18px;border-radius:999px;background:var(--hair);flex:none;transition:background .16s}.ak-switch i{position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:var(--card);box-shadow:0 1px 2px rgb(0 0 0 / .16);transition:transform .16s}.ak-permission-toggle:has(input:checked){background:color-mix(in oklab,var(--jadeS) 58%,var(--card));border-color:color-mix(in oklab,var(--jade) 34%,var(--hair))}.ak-permission-toggle input:checked + .ak-switch{background:var(--jade)}.ak-permission-toggle input:checked + .ak-switch i{transform:translateX(12px)}.ak-permission-toggle:has(input:focus-visible){box-shadow:var(--focus-ring)}
 .mes-btn{font-family:var(--sans);font-size:11px;padding:5px 10px;border:1px solid var(--input);border-radius:var(--r-md);background:var(--card);color:var(--ink2);outline:none;cursor:pointer;display:inline-flex;align-items:center;gap:6px;max-width:100%;transition:border-color .15s,background .15s}
 .mes-btn.form-size{font-size:12.5px;padding:8px 12px;align-self:flex-start}
 .mes-btn:hover{background:var(--raise);border-color:var(--hair2)}
@@ -769,14 +772,14 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <svg class="ic" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
         <span class="sb-label">任务归档</span>
       </a>
+      <a href="#/workdirs" data-nav="workdirs">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 10h18"/></svg>
+        <span class="sb-label">工作目录</span>
+      </a>
       <div class="sb-group">平台</div>
       <a href="#/runtime" data-nav="runtime">
         <svg class="ic" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
         <span class="sb-label">运行时</span>
-      </a>
-      <a href="#/dashboard" data-nav="dashboard">
-        <svg class="ic" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
-        <span class="sb-label">数据看板</span>
       </a>
       <a href="#/apikeys" data-nav="apikeys">
         <svg class="ic" viewBox="0 0 24 24"><path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777Zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
@@ -964,6 +967,26 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           </section>
         </div>
 
+        <!-- ============ 页面 3d：工作目录（新建任务的独立目录列表）============ -->
+        <div id="view-workdirs" class="view" style="display:none">
+          <section class="card" style="max-width:880px">
+            <div class="sec-head">
+              <h2>工作目录</h2>
+              <span class="sec-sub">维护新建任务的目录候选；仅保存目录路径，不会修改已有任务的 cwd、worktree 或 taskKey。worktree 路径会自动收敛为其仓库根目录；云端 cwd 白名单在「设置」中独立维护。</span>
+            </div>
+            <div class="field">
+              <span class="f-label">添加目录</span>
+              <div class="cwd-row">
+                <input type="text" id="workDirInput" class="field-input mono" autocomplete="off" placeholder="输入绝对路径，或点“浏览”选择目录">
+                <button type="button" class="btn" id="workDirBrowseBtn">浏览…</button>
+                <button type="button" class="btn btn-primary" id="workDirAddBtn">添加</button>
+              </div>
+              <div id="workDirHint" style="margin-top:8px;font-size:11.5px;color:var(--dim)"></div>
+            </div>
+            <div id="workDirListBox" style="margin-top:16px"><div style="color:var(--dim);font-size:12.5px">加载中…</div></div>
+          </section>
+        </div>
+
         <!-- ============ 页面 5：设置（运行控制 + 平台守护 · req5 从数据看板迁入）============ -->
         <div id="view-settings" class="view" style="display:none">
           <section class="card" style="max-width:640px;margin-bottom:var(--gap)">
@@ -1144,7 +1167,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
         <h2 id="akModalTitle">生成密钥</h2>
         <span class="modal-x" id="akModalX">×</span>
       </div>
-      <div class="modal-hint" id="akModalHint">策略三项必选（全不选 = 没有权限）· 请求省略对应字段时取第一个勾选项 / 第一行为该密钥默认</div>
+      <div class="modal-hint" id="akModalHint">策略两项必选（全不选 = 没有权限）· 请求省略 model 与 effort 时使用第一条组合，目录使用第一项</div>
       <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0;scrollbar-gutter:stable">
         <div style="display:flex;gap:12px;flex-wrap:wrap">
           <label class="field" style="flex:2;min-width:220px">
@@ -1156,42 +1179,33 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
             <input id="akSourceInput" class="field-input mono" autocomplete="off" placeholder="如：chat / issue">
           </label>
         </div>
-        <label class="field" style="max-width:280px">
+        <div class="field" style="max-width:280px">
           <span class="f-label">Provider（这把钥匙固定使用的本机 Agent）</span>
-          <select id="akProviderInput" class="field-input">
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-          </select>
-        </label>
-        <div style="display:flex;gap:24px;flex-wrap:wrap">
-          <div class="field" style="min-width:200px">
-            <span class="f-label">可用模型（必选；第一个勾选项为默认）</span>
-            <div id="akModelsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
-              <label><input type="checkbox" value="claude-opus-4-8"> Opus 4.8</label>
-              <label><input type="checkbox" value="claude-fable-5"> Fable 5</label>
-              <label><input type="checkbox" value="claude-opus-4-7"> Opus 4.7</label>
-              <label><input type="checkbox" value="claude-sonnet-5"> Sonnet 5</label>
-              <label><input type="checkbox" value="claude-haiku-4-5-20251001"> Haiku 4.5</label>
-            </div>
-          </div>
-          <div class="field" style="min-width:140px">
-            <span class="f-label">可用 effort（必选；第一个勾选项为默认）</span>
-            <div id="akEffortsBox" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink2)">
-              <label><input type="checkbox" value="low"> Low</label>
-              <label><input type="checkbox" value="medium"> Medium</label>
-              <label><input type="checkbox" value="high"> High</label>
-              <label><input type="checkbox" value="xhigh"> xHigh</label>
-              <label><input type="checkbox" value="max"> Max</label>
-            </div>
+          <input id="akProviderInput" type="hidden" value="claude">
+          <div id="akProviderPicker" class="ak-provider-picker provider-picker">
+            <button type="button" id="akProviderBtn" class="mes-btn form-size provider-btn" aria-haspopup="listbox" aria-expanded="false">
+              <span class="provider-btn-main"><span class="provider-btn-name"></span><span class="provider-btn-meta"></span></span><span class="mes-btn-caret" aria-hidden="true">▾</span>
+            </button>
+            <div id="akProviderMenu" class="provider-menu" role="listbox" aria-label="选择 Provider"></div>
           </div>
         </div>
-        <label class="field">
-          <span class="f-label">可访问目录（必填，每行一个绝对路径；任务 cwd 须等于某行或在其之下，省略时取第一行）</span>
-          <textarea id="akCwdsInput" class="field-input mono" rows="3" spellcheck="false" placeholder="D:\baibu-agent"></textarea>
-        </label>
+        <div class="field">
+          <span class="f-label">允许的模型 + effort 组合（必选；每行一个组合，第一条为默认）</span>
+          <div id="akPoliciesBox" style="display:flex;flex-direction:column;gap:7px"></div>
+          <button type="button" class="btn" id="akAddPolicyBtn" style="align-self:flex-start;margin-top:8px">＋ 添加组合</button>
+        </div>
+        <div class="field">
+          <span class="f-label">可访问目录（必选；从「工作目录」菜单维护的目录中选择，省略 cwd 时取第一项）</span>
+          <div id="akCwdsBox" class="ak-cwd-options"></div>
+          <div id="akCwdsHint" style="margin-top:7px;font-size:11px;color:var(--dim)"></div>
+        </div>
         <div class="field">
           <span class="f-label">执行权限</span>
-          <label style="font-size:12px;color:var(--ink2)"><input type="checkbox" id="akAllowQueued"> 允许直接执行（<code>plan:false</code> 直进 queued 不经看板确认；默认关 = 只能建 plan 任务）</label>
+          <label class="ak-permission-toggle">
+            <input type="checkbox" id="akAllowQueued">
+            <span class="ak-switch" aria-hidden="true"><i></i></span>
+            <span><b>允许直接执行</b><small><code>plan:false</code> 直进 queued，不经看板确认</small></span>
+          </label>
         </div>
         <div id="akCreateErr" class="form-err"></div>
       </div>
@@ -1280,7 +1294,7 @@ pre.diff-new{background:color-mix(in oklab, var(--success) 9%, transparent);bord
           <span class="f-label">工作目录（可选 · Agent 在此目录下运行；留空用默认根目录）</span>
           <div class="cwd-row">
             <div class="cwd-combo" id="newTaskCwdCombo">
-              <input type="text" id="newTaskCwd" class="field-input mono" autocomplete="off" placeholder="填绝对路径，或点右侧 ▾ 选已用过的目录">
+              <input type="text" id="newTaskCwd" class="field-input mono" autocomplete="off" placeholder="填绝对路径，或点右侧 ▾ 选“工作目录”中维护的目录">
               <button type="button" class="cwd-caret" id="newTaskCwdCaret" tabindex="-1" aria-label="展开已用目录">▾</button>
               <div class="cwd-menu" id="newTaskCwdMenu" role="listbox"></div>
             </div>

@@ -1,0 +1,7 @@
+case,desc,round-1
+C1,组合字段创建后按顺序保存为默认,PASS
+C2,配置的模型加effort组合允许,PASS
+C3,未配置的交叉组合拒绝,PASS
+C4,工作目录菜单未配置的路径拒绝,PASS
+C5,存量独立数组策略兼容为原笛卡尔权限,PASS
+C6,API密钥表单内联脚本可编译,PASS

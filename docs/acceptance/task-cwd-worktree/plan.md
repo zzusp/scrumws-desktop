@@ -25,11 +25,16 @@ collect.js 已暴露为 `t.worktreeDir`）。
 - `cli-actions.js` `sessionCwds`：新建任务「选已有工作目录」下拉的 CLI 来源也取 base，不塞 worktree 子目录。
 - 迁移脚本 `scripts/migrate-cwd-worktree.mjs`（带 `--check` 零副作用）：扫 runner-state + archive，`cwd` 是 worktree 的
   切成 `base` + `meta.worktreeDir` + `worktree=true`；不覆盖已有正确的 `meta.worktreeDir`；幂等。
+- 「工作目录」菜单：目录候选独立存 `runner-config.json.workDirectories`，新建任务下拉只读此列表；不再混用
+  `cloudAllowedCwds`，也不再根据任务/CLI 历史自动推断。保存 worktree 路径时收敛为 base 仓库根；删除候选只影响
+  后续下拉，不改已有任务的 `cwd`、`meta.worktreeDir` 或 taskKey。
 
 ## 验证（本地实跑）
 - `test-detect.mjs`：`detectWorktreeBase` 单测 6/6 PASS（worktree 拆 base、子目录、普通目录、正反斜杠、空）。
 - `seed-migrate.mjs` + `migrate-cwd-worktree.mjs`：合成 3 任务（1 污染 + 1 干净 + 1 已正确 worktree）→ `--check` 只命中污染那个且零写入 → 真跑正确切分（cwd→base、worktree→true、meta.worktreeDir 新增、meta.cwd 历史保留）→ 再 `--check` 幂等 0 命中。
 - `verify-cli-card.mjs`：合成「跑在 worktree 里」的 CLI 会话 jsonl + watchlist，直接调 `collectCliSessions()` → 卡片 `cwd=base`、`worktreeDir=worktree`、`cli.cwd=原始(worktree)`。4/4 PASS。
+- `verify-work-directories.mjs`：隔离 standalone 实例下，证明云端 `cloudAllowedCwds` 不会进入新建任务下拉；保存的
+  worktree/重复路径收敛为去重后的 base 目录；工作目录只存 `workDirectories`，云端白名单保持原值。5/5 PASS。
 - **真实数据 `--check`（只读）**：扫 14 个 task.json，**0 命中**（当前托管任务 cwd 都已干净）；22 个 CLI 会话 cwd 也**无 worktree**
   （分布：13× scrumws-desktop、7× baibu-agent、1× docs 子目录、1× hiq-project）。即当前数据本就干净，迁移是 no-op；
   代码修复为**防复发** + 修 CLI 卡片展示口径 + 留安全网。

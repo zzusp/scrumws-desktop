@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getProviderRuntime, getState, invalidateState } from './lib/collect.js';
 import { readWorkerLog, readWorkerLogRevision, archiveTask, renameTask, setTaskDescription, unarchiveTask, completeCliSession, uncompleteCliTask } from './lib/logs.js';
-import { normalizeModelContextLimits, providerConfig, readConfig, setProviderEnabled, writeConfig } from './lib/runner-config.js';
-import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, taskCwds, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
-import { searchCliSessions, recentCliSessions, sessionCwds, addCliSession, removeCliSession } from './lib/cli-actions.js';
+import { normalizeModelContextLimits, providerConfig, readConfig, setProviderEnabled, writeConfig, listWorkDirectories, setWorkDirectories } from './lib/runner-config.js';
+import { createTask, replyToTask, cancelTask, completeTask, uncompleteTask, moveTaskToPlan, restartTask, readTaskEdit, editTask, deleteTask } from './lib/task-actions.js';
+import { searchCliSessions, recentCliSessions, addCliSession, removeCliSession } from './lib/cli-actions.js';
 import { detectGit } from './lib/git.js';
 import { drainQueued } from './lib/task-runner.js';
 import { getModelContextLimit, getClaudeUsage, startUsageTimer, stopUsageTimer, reloadUsageTimer } from './lib/claude-usage.js';
@@ -15,7 +15,7 @@ import { ensureMachineUid } from './lib/cloud/identity.js';
 import { acceptAutoRunMode } from './lib/cloud/gate.js';
 import { isCwdAllowed } from './lib/cloud/cwd-allow.js';
 import { createApiKey, updateApiKey, listApiKeys, setApiKeyDisabled, deleteApiKey, verifyApiKey } from './lib/api-keys.js';
-import { createExternalTask, externalTaskStatus } from './lib/external-ingest.js';
+import { createExternalTask, externalTaskStatus, resumeExternalTask } from './lib/external-ingest.js';
 import { P } from './lib/paths.js';
 import { normalizeProvider } from './lib/providers/registry.js';
 
@@ -222,29 +222,27 @@ const server = http.createServer(async (req, res) => {
       const r = archiveTask(taskKey);
       return sendJson(res, r.ok ? 200 : 400, r);
     }
-    // 已知工作目录列表（新建任务「选已有目录」下拉）：仅展示已配置的项目工作目录
-    // （cloudAllowedCwds 同时就是本机项目目录白名单）。不能把扫描到的所有 CLI session
-    // 直接暴露进下拉，否则用户主目录等非项目 cwd 会混进来；手填/浏览仍按原有本地任务语义处理。
+    // 工作目录管理：仅保存本机新建任务的目录选择项，不影响任务 cwd、云端白名单或任何 taskKey。
+    if (pathname === '/api/work-directories') {
+      if (req.method === 'GET') return sendJson(res, 200, { ok: true, directories: listWorkDirectories() });
+      if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'method not allowed' });
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        if (!Array.isArray(payload?.directories) || payload.directories.some((x) => typeof x !== 'string')) {
+          return sendJson(res, 400, { ok: false, error: 'directories 需为字符串数组' });
+        }
+        return sendJson(res, 200, { ok: true, directories: setWorkDirectories(payload.directories) });
+      });
+      return;
+    }
+    // 新建任务的「选工作目录」下拉只读独立维护的列表。不能混入历史任务/CLI 会话 cwd，
+    // 更不能借用 cloudAllowedCwds（它是云端安全白名单，语义不同）。
     if (pathname === '/api/task/cwds') {
-      const runnerConfig = readConfig();
-      const allowedCwds = Array.isArray(runnerConfig.cloudAllowedCwds)
-        ? runnerConfig.cloudAllowedCwds.map((c) => String(c || '').trim()).filter(Boolean)
-        : [];
-      const seen = new Set();
-      const cwds = [];
-      const add = (cwd, source) => {
-        if (!isCwdAllowed(cwd, allowedCwds)) return;
-        // Windows 文件系统不区分大小写，避免同一路径仅大小写不同而重复。
-        const key = path.resolve(cwd).toLowerCase();
-        if (seen.has(key)) return;
-        seen.add(key);
-        cwds.push({ cwd, source });
-      };
-      // 白名单根本身也是可选的项目目录，即使当前还没有任务/CLI 历史。
-      for (const c of allowedCwds) add(c, 'project');
-      for (const c of taskCwds()) add(c, 'task');
-      for (const c of sessionCwds({ limit: 80 })) add(c, 'cli');
-      return sendJson(res, 200, { ok: true, cwds: cwds.slice(0, 60) });
+      const cwds = listWorkDirectories().map((cwd) => ({ cwd, source: 'managed' }));
+      return sendJson(res, 200, { ok: true, cwds });
     }
     // 读 plan 态任务可编辑字段（看板「编辑」弹窗回填）：仅 plan 可编辑，非 plan 返回 400
     if (pathname === '/api/task/detail') {
@@ -393,8 +391,7 @@ const server = http.createServer(async (req, res) => {
       if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
       return sendJson(res, 200, { ok: true });
     }
-    // 持钥方自省：凭密钥查自己的身份与权限范围（来源 / 三项白名单 / 直执权限），调用方据此自适应
-    // （如：从 allowedModels[0] 取默认模型、按 allowQueued 决定要不要传 plan:false）。契约见外部接入指导文档。
+    // 持钥方自省：凭密钥查自己的身份与权限范围（模型+effort 组合 / 目录白名单 / 直执权限），调用方据此自适应。
     if (pathname === '/api/external/whoami') {
       const auth = verifyApiKey(req.headers.authorization);
       if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
@@ -404,7 +401,7 @@ const server = http.createServer(async (req, res) => {
         key: {
           label: k.label, source: k.source, prefix: k.prefix, createdAt: k.createdAt,
           provider: normalizeProvider(k.provider),
-          allowedModels: k.allowedModels, allowedEfforts: k.allowedEfforts, allowedCwds: k.allowedCwds,
+          allowedModelEfforts: k.allowedModelEfforts, allowedModels: k.allowedModels, allowedEfforts: k.allowedEfforts, allowedCwds: k.allowedCwds,
           allowQueued: k.allowQueued,
         },
       });
@@ -415,6 +412,20 @@ const server = http.createServer(async (req, res) => {
       const r = externalTaskStatus(auth.key, { taskKey: searchParams.get('taskKey'), externalKey: searchParams.get('externalKey') });
       if (!r.ok) return sendJson(res, r.code || 400, { ok: false, error: r.error });
       return sendJson(res, 200, r);
+    }
+    // 外部续接：仅同来源、已收敛任务可用；复用 task-actions 的 provider 原生 resume，plan 不可借此绕过确认。
+    if (req.method === 'POST' && pathname === '/api/external/task/resume') {
+      const auth = verifyApiKey(req.headers.authorization);
+      if (!auth.ok) return sendJson(res, 401, { ok: false, error: 'unauthorized' });
+      let body = '';
+      req.on('data', (c) => { body += c; if (body.length > 32 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { return sendJson(res, 400, { ok: false, error: 'invalid json' }); }
+        const r = resumeExternalTask(auth.key, payload || {});
+        sendJson(res, r.ok ? 200 : r.code || 400, r.ok ? r : { ok: false, error: r.error });
+      });
+      return;
     }
     // 手动中断任务（processing/queued → awaiting-human + outcome=cancelled + kill pid）
     if (req.method === 'POST' && pathname === '/api/task/cancel') {

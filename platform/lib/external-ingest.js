@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { P } from './paths.js';
-import { createTask } from './task-actions.js';
+import { createTask, replyToTask } from './task-actions.js';
 import { normalizeProvider } from './providers/registry.js';
+import { policyPairsOf } from './api-keys.js';
 
-// 外部任务通道（/api/external/*）的业务件：建任务（幂等去重）+ 查状态。
+// 外部任务通道（/api/external/*）的业务件：建任务（幂等去重）+ 查状态 + 原生续接。
 // 与 /api/task/create 的差异只有三点：source 强制取 API key 绑定值（不信请求体）、缺省落 plan 桶
 // （外部推入的活先人工确认）、externalKey 幂等（同一外部事件重复推不重复建任务）。
 // 建出的任务与其它来源走完全一致的状态机（source 只是元数据，不特判）。
@@ -44,6 +45,7 @@ function readTaskBrief(taskKey) {
     state: state.state || null, outcome: state.outcome ?? null,
     createdAt: task.createdAt || null, resolvedAt: state.resolvedAt ?? null,
     externalKey: task.externalKey || null,
+    model: task.model ?? null, effort: task.effort ?? null, cwd: task.cwd ?? null,
   };
 }
 
@@ -51,26 +53,36 @@ function ledgerKey(key, externalKey) {
   return `${normalizeProvider(key.provider)}:${key.source}:${externalKey}`;
 }
 
-// per-key 策略执行：密钥必须带 allowedModels / allowedEfforts / allowedCwds 三个白名单——
-// **全不选 = 没有权限**：缺任一项（含旧格式无策略密钥）一律拒绝建任务，须重新生成密钥。
-// 请求省略字段 → 取白名单首项为该密钥默认；请求越界 → err（外层回 400）。
+// per-key 策略执行：密钥必须带 model + effort 组合和目录白名单。请求省略 model/effort 时取首条组合；
+// 只传其中一项且匹配多条组合会被拒，避免暗中选择与调用方预期不同的另一项。
 // cwd 判定：等于白名单某项或在其之下（Windows 路径大小写不敏感）。
 function resolveAgainstPolicy(key, p) {
   const missing = [];
-  if (!Array.isArray(key.allowedModels) || !key.allowedModels.length) missing.push('可用模型');
-  if (!Array.isArray(key.allowedEfforts) || !key.allowedEfforts.length) missing.push('可用 effort');
+  const pairs = policyPairsOf(key);
+  if (!pairs.length) missing.push('模型 + effort 组合');
   if (!Array.isArray(key.allowedCwds) || !key.allowedCwds.length) missing.push('可访问目录');
   if (missing.length) return { err: `该密钥未配置${missing.join(' / ')}（策略必选=无权限），请在「API 密钥」页重新生成` };
-  const pick = (reqVal, allowed, label) => {
-    const v = String(reqVal || '').trim();
-    if (!v) return { val: allowed[0] };
-    if (!allowed.includes(v)) return { err: `${label} 不在该密钥允许范围：${allowed.join(', ')}` };
-    return { val: v };
-  };
-  const m = pick(p.model, key.allowedModels, 'model');
-  if (m.err) return { err: m.err };
-  const e = pick(p.effort, key.allowedEfforts, 'effort');
-  if (e.err) return { err: e.err };
+  const modelProvided = p.model != null;
+  const effortProvided = p.effort != null;
+  const model = String(p.model ?? '').trim();
+  const effort = String(p.effort ?? '').trim();
+  if (!modelProvided && !effortProvided) {
+    const ac = key.allowedCwds;
+    let cwd = String(p.cwd || '').trim();
+    if (!cwd) cwd = ac[0];
+    else {
+      const norm = path.resolve(cwd).toLowerCase();
+      const hit = ac.some((baseCwd) => {
+        const base = path.resolve(baseCwd).toLowerCase();
+        return norm === base || norm.startsWith(base + path.sep);
+      });
+      if (!hit) return { err: `cwd 不在该密钥允许范围：${ac.join('；')}` };
+    }
+    return { model: pairs[0].model, effort: pairs[0].effort, cwd };
+  }
+  const candidates = pairs.filter((pair) => (!modelProvided || pair.model === model) && (!effortProvided || pair.effort === effort));
+  if (!candidates.length) return { err: 'model + effort 组合不在该密钥允许范围' };
+  if (candidates.length > 1) return { err: 'model 或 effort 对应多条允许组合，请同时传 model 和 effort' };
   const ac = key.allowedCwds;
   let cwd = String(p.cwd || '').trim();
   if (!cwd) {
@@ -83,7 +95,7 @@ function resolveAgainstPolicy(key, p) {
     });
     if (!hit) return { err: `cwd 不在该密钥允许范围：${ac.join('；')}` };
   }
-  return { model: m.val, effort: e.val, cwd };
+  return { model: candidates[0].model, effort: candidates[0].effort, cwd };
 }
 
 // 建任务（幂等）：externalKey（可选，≤200 字符）在同 source 内幂等——台账命中且任务包仍在（含归档）
@@ -132,9 +144,9 @@ export function createExternalTask(key, payload) {
   return { ...r, existed: false };
 }
 
-// 查状态：taskKey / externalKey 二选一（externalKey 经台账解析）。只能查本 source 的任务——
+// 解析外部调用目标：taskKey / externalKey 二选一（externalKey 经台账解析）。只能操作本 source 的任务——
 // 跨 source、不存在、externalKey 未登记一律同一句 404（不泄露其它来源任务的存在性）。
-export function externalTaskStatus(key, { taskKey, externalKey }) {
+function resolveExternalTask(key, { taskKey, externalKey }) {
   let tk = String(taskKey || '').trim();
   const ek = String(externalKey || '').trim();
   if (!tk && !ek) return { ok: false, code: 400, error: 'taskKey 或 externalKey 必传其一' };
@@ -147,5 +159,40 @@ export function externalTaskStatus(key, { taskKey, externalKey }) {
   if (!/^[A-Za-z0-9:_#/-]+$/.test(tk)) return { ok: false, code: 400, error: 'invalid taskKey' };
   const brief = readTaskBrief(tk);
   if (!brief || brief.source !== key.source || brief.provider !== normalizeProvider(key.provider)) return { ok: false, code: 404, error: 'task not found' };
+  return { ok: true, brief };
+}
+
+// 查状态：外部字段只返回只读摘要，不泄露任务 prompt 或会话内容。
+export function externalTaskStatus(key, target) {
+  const r = resolveExternalTask(key, target);
+  if (!r.ok) return r;
+  const { model, effort, cwd, ...brief } = r.brief;
   return { ok: true, ...brief };
+}
+
+// 外部续接：只对已经收敛、且确实有历史会话的任务发送下一条指令。
+// plan 任务仍须由看板确认执行，不能借此端点绕过人工确认；processing 由 task-actions 拒绝并发续接。
+// 续接时以任务原 model/effort/cwd 为默认值，再按密钥的当前白名单复核，防止密钥收窄后继续执行越权旧任务。
+export function resumeExternalTask(key, payload) {
+  const p = payload || {};
+  const target = resolveExternalTask(key, p);
+  if (!target.ok) return target;
+  const task = target.brief;
+  if (!['awaiting-human', 'done'].includes(task.state)) {
+    return { ok: false, code: 400, error: `只有 awaiting-human/done 任务可续接（当前 ${task.state || '未知'}）` };
+  }
+  const policyInput = { cwd: task.cwd };
+  if (p.model != null) policyInput.model = p.model;
+  else if (task.model != null) policyInput.model = task.model;
+  if (p.effort != null) policyInput.effort = p.effort;
+  else if (task.effort != null) policyInput.effort = task.effort;
+  const selection = resolveAgainstPolicy(key, policyInput);
+  if (selection.err) return { ok: false, code: 400, error: selection.err };
+  const r = replyToTask({
+    taskKey: task.taskKey,
+    message: p.message,
+    model: selection.model,
+    effort: selection.effort,
+  });
+  return r.ok ? { ...r, state: 'processing' } : { ...r, code: 400 };
 }

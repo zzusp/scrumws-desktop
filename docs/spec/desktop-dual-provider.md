@@ -232,7 +232,7 @@ Claude 旧任务继续可从原生 JSONL 读取；新 journal 是 provider-neutr
 
 ### 5.5 API key
 
-每把本地 API key 绑定单一 provider；旧 key 为 Claude。`allowedModels/allowedEfforts` 在该 provider 作用域内解释。
+每把本地 API key 绑定单一 provider；旧 key 为 Claude。新配置以 `allowedModelEfforts` 的逐条 model + effort 组合在该 provider 作用域内解释；旧的 `allowedModels/allowedEfforts` 读取时按原笛卡尔权限兼容。
 `whoami` 返回 provider，external create 不能用请求字段跨 provider。云下发没有 provider 时保持 Claude，避免改云协议。
 
 ## 6. API 与 UI

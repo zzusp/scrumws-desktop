@@ -30,6 +30,7 @@
 | G7 | baibu-agent 派发器对接（chat-watch / issue-watch） | 两个 .mjs 改造 + scrumws-ingest.json 配置 + 实跑验证 | done（8 场景全绿；round-2 增量：chat→queued、issue→plan、opus-4.8/xhigh、心跳） |
 | G7b | per-key 策略 + 心跳（round-2 增量需求） | api-keys/external-ingest/UI/心跳端点 + 派发器打点 | done（32/32 + UI 5/5 + 派发器 e2e 全绿） |
 | G8 | 旧看板退役：计划任务直调派发器 + 移除 baibu-dashboard | 注册脚本 + loop 脚本 + schtask 落地 + 实跑验证 | done（chat 15s 节拍 / issue 3min 均实跑开火；8788 与 baibu-dashboard 已删停） |
+| G9 | 外部任务查询与原生续接 | status 契约确认 + resume 路由、来源隔离、验收用例 | done（round-9 API 50/50 PASS） |
 
 ## sub goal 进展
 
@@ -46,3 +47,5 @@
 - 2026-07-17 用户修正策略语义（round-3，全绿）：**三项白名单必选，全不选 = 没有权限**——缺项拒建钥、旧格式无策略钥建任务一律 400（须重新生成）；UI 标必选 + 前端拦截 + 旧钥「未配置（无权限）」标识。顺带修出真实 UI bug（.form-err 类 display:none，原 style.display='' 显示失败，三处改 'block'）。生产两把钥带全策略不受影响。
 - 2026-07-17 生产链路 e2e 验证（用户合并 #59+#60 并重启桌面端后）：外部端点/鉴权/宕机自愈重派（issue ×3 进 plan）/生产去重/策略强制/心跳活跃全部实测通过；群消息偶发 JSON 解析错误确认为既有现象（dws 空返回，07-10 起即有）。记录：D:\baibu-agent\docs\acceptance\scrumws-ingest-cutover\round-3.md。
 - 2026-07-17 用户增量（round-4，全绿）：**allowQueued 直执权限**（默认关；关闭时 plan:false 一律 400——chat 直执须显式开启）+ **密钥编辑**（/api/apikeys/update，密钥本体不动）+ **复制**（配置克隆生成新钥，明文不可复原）。生产 chat 钥已预补 allowQueued:true（写后读回校验），合并重启后无断流窗口；issue 钥保持 false。
+- 2026-07-22 G9 开工：确认 `GET /api/external/task/status` 已支持按 taskKey/externalKey 查询；增补同源、同 provider、已收敛会话的 `POST /api/external/task/resume`，不允许 plan 绕过看板确认。
+- 2026-07-22 G9 done：隔离 API 验收 50/50 PASS；新增 C6–C9 覆盖 plan 确认边界、跨来源 404、无鉴权 401、externalKey 原生续接成功，详见 round-9.md。

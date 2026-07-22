@@ -42,6 +42,11 @@ const main = async () => {
   record('A1-list-empty', r.status === 200 && r.json?.ok === true && Array.isArray(r.json.keys) && r.json.keys.length === 0,
     `初始列表为空 → ${r.status} keys=${r.json?.keys?.length}`);
 
+  // API 密钥可访问目录必须来自「工作目录」菜单维护的集合。
+  r = await req('POST', '/api/work-directories', { body: { directories: [DATA_ROOT] } });
+  record('A0-configure-work-directory', r.status === 200 && r.json?.ok === true && r.json.directories?.length === 1,
+    `配置 API 密钥可选工作目录 → ${r.status} directories=${r.json?.directories?.length}`);
+
   // 策略三项必选（2026-07-17 语义：全不选 = 没有权限）——所有建钥都带全策略
   const FULL_POLICY = { allowedModels: ['claude-opus-4-8', 'claude-haiku-4-5-20251001'], allowedEfforts: ['xhigh', 'low'], allowedCwds: [DATA_ROOT] };
   r = await req('POST', '/api/apikeys/create', { body: { label: '钉钉派发器', source: 'chat', ...FULL_POLICY, allowQueued: true } });
@@ -143,6 +148,46 @@ const main = async () => {
 
   r = await req('GET', '/api/external/task/status?taskKey=x', {});
   record('C5-status-no-auth', r.status === 401, `查状态无鉴权 → ${r.status}`);
+
+  // ---- C2. 外部原生续接 ----
+  r = await req('POST', '/api/external/task/create', {
+    body: { title: '待续接任务', prompt: '首轮指令', externalKey: 'e2e-resume' }, token: chatKey.plaintext,
+  });
+  const resumable = r.json;
+  const planResume = await req('POST', '/api/external/task/resume', {
+    body: { externalKey: 'e2e-resume', message: '不能绕过 plan 确认' }, token: chatKey.plaintext,
+  });
+  record('C6-resume-plan-denied', r.status === 200 && planResume.status === 400 && /只有 awaiting-human\/done/.test(planResume.json?.error || ''),
+    `plan 任务不能借 resume 绕过确认 → ${planResume.status} ${planResume.json?.error}`);
+
+  // 隔离实例以 PATH 无 claude 启动；手工放入已收敛会话夹具后，resume 只验证路由/鉴权/原生重挂调用，不产生真实 Agent 副作用。
+  const resumeDir = taskDirOf(resumable.taskKey);
+  const resumeStateFile = path.join(resumeDir, 'state.json');
+  const resumeState = JSON.parse(fs.readFileSync(resumeStateFile, 'utf8'));
+  resumeState.state = 'awaiting-human';
+  resumeState.outcome = null;
+  resumeState.resolvedAt = null;
+  fs.writeFileSync(resumeStateFile, JSON.stringify(resumeState, null, 2));
+  fs.writeFileSync(path.join(resumeDir, 'meta.json'), JSON.stringify({ provider: 'claude', sessionId: 'resume-fixture-session' }, null, 2));
+
+  const crossResume = await req('POST', '/api/external/task/resume', {
+    body: { taskKey: resumable.taskKey, message: '越来源续接' }, token: issueKey.plaintext,
+  });
+  record('C7-resume-cross-source-404', crossResume.status === 404,
+    `issue 密钥续接 chat 任务 → ${crossResume.status}`);
+
+  const noAuthResume = await req('POST', '/api/external/task/resume', {
+    body: { externalKey: 'e2e-resume', message: '无鉴权续接' },
+  });
+  record('C8-resume-no-auth', noAuthResume.status === 401, `无鉴权续接 → ${noAuthResume.status}`);
+
+  const resumed = await req('POST', '/api/external/task/resume', {
+    body: { externalKey: 'e2e-resume', message: '请根据最新反馈继续处理' }, token: chatKey.plaintext,
+  });
+  record('C9-resume-by-external-key', resumed.status === 200 && resumed.json?.ok === true
+    && resumed.json?.taskKey === resumable.taskKey && resumed.json?.state === 'processing'
+    && resumed.json?.resumed === 'resume-fixture-session',
+  `按 externalKey 续接已收敛任务 → ${resumed.status} resumed=${resumed.json?.resumed}`);
 
   // ---- D. 禁用 / 删除 / 台账重建 ----
   r = await req('POST', '/api/apikeys/toggle', { body: { id: chatKey.key.id, disabled: true } });
@@ -270,6 +315,46 @@ const main = async () => {
   record('P6-out-of-policy-400', outModel.status === 400 && outEffort.status === 400 && outCwd.status === 400
     && /不在该密钥允许范围/.test(outModel.json?.error + outEffort.json?.error + outCwd.json?.error),
     `越界 model/effort/cwd → ${outModel.status}/${outEffort.status}/${outCwd.status}`);
+
+  // 新策略字段是有序的 model + effort 组合，不能把两条组合交叉成额外权限。
+  r = await req('POST', '/api/apikeys/create', {
+    body: {
+      label: '组合策略钥', source: 'pairs',
+      allowedModelEfforts: [
+        { model: 'claude-opus-4-8', effort: 'xhigh' },
+        { model: 'claude-sonnet-5', effort: 'low' },
+      ],
+      allowedCwds: [DATA_ROOT],
+    },
+  });
+  const pairKey = r.json;
+  const pairDefault = await req('POST', '/api/external/task/create', {
+    body: { title: '组合默认', prompt: 'p', externalKey: 'pairs-1' }, token: pairKey.plaintext,
+  });
+  const pairAllowed = await req('POST', '/api/external/task/create', {
+    body: { title: '允许组合', prompt: 'p', model: 'claude-sonnet-5', effort: 'low', externalKey: 'pairs-2' }, token: pairKey.plaintext,
+  });
+  const pairCrossed = await req('POST', '/api/external/task/create', {
+    body: { title: '交叉组合', prompt: 'p', model: 'claude-sonnet-5', effort: 'xhigh' }, token: pairKey.plaintext,
+  });
+  const unconfiguredCwd = await req('POST', '/api/apikeys/create', {
+    body: { label: '未配置目录', source: 'badcwd', allowedModelEfforts: [{ model: 'claude-opus-4-8', effort: 'xhigh' }], allowedCwds: ['C:\\Windows'] },
+  });
+  const legacyPairKey = await req('POST', '/api/apikeys/create', {
+    body: {
+      label: '旧数组兼容钥', source: 'legacypairs',
+      allowedModels: ['claude-opus-4-8', 'claude-sonnet-5'], allowedEfforts: ['xhigh', 'low'], allowedCwds: [DATA_ROOT],
+    },
+  });
+  const legacyCrossed = await req('POST', '/api/external/task/create', {
+    body: { title: '旧数组交叉组合', prompt: 'p', model: 'claude-sonnet-5', effort: 'xhigh', externalKey: 'legacy-pairs-1' }, token: legacyPairKey.json?.plaintext,
+  });
+  record('P8-model-effort-pairs-and-managed-cwds', r.status === 200 && pairKey?.key?.allowedModelEfforts?.length === 2
+    && pairDefault.status === 200 && pairAllowed.status === 200 && pairCrossed.status === 400
+    && /组合不在该密钥允许范围/.test(pairCrossed.json?.error || '')
+    && unconfiguredCwd.status === 400 && /工作目录/.test(unconfiguredCwd.json?.error || '')
+    && legacyCrossed.status === 200,
+  `新组合默认/允许/交叉=${pairDefault.status}/${pairAllowed.status}/${pairCrossed.status}；未配置目录=${unconfiguredCwd.status}；旧数组交叉=${legacyCrossed.status}`);
 
   // ---- Q. 直接执行权限（allowQueued）+ 密钥编辑 ----
   // policy 钥未开 allowQueued → plan:false 拒绝（issue 钥已在 D4 删除，不可用于此例）
